@@ -7,6 +7,7 @@ import NewEbook from "./pages/NewEbook";
 import Generating from "./pages/Generating";
 import EbookDetail from "./pages/EbookDetail";
 import Ideias from "./pages/Ideias";
+import KindleReading from "./pages/KindleReading";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -17,7 +18,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
       <header className="border-b border-neutral-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-3">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3">
           <Link to="/" className="text-lg font-semibold tracking-tight">
             Sambu <span className="italic text-amber-700">Ebooks</span>
           </Link>
@@ -37,7 +38,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
       </header>
-      <main className="mx-auto max-w-5xl px-5 py-8">{children}</main>
+      <main className="mx-auto max-w-6xl px-5 py-8">{children}</main>
     </div>
   );
 }
@@ -110,6 +111,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Ideias />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ebooks/:id/ler"
+        element={
+          <RequireAuth>
+            <KindleReading />
           </RequireAuth>
         }
       />

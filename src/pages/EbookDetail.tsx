@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type EbookDetail as EbookDetailType } from "../lib/api";
 
 export default function EbookDetail() {
@@ -97,9 +97,15 @@ export default function EbookDetail() {
 
       {ebook.status === "ready" && (
         <div className="flex flex-wrap gap-3 rounded-xl border border-neutral-200 bg-white p-4">
+        <Link
+          to={`/ebooks/${ebook.id}/ler`}
+          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+        >
+          📖 Ler no Kindle
+        </Link>
         <a
           href={`/api/ebooks/${ebook.id}/pdf`}
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+          className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50"
         >
           Baixar PDF
         </a>
