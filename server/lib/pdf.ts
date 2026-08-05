@@ -42,19 +42,22 @@ function paragraphs(text: string): string {
 function imageToDataUri(filePath: string): string | null {
   try {
     const buffer = fs.readFileSync(filePath);
-    return `data:image/png;base64,${buffer.toString("base64")}`;
+    const mime = filePath.toLowerCase().endsWith(".jpg") || filePath.toLowerCase().endsWith(".jpeg")
+      ? "image/jpeg"
+      : "image/png";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
   } catch {
     return null;
   }
 }
 
-function chapterImages(chapterId: string): { uri: string; alt: string }[] {
+function chapterImages(chapterId: string): { uri: string; alt: string; credit: string }[] {
   const rows = db
-    .prepare("SELECT path, alt_text FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { path: string; alt_text: string }[];
+    .prepare("SELECT path, alt_text, credit FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
+    .all(chapterId) as { path: string; alt_text: string; credit: string }[];
   return rows
-    .map((r) => ({ uri: imageToDataUri(r.path), alt: r.alt_text }))
-    .filter((r): r is { uri: string; alt: string } => !!r.uri);
+    .map((r) => ({ uri: imageToDataUri(r.path), alt: r.alt_text, credit: r.credit }))
+    .filter((r): r is { uri: string; alt: string; credit: string } => !!r.uri);
 }
 
 function decorationHtml(decoration: string): string {
@@ -122,14 +125,17 @@ function buildHtml(
       </section>`
     : "";
 
+  const imageCredits: string[] = [];
+  if (ebook.cover_credit) imageCredits.push(`Capa: ${escapeHtml(ebook.cover_credit)}.`);
+
   const chapterPages = chapters
     .map((c, i) => {
       const images = chapterImages(c.id);
       const imagesHtml = images
-        .map(
-          (img) =>
-            `<div class="chapter-image-wrap"><img class="chapter-image" src="${img.uri}" alt="${escapeHtml(img.alt)}" /></div>`
-        )
+        .map((img) => {
+          if (img.credit) imageCredits.push(`Capítulo ${i + 1} — ${escapeHtml(c.title)}: ${escapeHtml(img.credit)}.`);
+          return `<div class="chapter-image-wrap"><img class="chapter-image" src="${img.uri}" alt="${escapeHtml(img.alt)}" /></div>`;
+        })
         .join("\n");
       return `
       <section class="page chapter">
@@ -141,6 +147,14 @@ function buildHtml(
       </section>`;
     })
     .join("\n");
+
+  const creditsPage =
+    imageCredits.length > 0
+      ? `<section class="page">
+          <h2 class="section-title">Créditos de Imagem</h2>
+          <div class="body-text">${imageCredits.map((c) => `<p>${c}</p>`).join("\n")}</div>
+        </section>`
+      : "";
 
   const conclusionPage = ebook.conclusion
     ? `<section class="page">
@@ -237,6 +251,7 @@ function buildHtml(
   ${chapterPages}
   ${conclusionPage}
   ${aboutPage}
+  ${creditsPage}
 </body>
 </html>`;
 }

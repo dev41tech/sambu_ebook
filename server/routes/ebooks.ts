@@ -42,9 +42,14 @@ ebooksRouter.post("/", (req, res) => {
   const customSubtitle = String(body.custom_subtitle ?? "").trim();
   const generateCover = !!body.generate_cover;
   const coverSuggestion = String(body.cover_suggestion ?? "").trim().slice(0, 500);
+  const coverSource = body.cover_source === "stock" ? "stock" : "ai";
+  const coverStockUrl = String(body.cover_stock_url ?? "").trim();
+  const coverCredit = String(body.cover_credit ?? "").trim().slice(0, 200);
+  const coverAltText = String(body.cover_alt_text ?? "").trim().slice(0, 300);
   const generateImages = !!body.generate_images;
   const imageCount = generateImages ? Number(body.image_count) : 0;
   const imageSuggestion = String(body.image_suggestion ?? "").trim().slice(0, 500);
+  const imageSource = body.image_source === "stock" ? "stock" : "ai";
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
@@ -70,14 +75,19 @@ ebooksRouter.post("/", (req, res) => {
     res.status(400).json({ error: "Quantidade de imagens internas deve estar entre 1 e 39." });
     return;
   }
+  if (generateCover && coverSource === "stock" && !coverStockUrl) {
+    res.status(400).json({ error: "Selecione uma foto do banco de imagens para a capa." });
+    return;
+  }
 
   const id = randomUUID();
   db.prepare(
     `INSERT INTO ebooks
       (id, title, subtitle, theme, audience, tone, language, template, page_count,
        author_name, author_bio, include_copyright, include_about, title_mode,
-       generate_cover, cover_suggestion, generate_images, image_count, image_suggestion, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
+       generate_cover, cover_suggestion, cover_source, cover_stock_url, cover_credit, cover_alt_text,
+       generate_images, image_count, image_suggestion, image_source, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
   ).run(
     id,
     titleMode === "manual" ? customTitle : "",
@@ -95,9 +105,14 @@ ebooksRouter.post("/", (req, res) => {
     titleMode,
     generateCover ? 1 : 0,
     generateCover ? coverSuggestion : "",
+    coverSource,
+    generateCover && coverSource === "stock" ? coverStockUrl : "",
+    generateCover && coverSource === "stock" ? coverCredit : "",
+    generateCover && coverSource === "stock" ? coverAltText : "",
     generateImages ? 1 : 0,
     generateImages ? imageCount : 0,
-    generateImages ? imageSuggestion : ""
+    generateImages ? imageSuggestion : "",
+    imageSource
   );
 
   ensureGenerationRunning(id);

@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, type VisualTemplate } from "../lib/api";
+import { api, type VisualTemplate, type PexelsPhoto } from "../lib/api";
 import TemplatePicker from "../components/TemplatePicker";
+import PexelsPicker from "../components/PexelsPicker";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
 
@@ -33,9 +34,12 @@ export default function NewEbook() {
   const [customSubtitle, setCustomSubtitle] = useState("");
   const [generateCover, setGenerateCover] = useState(false);
   const [coverSuggestion, setCoverSuggestion] = useState("");
+  const [coverSource, setCoverSource] = useState<"ai" | "stock">("ai");
+  const [selectedCoverPhoto, setSelectedCoverPhoto] = useState<PexelsPhoto | null>(null);
   const [generateImages, setGenerateImages] = useState(false);
   const [imageCount, setImageCount] = useState(3);
   const [imageSuggestion, setImageSuggestion] = useState("");
+  const [imageSource, setImageSource] = useState<"ai" | "stock">("ai");
   const [authorName, setAuthorName] = useState("");
   const [authorBio, setAuthorBio] = useState("");
   const [includeCopyright, setIncludeCopyright] = useState(false);
@@ -56,7 +60,8 @@ export default function NewEbook() {
     pageCount >= 10 &&
     pageCount <= 50 &&
     (titleMode === "ai" || customTitle.trim().length > 0) &&
-    (!generateImages || (imageCount >= 1 && imageCount <= 39));
+    (!generateImages || (imageCount >= 1 && imageCount <= 39)) &&
+    (!generateCover || coverSource === "ai" || !!selectedCoverPhoto);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -80,9 +85,14 @@ export default function NewEbook() {
         custom_subtitle: customSubtitle.trim(),
         generate_cover: generateCover,
         cover_suggestion: coverSuggestion.trim(),
+        cover_source: coverSource,
+        cover_stock_url: selectedCoverPhoto?.downloadUrl ?? "",
+        cover_credit: selectedCoverPhoto ? `Foto de ${selectedCoverPhoto.photographer} (Pexels)` : "",
+        cover_alt_text: selectedCoverPhoto?.alt ?? "",
         generate_images: generateImages,
         image_count: imageCount,
         image_suggestion: imageSuggestion.trim(),
+        image_source: imageSource,
       });
       navigate(`/ebooks/${id}/gerando`);
     } catch (err) {
@@ -215,19 +225,48 @@ export default function NewEbook() {
               Gerar capa?
             </label>
             {generateCover && (
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium text-neutral-700">Sugestão para a capa</label>
-                <textarea
-                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                  value={coverSuggestion}
-                  onChange={(e) => setCoverSuggestion(e.target.value)}
-                  placeholder="Ex.: capa moderna, profissional, tons azul e branco, título em destaque"
-                  rows={3}
-                  maxLength={500}
-                />
-                <p className="text-xs text-neutral-500">
-                  Descreva como a IA deve gerar o arquivo de imagem da capa. Gerada por IA (OpenAI) — consome sua cota da API.
-                </p>
+              <div className="space-y-3">
+                <div className="flex gap-4 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" checked={coverSource === "ai"} onChange={() => setCoverSource("ai")} />
+                    Gerar por IA
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" checked={coverSource === "stock"} onChange={() => setCoverSource("stock")} />
+                    Buscar foto (banco de imagens)
+                  </label>
+                </div>
+
+                {coverSource === "ai" ? (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-neutral-700">Sugestão para a capa</label>
+                    <textarea
+                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                      value={coverSuggestion}
+                      onChange={(e) => setCoverSuggestion(e.target.value)}
+                      placeholder="Ex.: capa moderna, profissional, tons azul e branco, título em destaque"
+                      rows={3}
+                      maxLength={500}
+                    />
+                    <p className="text-xs text-neutral-500">
+                      Descreva como a IA deve gerar o arquivo de imagem da capa. Gerada por IA (OpenAI) — consome sua
+                      cota da API.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-neutral-700">Escolha uma foto</label>
+                    <PexelsPicker
+                      initialQuery={theme || "negócios"}
+                      orientation="portrait"
+                      selectedId={selectedCoverPhoto?.id ?? null}
+                      onSelect={setSelectedCoverPhoto}
+                    />
+                    {!selectedCoverPhoto && (
+                      <p className="text-xs text-amber-700">Selecione uma foto para continuar.</p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -249,17 +288,37 @@ export default function NewEbook() {
             </label>
             {generateImages && (
               <div className="space-y-3">
+                <div className="flex gap-4 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" checked={imageSource === "ai"} onChange={() => setImageSource("ai")} />
+                    Gerar por IA
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="radio" checked={imageSource === "stock"} onChange={() => setImageSource("stock")} />
+                    Buscar fotos (banco de imagens) automaticamente
+                  </label>
+                </div>
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-neutral-700">Sugestão para as imagens</label>
+                  <label className="text-sm font-medium text-neutral-700">
+                    {imageSource === "ai" ? "Sugestão para as imagens" : "Termo de busca (opcional)"}
+                  </label>
                   <textarea
                     className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
                     value={imageSuggestion}
                     onChange={(e) => setImageSuggestion(e.target.value)}
-                    placeholder="Ex.: ilustrações minimalistas, profissionais, estilo clean, coerentes com o conteúdo"
+                    placeholder={
+                      imageSource === "ai"
+                        ? "Ex.: ilustrações minimalistas, profissionais, estilo clean, coerentes com o conteúdo"
+                        : "Ex.: escritório, reunião de equipe — deixe em branco para buscar pelo título de cada capítulo"
+                    }
                     rows={3}
                     maxLength={500}
                   />
-                  <p className="text-xs text-neutral-500">Descreva como a IA deve gerar os arquivos de imagem do e-book.</p>
+                  <p className="text-xs text-neutral-500">
+                    {imageSource === "ai"
+                      ? "Descreva como a IA deve gerar os arquivos de imagem do e-book."
+                      : "Uma foto é buscada automaticamente para cada capítulo — sem seleção manual."}
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium text-neutral-700">Quantidade de imagens internas</label>
@@ -273,8 +332,10 @@ export default function NewEbook() {
                   />
                   <p className="text-xs text-neutral-500">
                     Sugestão automática com base no tamanho do livro — ajuste como quiser (1 a 39). Distribuídas entre
-                    os capítulos, variando entre cena, conceito e composição. Gerada por IA (OpenAI) — consome sua
-                    cota da API.
+                    os capítulos.{" "}
+                    {imageSource === "ai"
+                      ? "Geradas por IA (OpenAI) — consome sua cota da API, variando entre cena, conceito e composição."
+                      : "Buscadas no banco de imagens (Pexels), uma por capítulo."}
                   </p>
                 </div>
               </div>

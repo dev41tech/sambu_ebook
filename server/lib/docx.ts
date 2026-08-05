@@ -23,6 +23,11 @@ function hex(color: string): string {
   return color.replace("#", "").toUpperCase();
 }
 
+function imageType(filePath: string): "jpg" | "png" {
+  const lower = filePath.toLowerCase();
+  return lower.endsWith(".jpg") || lower.endsWith(".jpeg") ? "jpg" : "png";
+}
+
 function imageParagraph(filePath: string, width: number, height: number): Paragraph | null {
   try {
     const buffer = fs.readFileSync(filePath);
@@ -31,7 +36,7 @@ function imageParagraph(filePath: string, width: number, height: number): Paragr
       spacing: { after: 300 },
       children: [
         new ImageRun({
-          type: "png",
+          type: imageType(filePath),
           data: buffer,
           transformation: { width, height },
         }),
@@ -49,6 +54,13 @@ function chapterImageParagraphs(chapterId: string): Paragraph[] {
   return rows
     .map((r) => imageParagraph(r.path, 420, 280))
     .filter((p): p is Paragraph => !!p);
+}
+
+function chapterImageCredits(chapterId: string): string[] {
+  const rows = db
+    .prepare("SELECT credit FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
+    .all(chapterId) as { credit: string }[];
+  return rows.map((r) => r.credit).filter(Boolean);
 }
 
 function bodyParagraphs(text: string, color: string): Paragraph[] {
@@ -76,6 +88,8 @@ export async function renderEbookDocx(
   const text = hex(t.text);
 
   const children: Paragraph[] = [];
+  const imageCredits: string[] = [];
+  if (ebook.cover_credit) imageCredits.push(`Capa: ${ebook.cover_credit}.`);
 
   if (ebook.cover_path) {
     const cover = imageParagraph(ebook.cover_path, 320, 480);
@@ -160,6 +174,9 @@ export async function renderEbookDocx(
   }
 
   chapters.forEach((c, i) => {
+    for (const credit of chapterImageCredits(c.id)) {
+      imageCredits.push(`Capítulo ${i + 1} — ${c.title}: ${credit}.`);
+    }
     children.push(
       new Paragraph({
         spacing: { after: 100 },
@@ -198,6 +215,24 @@ export async function renderEbookDocx(
         children: [new TextRun({ text: "Sobre o Autor", color: heading, bold: true })],
       }),
       ...bodyParagraphs(ebook.about_author, text)
+    );
+  }
+
+  if (imageCredits.length > 0) {
+    children.push(
+      new Paragraph({ children: [new PageBreak()] }),
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        spacing: { after: 300 },
+        children: [new TextRun({ text: "Créditos de Imagem", color: heading, bold: true })],
+      }),
+      ...imageCredits.map(
+        (c) =>
+          new Paragraph({
+            spacing: { after: 100 },
+            children: [new TextRun({ text: c, color: text, size: 18 })],
+          })
+      )
     );
   }
 

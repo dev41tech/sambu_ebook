@@ -74,6 +74,18 @@ export interface NicheIdea {
   description: string;
 }
 
+export interface PexelsPhoto {
+  id: number;
+  thumbUrl: string;
+  previewUrl: string;
+  downloadUrl: string;
+  width: number;
+  height: number;
+  photographer: string;
+  photographerUrl: string;
+  alt: string;
+}
+
 export interface NewEbookPayload {
   theme: string;
   audience: string;
@@ -90,9 +102,14 @@ export interface NewEbookPayload {
   custom_subtitle?: string;
   generate_cover?: boolean;
   cover_suggestion?: string;
+  cover_source?: "ai" | "stock";
+  cover_stock_url?: string;
+  cover_credit?: string;
+  cover_alt_text?: string;
   generate_images?: boolean;
   image_count?: number;
   image_suggestion?: string;
+  image_source?: "ai" | "stock";
 }
 
 export const api = {
@@ -102,6 +119,8 @@ export const api = {
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
   templates: () => request<VisualTemplate[]>("/ebooks/templates"),
   listIdeias: () => request<NicheIdea[]>("/ideias"),
+  searchPexels: (query: string, orientation: "portrait" | "landscape") =>
+    request<PexelsPhoto[]>(`/pexels/search?query=${encodeURIComponent(query)}&orientation=${orientation}`),
   listEbooks: () => request<EbookSummary[]>("/ebooks"),
   createEbook: (payload: NewEbookPayload) =>
     request<{ id: string }>("/ebooks", { method: "POST", body: JSON.stringify(payload) }),

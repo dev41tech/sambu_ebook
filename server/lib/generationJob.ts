@@ -13,6 +13,7 @@ import {
 import { renderEbookPdf } from "./pdf";
 import { renderEbookDocx } from "./docx";
 import { generateCoverImage, generateChapterImage } from "./images";
+import { searchPhotos, downloadPhoto } from "./pexels";
 
 const activeJobs = new Set<string>();
 
@@ -71,12 +72,21 @@ async function runJob(ebookId: string) {
     // Etapa 2: capa (opcional)
     if (row.generate_cover && !row.cover_path) {
       setStep(ebookId, "cover");
-      const cover = await generateCoverImage(ebookId, outline.title, row.theme, row.audience, row.cover_suggestion);
-      db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
-        cover.path,
-        cover.altText,
-        ebookId
-      );
+      if (row.cover_source === "stock" && row.cover_stock_url) {
+        const cover = await downloadPhoto(row.cover_stock_url, "", row.cover_alt_text || outline.title, `${ebookId}-cover`);
+        db.prepare("UPDATE ebooks SET cover_path = ?, cover_credit = ? WHERE id = ?").run(
+          cover.path,
+          row.cover_credit,
+          ebookId
+        );
+      } else {
+        const cover = await generateCoverImage(ebookId, outline.title, row.theme, row.audience, row.cover_suggestion);
+        db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
+          cover.path,
+          cover.altText,
+          ebookId
+        );
+      }
       row = getEbook(ebookId)!;
     }
 
@@ -111,19 +121,37 @@ async function runJob(ebookId: string) {
       setStep(ebookId, "images");
       for (let i = row.images_done; i < row.image_count; i++) {
         const chapter = chapters[i % chapters.length];
-        const image = await generateChapterImage(
-          ebookId,
-          `${chapter.id}-${i}`,
-          i,
-          chapter.title,
-          chapter.summary || chapter.title,
-          row.audience,
-          row.image_suggestion,
-          row.cover_suggestion
-        );
+        let path: string;
+        let altText: string;
+        let credit = "";
+        if (row.image_source === "stock") {
+          const searchQuery = row.image_suggestion.trim() || `${chapter.title} ${row.theme}`;
+          const results = await searchPhotos(searchQuery, "landscape", 1);
+          const photo = results[0];
+          if (!photo) {
+            throw new Error(`Nenhuma foto encontrada no Pexels para "${searchQuery}".`);
+          }
+          const saved = await downloadPhoto(photo.downloadUrl, photo.photographer, photo.alt, `${chapter.id}-${i}`);
+          path = saved.path;
+          altText = saved.altText;
+          credit = saved.credit;
+        } else {
+          const image = await generateChapterImage(
+            ebookId,
+            `${chapter.id}-${i}`,
+            i,
+            chapter.title,
+            chapter.summary || chapter.title,
+            row.audience,
+            row.image_suggestion,
+            row.cover_suggestion
+          );
+          path = image.path;
+          altText = image.altText;
+        }
         db.prepare(
-          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path, alt_text) VALUES (?, ?, ?, ?, ?)"
-        ).run(randomUUID(), ebookId, chapter.id, image.path, image.altText);
+          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path, alt_text, credit) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(randomUUID(), ebookId, chapter.id, path, altText, credit);
         db.prepare("UPDATE ebooks SET images_done = images_done + 1 WHERE id = ?").run(ebookId);
       }
       row = getEbook(ebookId)!;

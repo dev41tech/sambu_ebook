@@ -84,6 +84,11 @@ ensureColumn("ebooks", "cover_suggestion", "cover_suggestion TEXT NOT NULL DEFAU
 ensureColumn("ebooks", "image_suggestion", "image_suggestion TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "cover_alt_text", "cover_alt_text TEXT NOT NULL DEFAULT ''");
 ensureColumn("chapter_images", "alt_text", "alt_text TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "cover_source", "cover_source TEXT NOT NULL DEFAULT 'ai'");
+ensureColumn("ebooks", "cover_stock_url", "cover_stock_url TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "cover_credit", "cover_credit TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "image_source", "image_source TEXT NOT NULL DEFAULT 'ai'");
+ensureColumn("chapter_images", "credit", "credit TEXT NOT NULL DEFAULT ''");
 
 export type EbookStatus = "draft" | "generating" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
@@ -122,9 +127,13 @@ export interface EbookRow {
   cover_suggestion: string;
   cover_path: string | null;
   cover_alt_text: string;
+  cover_source: "ai" | "stock";
+  cover_stock_url: string;
+  cover_credit: string;
   generate_images: number;
   image_count: number;
   image_suggestion: string;
+  image_source: "ai" | "stock";
   images_done: number;
   created_at: string;
 }
@@ -145,5 +154,6 @@ export interface ChapterImageRow {
   chapter_id: string;
   path: string;
   alt_text: string;
+  credit: string;
   created_at: string;
 }
