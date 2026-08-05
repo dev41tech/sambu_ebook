@@ -6,6 +6,7 @@ import {
   generateChapter,
   generateConclusion,
   generateAboutAuthor,
+  humanizeText,
   type EbookContext,
   type Outline,
 } from "./ai";
@@ -78,7 +79,8 @@ async function runJob(ebookId: string) {
     // Etapa 3: introdução
     if (!row.intro) {
       setStep(ebookId, "intro");
-      const intro = await generateIntro(ctx, outline);
+      const draft = await generateIntro(ctx, outline);
+      const intro = await humanizeText(draft, `Introdução do ebook "${outline.title}"`, 1500);
       db.prepare("UPDATE ebooks SET intro = ? WHERE id = ?").run(intro, ebookId);
       row = getEbook(ebookId)!;
     }
@@ -92,7 +94,8 @@ async function runJob(ebookId: string) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
       setStep(ebookId, "chapter");
       const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
-      const content = await generateChapter(ctx, outline, chapter.idx, previousTitles);
+      const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
+      const content = await humanizeText(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
       db.prepare("UPDATE chapters SET content = ? WHERE id = ?").run(content, chapter.id);
       db.prepare("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = ?").run(ebookId);
     }
@@ -119,15 +122,16 @@ async function runJob(ebookId: string) {
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 4: conclusão
+    // Etapa 5: conclusão
     if (!row.conclusion) {
       setStep(ebookId, "conclusion");
-      const conclusion = await generateConclusion(ctx, outline);
+      const draft = await generateConclusion(ctx, outline);
+      const conclusion = await humanizeText(draft, `Conclusão do ebook "${outline.title}"`, 1200);
       db.prepare("UPDATE ebooks SET conclusion = ? WHERE id = ?").run(conclusion, ebookId);
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 5: sobre o autor (opcional)
+    // Etapa 5b: sobre o autor (opcional)
     if (row.include_about && row.author_name && !row.about_author) {
       setStep(ebookId, "about");
       const about = await generateAboutAuthor(row.author_name, row.author_bio, row.language);
