@@ -18,7 +18,7 @@ app.use(express.json({ limit: "2mb" }));
 const sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
   console.warn(
-    "[ebook-dias] SESSION_SECRET não definido no .env — usando um valor temporário só para esta execução."
+    "[sambu-ebooks] SESSION_SECRET não definido no .env — usando um valor temporário só para esta execução."
   );
 }
 
@@ -46,5 +46,5 @@ if (process.env.NODE_ENV === "production") {
 
 const port = Number(process.env.PORT) || 3001;
 app.listen(port, () => {
-  console.log(`[ebook-dias] servidor rodando em http://localhost:${port}`);
+  console.log(`[sambu-ebooks] servidor rodando em http://localhost:${port}`);
 });

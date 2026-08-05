@@ -19,7 +19,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <header className="border-b border-neutral-200 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-3">
           <Link to="/" className="text-lg font-semibold tracking-tight">
-            Ebook <span className="italic text-amber-700">Dias</span>
+            Sambu <span className="italic text-amber-700">Ebooks</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <Link to="/" className="text-neutral-600 hover:text-neutral-900">
