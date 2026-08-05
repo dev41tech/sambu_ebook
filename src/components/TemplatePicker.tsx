@@ -16,13 +16,31 @@ function MiniPreview({ t }: { t: VisualTemplate }) {
         <span className="pointer-events-none absolute inset-x-0 top-0 h-2" style={{ background: t.accent }} />
       )}
       {t.decoration === "rules" && (
-        <>
-          <span className="pointer-events-none absolute inset-x-2 top-2 h-px" style={{ background: t.accent }} />
-          <span className="pointer-events-none absolute inset-x-2 bottom-2 h-px" style={{ background: t.accent }} />
-        </>
+        <span className="pointer-events-none absolute inset-x-2 top-2 h-px" style={{ background: t.accent }} />
       )}
       {t.decoration === "corner_block" && (
         <span className="pointer-events-none absolute left-0 top-0 h-2 w-3/5" style={{ background: t.accent }} />
+      )}
+      {t.decoration === "bottom_bar" && (
+        <span className="pointer-events-none absolute inset-x-0 top-0 h-1" style={{ background: t.accent }} />
+      )}
+      {t.decoration === "brackets" && (
+        <>
+          <span
+            className="pointer-events-none absolute left-1.5 top-1.5 h-3 w-3 border-l-2 border-t-2"
+            style={{ borderColor: t.accent }}
+          />
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 h-3 w-3 border-r-2 border-t-2"
+            style={{ borderColor: t.accent }}
+          />
+        </>
+      )}
+      {t.decoration === "double_rule" && (
+        <span
+          className="pointer-events-none absolute inset-x-2 top-2 h-1 border-y"
+          style={{ borderColor: t.accent }}
+        />
       )}
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-3 text-center">
         <span
@@ -54,7 +72,7 @@ export default function TemplatePicker({
   onChange: (id: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
       {templates.map((t) => {
         const selected = t.id === value;
         return (

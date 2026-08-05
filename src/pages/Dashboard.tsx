@@ -47,7 +47,7 @@ export default function Dashboard() {
   }, [previewId]);
 
   return (
-    <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1fr_320px]">
+    <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1fr_440px]">
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -127,9 +127,9 @@ export default function Dashboard() {
             </>
           ) : (
             <KindleFrame>
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-                <span className="text-3xl">📖</span>
-                <p className="text-xs text-neutral-400">
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+                <span className="text-5xl">📖</span>
+                <p className="text-sm text-neutral-400">
                   {previewLoading ? "Carregando…" : "Clique em um ebook pronto para pré-visualizar aqui."}
                 </p>
               </div>

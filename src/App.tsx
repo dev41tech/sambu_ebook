@@ -4,6 +4,7 @@ import { api } from "./lib/api";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import NewEbook from "./pages/NewEbook";
+import NewEbookGrounded from "./pages/NewEbookGrounded";
 import Generating from "./pages/Generating";
 import EbookDetail from "./pages/EbookDetail";
 import Ideias from "./pages/Ideias";
@@ -28,6 +29,12 @@ function Shell({ children }: { children: React.ReactNode }) {
             </Link>
             <Link to="/ebooks/novo" className="text-neutral-600 hover:text-neutral-900">
               Criar novo
+            </Link>
+            <Link to="/ebooks/novo-tecnico" className="text-neutral-600 hover:text-neutral-900">
+              Ebooks Técnicos
+            </Link>
+            <Link to="/ebooks/novo-comportamental" className="text-neutral-600 hover:text-neutral-900">
+              Ebooks Comportamentais
             </Link>
             <Link to="/ideias" className="text-neutral-600 hover:text-neutral-900">
               Ideias de nichos
@@ -87,6 +94,22 @@ export default function App() {
         element={
           <RequireAuth>
             <NewEbook />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ebooks/novo-tecnico"
+        element={
+          <RequireAuth>
+            <NewEbookGrounded category="tecnico" />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ebooks/novo-comportamental"
+        element={
+          <RequireAuth>
+            <NewEbookGrounded category="comportamental" />
           </RequireAuth>
         }
       />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { EbookDetail } from "../lib/api";
 import { buildKindlePages } from "../lib/kindlePaginate";
+import { MarkdownBlock } from "../lib/markdownBlock";
 
 export default function KindleReader({ ebook }: { ebook: EbookDetail }) {
   const pages = useMemo(() => buildKindlePages(ebook), [ebook]);
@@ -40,25 +41,25 @@ export default function KindleReader({ ebook }: { ebook: EbookDetail }) {
               alt=""
               className="max-h-[70%] rounded-sm object-contain shadow-sm grayscale"
             />
-            <p className="font-serif text-sm font-semibold leading-snug text-neutral-800">{ebook.title}</p>
+            <p className="font-serif text-base font-semibold leading-snug text-neutral-800">{ebook.title}</p>
           </div>
         ) : (
           <>
             {page.isFirstPageOfSection && (
               <>
                 {page.sectionLabel && (
-                  <p className="mb-1.5 text-center text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-neutral-500">
+                  <p className="mb-2 text-center text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-neutral-500">
                     {page.sectionLabel}
                   </p>
                 )}
-                <h2 className="mb-4 text-center font-serif text-lg font-bold leading-snug text-neutral-900">
+                <h2 className="mb-5 text-center font-serif text-xl font-bold leading-snug text-neutral-900">
                   {page.sectionTitle}
                 </h2>
               </>
             )}
-            <div className="space-y-2.5 font-serif text-[0.72rem] leading-relaxed text-neutral-800">
+            <div className="space-y-3 font-serif text-[0.86rem] leading-relaxed text-neutral-800">
               {page.paragraphs && page.paragraphs.length > 0 ? (
-                page.paragraphs.map((p, i) => <p key={i}>{p}</p>)
+                page.paragraphs.map((p, i) => <MarkdownBlock key={i} block={p} />)
               ) : (
                 <p className="text-center italic text-neutral-400">(sem conteúdo)</p>
               )}
@@ -67,17 +68,17 @@ export default function KindleReader({ ebook }: { ebook: EbookDetail }) {
         )}
       </div>
 
-      <div className="mt-3 shrink-0 border-t border-neutral-300 pt-2">
-        <div className="flex items-center justify-between text-[0.6rem] text-neutral-500">
+      <div className="mt-4 shrink-0 border-t border-neutral-300 pt-2.5">
+        <div className="flex items-center justify-between text-[0.7rem] text-neutral-500">
           <span>
             Página {pageIndex + 1} de {pages.length}
           </span>
           <span>{percent}%</span>
         </div>
-        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-neutral-300">
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-neutral-300">
           <div className="h-full rounded-full bg-neutral-700 transition-all" style={{ width: `${percent}%` }} />
         </div>
-        <div className="mt-2.5 flex justify-between text-xs">
+        <div className="mt-3 flex justify-between text-sm">
           <button
             type="button"
             onClick={goPrev}

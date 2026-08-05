@@ -12,8 +12,12 @@ import {
 } from "./ai";
 import { renderEbookPdf } from "./pdf";
 import { renderEbookDocx } from "./docx";
+import { renderEbookEpub } from "./epub";
 import { generateCoverImage, generateChapterImage } from "./images";
 import { searchPhotos, downloadPhoto } from "./pexels";
+import { getKnowledgeContext } from "./knowledge";
+import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
+import { getRecentLearnings } from "./memory";
 
 const activeJobs = new Set<string>();
 
@@ -25,7 +29,9 @@ function setStep(id: string, step: string) {
   db.prepare("UPDATE ebooks SET current_step = ? WHERE id = ?").run(step, id);
 }
 
-function ctxFromRow(row: EbookRow): EbookContext {
+async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
+  const knowledgeContext = await getKnowledgeContext();
+  const learnings = getRecentLearnings(12).map((l) => l.content);
   return {
     theme: row.theme,
     audience: row.audience,
@@ -33,6 +39,11 @@ function ctxFromRow(row: EbookRow): EbookContext {
     language: row.language,
     pageCount: row.page_count,
     titleMode: row.title_mode as "ai" | "manual",
+    referenceMaterial: row.reference_material || null,
+    extraInstructions: row.extra_instructions || null,
+    webResearch: row.web_research || null,
+    knowledgeContext: knowledgeContext || null,
+    learnings,
   };
 }
 
@@ -41,7 +52,24 @@ async function runJob(ebookId: string) {
     let row = getEbook(ebookId);
     if (!row || row.status === "ready") return;
 
-    const ctx = ctxFromRow(row);
+    // Etapa 0: pesquisa na internet (opcional — só roda se TAVILY_API_KEY estiver
+    // configurada, e uma única vez por ebook, reaproveitado em todos os capítulos).
+    if (hasWebSearch() && !row.web_research) {
+      setStep(ebookId, "research");
+      try {
+        const results = await searchWeb(`${row.theme} ${row.audience}`.trim());
+        const formatted = formatResearch(results);
+        if (formatted) {
+          db.prepare("UPDATE ebooks SET web_research = ? WHERE id = ?").run(formatted, ebookId);
+          row = getEbook(ebookId)!;
+        }
+      } catch (err) {
+        // Pesquisa é um complemento opcional — não deve travar a geração do ebook.
+        console.warn(`[sambu-ebooks] pesquisa na internet falhou para ${ebookId}:`, err);
+      }
+    }
+
+    const ctx = await ctxFromRow(row);
 
     // Etapa 1: outline
     let outline: Outline;
@@ -119,18 +147,25 @@ async function runJob(ebookId: string) {
     // Etapa 4b: imagens internas (opcional), distribuídas entre os capítulos em sequência
     if (row.generate_images && chapters.length > 0 && row.images_done < row.image_count) {
       setStep(ebookId, "images");
+      const usedPhotoIds = new Set<number>();
       for (let i = row.images_done; i < row.image_count; i++) {
         const chapter = chapters[i % chapters.length];
         let path: string;
         let altText: string;
         let credit = "";
         if (row.image_source === "stock") {
-          const searchQuery = row.image_suggestion.trim() || `${chapter.title} ${row.theme}`;
-          const results = await searchPhotos(searchQuery, "landscape", 1);
-          const photo = results[0];
-          if (!photo) {
+          const searchQuery = row.image_suggestion.trim() || row.theme;
+          const results = await searchPhotos(searchQuery, "landscape", 8);
+          if (results.length === 0) {
             throw new Error(`Nenhuma foto encontrada no Pexels para "${searchQuery}".`);
           }
+          // O 1º colocado do Pexels às vezes vem sem nenhuma relação com a busca (ex.:
+          // "marmitas saudáveis" retornou um atleta de cadeira de rodas em 1º, mas comida
+          // de verdade do 2º ao 5º lugar). Preferimos o restante do top-8 e só usamos o 1º
+          // se não sobrar outro candidato ainda não usado no livro.
+          const pool = results.length > 1 ? results.slice(1) : results;
+          const photo = pool.find((r) => !usedPhotoIds.has(r.id)) ?? pool[0];
+          usedPhotoIds.add(photo.id);
           const saved = await downloadPhoto(photo.downloadUrl, photo.photographer, photo.alt, `${chapter.id}-${i}`);
           path = saved.path;
           altText = saved.altText;
@@ -183,10 +218,11 @@ async function runJob(ebookId: string) {
 
     const pdfPath = await renderEbookPdf(row, finalChapters);
     const docxPath = await renderEbookDocx(row, finalChapters);
+    const epubPath = await renderEbookEpub(row, finalChapters);
 
     db.prepare(
-      "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ? WHERE id = ?"
-    ).run(pdfPath, docxPath, ebookId);
+      "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?"
+    ).run(pdfPath, docxPath, epubPath, ebookId);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
     db.prepare("UPDATE ebooks SET status = 'error', error_message = ? WHERE id = ?").run(message, ebookId);

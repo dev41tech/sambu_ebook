@@ -14,6 +14,7 @@ import {
 } from "docx";
 import { db, type EbookRow } from "./db";
 import { getTemplate } from "../templates/index";
+import { parseBlocks, parseInlineSegments } from "./markdown";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const exportsDir = path.resolve(__dirname, "..", "..", "data", "exports");
@@ -63,18 +64,59 @@ function chapterImageCredits(chapterId: string): string[] {
   return rows.map((r) => r.credit).filter(Boolean);
 }
 
-function bodyParagraphs(text: string, color: string): Paragraph[] {
-  return text
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map(
-      (p) =>
+function segmentsToRuns(text: string, color: string): TextRun[] {
+  return parseInlineSegments(text).map(
+    (seg) => new TextRun({ text: seg.text, color: hex(color), bold: seg.bold, italics: seg.italic })
+  );
+}
+
+// Converte markdown (títulos #/##, **negrito**, *itálico*, listas) em parágrafos do
+// DOCX, em vez de despejar os marcadores como texto literal.
+function bodyParagraphs(raw: string, textColor: string, headingColor: string, accentColor: string): Paragraph[] {
+  const paragraphs: Paragraph[] = [];
+  for (const block of parseBlocks(raw)) {
+    if (block.type === "heading") {
+      paragraphs.push(
+        new Paragraph({
+          spacing: { before: 200, after: 120 },
+          children: [
+            new TextRun({
+              text: block.text,
+              bold: true,
+              italics: block.level === 2,
+              color: hex(block.level === 1 ? headingColor : accentColor),
+              size: block.level === 1 ? 24 : 22,
+            }),
+          ],
+        })
+      );
+    } else if (block.type === "list") {
+      block.items.forEach((item, i) => {
+        const runs = block.ordered
+          ? [new TextRun({ text: `${i + 1}. `, color: hex(textColor) }), ...segmentsToRuns(item, textColor)]
+          : segmentsToRuns(item, textColor);
+        paragraphs.push(
+          new Paragraph({
+            spacing: { after: 80 },
+            bullet: block.ordered ? undefined : { level: 0 },
+            indent: { left: 360 },
+            children: runs,
+          })
+        );
+      });
+    } else {
+      paragraphs.push(
         new Paragraph({
           spacing: { after: 200 },
-          children: [new TextRun({ text: p, color: hex(color) })],
+          children: block.lines.flatMap((line, idx) => {
+            const runs = segmentsToRuns(line, textColor);
+            return idx > 0 ? [new TextRun({ text: "", break: 1 }), ...runs] : runs;
+          }),
         })
-    );
+      );
+    }
+  }
+  return paragraphs;
 }
 
 export async function renderEbookDocx(
@@ -168,7 +210,7 @@ export async function renderEbookDocx(
         spacing: { after: 300 },
         children: [new TextRun({ text: "Introdução", color: heading, bold: true })],
       }),
-      ...bodyParagraphs(ebook.intro, text),
+      ...bodyParagraphs(ebook.intro, text, heading, accent),
       new Paragraph({ children: [new PageBreak()] })
     );
   }
@@ -190,7 +232,7 @@ export async function renderEbookDocx(
         children: [new TextRun({ text: c.title, color: heading, bold: true })],
       }),
       ...chapterImageParagraphs(c.id),
-      ...bodyParagraphs(c.content, text),
+      ...bodyParagraphs(c.content, text, heading, accent),
       new Paragraph({ children: [new PageBreak()] })
     );
   });
@@ -202,7 +244,7 @@ export async function renderEbookDocx(
         spacing: { after: 300 },
         children: [new TextRun({ text: "Conclusão", color: heading, bold: true })],
       }),
-      ...bodyParagraphs(ebook.conclusion, text)
+      ...bodyParagraphs(ebook.conclusion, text, heading, accent)
     );
   }
 
@@ -214,7 +256,7 @@ export async function renderEbookDocx(
         spacing: { after: 300 },
         children: [new TextRun({ text: "Sobre o Autor", color: heading, bold: true })],
       }),
-      ...bodyParagraphs(ebook.about_author, text)
+      ...bodyParagraphs(ebook.about_author, text, heading, accent)
     );
   }
 

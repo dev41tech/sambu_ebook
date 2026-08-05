@@ -28,6 +28,8 @@ export interface VisualTemplate {
   headingScale: number;
 }
 
+export type EbookCategory = "geral" | "tecnico" | "comportamental";
+
 export interface EbookSummary {
   id: string;
   title: string;
@@ -38,6 +40,7 @@ export interface EbookSummary {
   chapters_total: number;
   template: string;
   audio_status: "none" | "generating" | "ready" | "error";
+  category: EbookCategory;
   created_at: string;
 }
 
@@ -57,6 +60,7 @@ export interface EbookDetail extends EbookSummary {
   current_step: string | null;
   error_message: string | null;
   audio_error: string | null;
+  epub_path: string | null;
   generate_cover: number;
   cover_suggestion: string;
   cover_path: string | null;
@@ -64,7 +68,27 @@ export interface EbookDetail extends EbookSummary {
   image_count: number;
   image_suggestion: string;
   images_done: number;
+  include_about: number;
+  author_name: string;
+  reference_material: string;
+  extra_instructions: string;
   chapters: Chapter[];
+  chapter_images: ChapterImageSummary[];
+}
+
+export interface ChapterImageSummary {
+  id: string;
+  chapter_id: string;
+  alt_text: string;
+  credit: string;
+}
+
+export interface RegenerateImagePayload {
+  source: "ai" | "stock";
+  suggestion?: string;
+  stock_url?: string;
+  credit?: string;
+  alt_text?: string;
 }
 
 export interface NicheIdea {
@@ -110,6 +134,9 @@ export interface NewEbookPayload {
   image_count?: number;
   image_suggestion?: string;
   image_source?: "ai" | "stock";
+  category?: EbookCategory;
+  reference_material?: string;
+  extra_instructions?: string;
 }
 
 export const api = {
@@ -128,4 +155,25 @@ export const api = {
   deleteEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}`, { method: "DELETE" }),
   startAudiobook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/audiobook`, { method: "POST" }),
   retryEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/retry`, { method: "POST" }),
+  regenerateCover: (id: string, payload: RegenerateImagePayload) =>
+    request<{ ok: true }>(`/ebooks/${id}/cover/regenerate`, { method: "POST", body: JSON.stringify(payload) }),
+  regenerateChapterImage: (id: string, imageId: string, payload: RegenerateImagePayload) =>
+    request<{ ok: true }>(`/ebooks/${id}/images/${imageId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  sendFeedback: (id: string, feedback: string) =>
+    request<{ ok: true }>(`/ebooks/${id}/feedback`, { method: "POST", body: JSON.stringify({ feedback }) }),
+  extractReferenceUrl: (url: string) =>
+    request<{ title: string; text: string }>("/reference/url", { method: "POST", body: JSON.stringify({ url }) }),
+  extractReferencePdf: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${BASE}/reference/pdf`, { method: "POST", body: form });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({} as { error?: string }));
+      throw new Error(data.error || `Erro ${res.status}`);
+    }
+    return res.json() as Promise<{ title: string; text: string }>;
+  },
 };

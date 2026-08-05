@@ -89,9 +89,33 @@ ensureColumn("ebooks", "cover_stock_url", "cover_stock_url TEXT NOT NULL DEFAULT
 ensureColumn("ebooks", "cover_credit", "cover_credit TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "image_source", "image_source TEXT NOT NULL DEFAULT 'ai'");
 ensureColumn("chapter_images", "credit", "credit TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "epub_path", "epub_path TEXT");
+ensureColumn("ebooks", "category", "category TEXT NOT NULL DEFAULT 'geral'");
+ensureColumn("ebooks", "reference_material", "reference_material TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "extra_instructions", "extra_instructions TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "web_research", "web_research TEXT NOT NULL DEFAULT ''");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS learnings (
+    id TEXT PRIMARY KEY,
+    ebook_id TEXT REFERENCES ebooks(id) ON DELETE SET NULL,
+    category TEXT NOT NULL DEFAULT 'geral',
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+export interface LearningRow {
+  id: string;
+  ebook_id: string | null;
+  category: EbookCategory;
+  content: string;
+  created_at: string;
+}
 
 export type EbookStatus = "draft" | "generating" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
+export type EbookCategory = "geral" | "tecnico" | "comportamental";
 
 export interface EbookRow {
   id: string;
@@ -119,6 +143,7 @@ export interface EbookRow {
   current_step: string | null;
   pdf_path: string | null;
   docx_path: string | null;
+  epub_path: string | null;
   audio_path: string | null;
   audio_status: AudioStatus;
   audio_error: string | null;
@@ -135,6 +160,10 @@ export interface EbookRow {
   image_suggestion: string;
   image_source: "ai" | "stock";
   images_done: number;
+  category: EbookCategory;
+  reference_material: string;
+  extra_instructions: string;
+  web_research: string;
   created_at: string;
 }
 

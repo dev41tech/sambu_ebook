@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, type VisualTemplate, type PexelsPhoto } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { api, type VisualTemplate, type PexelsPhoto, type EbookCategory } from "../lib/api";
 import TemplatePicker from "../components/TemplatePicker";
 import PexelsPicker from "../components/PexelsPicker";
+import ReferenceMaterialPicker from "../components/ReferenceMaterialPicker";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
 
@@ -12,20 +13,32 @@ function suggestedImageCount(pages: number): number {
   if (pages <= 30) return 11;
   return 16;
 }
-const LANGUAGES = [
-  "Português (Brasil)",
-  "Português (Portugal)",
-  "Inglês",
-  "Espanhol",
-];
 
-export default function NewEbook() {
+const LANGUAGES = ["Português (Brasil)", "Português (Portugal)", "Inglês", "Espanhol"];
+
+const COPY: Record<"tecnico" | "comportamental", { eyebrow: string; title: string; hint: string; defaultTone: string }> = {
+  tecnico: {
+    eyebrow: "Ebook técnico",
+    title: "Criar ebook técnico",
+    hint: "Cole a documentação, manual, artigo técnico ou especificação que o ebook deve seguir como fonte. A IA escreve em cima desse material, sem inventar dados técnicos.",
+    defaultTone: "Técnico e direto",
+  },
+  comportamental: {
+    eyebrow: "Ebook comportamental",
+    title: "Criar ebook comportamental",
+    hint: "Cole o artigo, estudo ou material de referência sobre comportamento/psicologia que o ebook deve usar como base.",
+    defaultTone: "Motivador",
+  },
+};
+
+export default function NewEbookGrounded({ category }: { category: "tecnico" | "comportamental" }) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const copy = COPY[category];
   const [templates, setTemplates] = useState<VisualTemplate[]>([]);
-  const [theme, setTheme] = useState(() => searchParams.get("tema") ?? "");
+  const [referenceMaterial, setReferenceMaterial] = useState("");
+  const [theme, setTheme] = useState("");
   const [audience, setAudience] = useState("");
-  const [tone, setTone] = useState(TONES[0]);
+  const [tone, setTone] = useState(copy.defaultTone);
   const [language, setLanguage] = useState(LANGUAGES[0]);
   const [template, setTemplate] = useState("editorial");
   const [pageCount, setPageCount] = useState(20);
@@ -55,7 +68,13 @@ export default function NewEbook() {
     });
   }, []);
 
+  useEffect(() => {
+    setTone(copy.defaultTone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category]);
+
   const valid =
+    referenceMaterial.trim().length > 0 &&
     theme.trim().length > 0 &&
     audience.trim().length > 0 &&
     pageCount >= 10 &&
@@ -71,6 +90,9 @@ export default function NewEbook() {
     setError(null);
     try {
       const { id } = await api.createEbook({
+        category: category as EbookCategory,
+        reference_material: referenceMaterial.trim(),
+        extra_instructions: extraInstructions.trim(),
         theme: theme.trim(),
         audience: audience.trim(),
         tone,
@@ -84,7 +106,6 @@ export default function NewEbook() {
         title_mode: titleMode,
         custom_title: customTitle.trim(),
         custom_subtitle: customSubtitle.trim(),
-        extra_instructions: extraInstructions.trim(),
         generate_cover: generateCover,
         cover_suggestion: coverSuggestion.trim(),
         cover_source: coverSource,
@@ -105,19 +126,23 @@ export default function NewEbook() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <p className="text-xs font-medium uppercase tracking-widest text-neutral-500">Nova criação</p>
-      <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-        Criar novo <span className="italic text-amber-700">ebook</span>
-      </h1>
+      <p className="text-xs font-medium uppercase tracking-widest text-neutral-500">{copy.eyebrow}</p>
+      <h1 className="mt-1 text-2xl font-semibold tracking-tight">{copy.title}</h1>
+      <p className="mt-1.5 text-sm text-neutral-500">{copy.hint}</p>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-5 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+        <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-4">
+          <label className="text-sm font-medium text-neutral-800">Material de referência (obrigatório)</label>
+          <ReferenceMaterialPicker value={referenceMaterial} onChange={setReferenceMaterial} />
+        </div>
+
         <div className="space-y-2">
           <label className="text-sm font-medium text-neutral-700">Tema / Nicho</label>
           <input
             className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
             value={theme}
             onChange={(e) => setTheme(e.target.value)}
-            placeholder="ex: emagrecimento"
+            placeholder="ex: gestão de projetos ágeis"
             required
           />
         </div>
@@ -128,7 +153,7 @@ export default function NewEbook() {
             className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
             value={audience}
             onChange={(e) => setAudience(e.target.value)}
-            placeholder="ex: mulheres depois dos 40 anos"
+            placeholder="ex: gerentes de projeto iniciantes"
             rows={2}
             required
           />
@@ -208,7 +233,7 @@ export default function NewEbook() {
             className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
             value={extraInstructions}
             onChange={(e) => setExtraInstructions(e.target.value)}
-            placeholder="Ex.: dê ênfase à parte prática, use exemplos brasileiros, evite um tom acadêmico…"
+            placeholder="Ex.: dê ênfase à parte prática, evite jargão excessivo, siga a metodologia X…"
             rows={2}
             maxLength={1000}
           />
@@ -262,10 +287,6 @@ export default function NewEbook() {
                       rows={3}
                       maxLength={500}
                     />
-                    <p className="text-xs text-neutral-500">
-                      Descreva como a IA deve gerar o arquivo de imagem da capa. Gerada por IA (OpenAI) — consome sua
-                      cota da API.
-                    </p>
                   </div>
                 ) : (
                   <div className="space-y-1.5">
@@ -313,26 +334,18 @@ export default function NewEbook() {
                   </label>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-neutral-700">
-                    {imageSource === "ai" ? "Sugestão para as imagens" : "Termo de busca (opcional)"}
-                  </label>
                   <textarea
                     className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
                     value={imageSuggestion}
                     onChange={(e) => setImageSuggestion(e.target.value)}
                     placeholder={
                       imageSource === "ai"
-                        ? "Ex.: ilustrações minimalistas, profissionais, estilo clean, coerentes com o conteúdo"
-                        : "Ex.: escritório, reunião de equipe — deixe em branco para buscar pelo título de cada capítulo"
+                        ? "Sugestão de estilo para as imagens…"
+                        : "Termo de busca (opcional) — deixe em branco para buscar pelo tema"
                     }
-                    rows={3}
+                    rows={2}
                     maxLength={500}
                   />
-                  <p className="text-xs text-neutral-500">
-                    {imageSource === "ai"
-                      ? "Descreva como a IA deve gerar os arquivos de imagem do e-book."
-                      : "Uma foto é buscada automaticamente para cada capítulo — sem seleção manual."}
-                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium text-neutral-700">Quantidade de imagens internas</label>
@@ -344,13 +357,6 @@ export default function NewEbook() {
                     value={imageCount}
                     onChange={(e) => setImageCount(Number(e.target.value))}
                   />
-                  <p className="text-xs text-neutral-500">
-                    Sugestão automática com base no tamanho do livro — ajuste como quiser (1 a 39). Distribuídas entre
-                    os capítulos.{" "}
-                    {imageSource === "ai"
-                      ? "Geradas por IA (OpenAI) — consome sua cota da API, variando entre cena, conceito e composição."
-                      : "Buscadas no banco de imagens (Pexels), uma por capítulo."}
-                  </p>
                 </div>
               </div>
             )}

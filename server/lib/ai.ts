@@ -26,6 +26,58 @@ export interface EbookContext {
   customTitle?: string | null;
   customSubtitle?: string | null;
   authorContext?: string | null;
+  referenceMaterial?: string | null;
+  extraInstructions?: string | null;
+  webResearch?: string | null;
+  knowledgeContext?: string | null;
+  learnings?: string[];
+}
+
+const MAX_REFERENCE_CHARS = 9000;
+
+// Bloco de "aterramento" injetado nos prompts quando o usuário forneceu material de
+// referência (Ebooks Técnicos/Comportamentais) — o conteúdo deve se basear nesse material
+// em vez de só no conhecimento geral da IA.
+function referenceBlock(ctx: EbookContext): string {
+  const material = ctx.referenceMaterial?.trim();
+  if (!material) return "";
+  const trimmed = material.slice(0, MAX_REFERENCE_CHARS);
+  return `\nMATERIAL DE REFERÊNCIA fornecido pelo usuário — use como base principal do conteúdo. Não invente fatos, dados, estatísticas ou afirmações que contradigam ou vão muito além do que está aqui; quando precisar complementar com conhecimento geral, deixe claro que é uma explicação complementar, não parte do material original:\n"""\n${trimmed}\n"""\n`;
+}
+
+// Resultados de busca real na internet (Tavily), feitos uma vez por ebook a partir do
+// tema — usados como fonte factual/atualizada, com a fonte citada quando fizer sentido.
+function webResearchBlock(ctx: EbookContext): string {
+  const research = ctx.webResearch?.trim();
+  if (!research) return "";
+  return `\nPESQUISA NA INTERNET feita sobre o tema — use como fonte de dados e fatos atualizados, sem inventar além do que está aqui:\n"""\n${research}\n"""\n`;
+}
+
+// Conteúdo da pasta local de conhecimento (ebook-forge/knowledge/) — material que o
+// próprio usuário curou como base de conhecimento permanente do app.
+function knowledgeBlock(ctx: EbookContext): string {
+  const knowledge = ctx.knowledgeContext?.trim();
+  if (!knowledge) return "";
+  return `\nBASE DE CONHECIMENTO interna do usuário — use como referência quando for relevante ao tema:\n"""\n${knowledge}\n"""\n`;
+}
+
+// Memória de aprendizado: sugestões que o próprio usuário deixou depois de ebooks
+// anteriores, para o app melhorar de forma acumulativa a cada nova geração.
+function learningsBlock(ctx: EbookContext): string {
+  if (!ctx.learnings || ctx.learnings.length === 0) return "";
+  return `\nAPRENDIZADOS de ebooks anteriores (feedback do próprio usuário — aplique sempre que for pertinente a este ebook):\n${ctx.learnings.map((l) => `- ${l}`).join("\n")}\n`;
+}
+
+function extraInstructionsBlock(ctx: EbookContext): string {
+  const extra = ctx.extraInstructions?.trim();
+  if (!extra) return "";
+  return `\nINSTRUÇÃO EXTRA do usuário para este ebook específico: ${extra}\n`;
+}
+
+function groundingBlock(ctx: EbookContext): string {
+  return [referenceBlock(ctx), webResearchBlock(ctx), knowledgeBlock(ctx), learningsBlock(ctx), extraInstructionsBlock(ctx)]
+    .filter(Boolean)
+    .join("");
 }
 
 export interface OutlineChapter {
@@ -172,7 +224,7 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
 - Extensão alvo: ~${ctx.pageCount} páginas (aproximadamente ${ctx.pageCount * 250} palavras no total)
 - Número de capítulos: exatamente ${chapterCount}
 ${ctx.authorContext ? `- Contexto/voz do autor fornecido: ${ctx.authorContext}` : ""}
-
+${groundingBlock(ctx)}
 ${titleInstruction}
 
 Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.
@@ -199,7 +251,7 @@ export async function generateIntro(ctx: EbookContext, outline: Outline): Promis
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-
+${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -226,7 +278,7 @@ Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: $
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo ou os mesmos exemplos deles.` : "Este é o primeiro capítulo."}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-
+${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
@@ -239,7 +291,7 @@ export async function generateConclusion(ctx: EbookContext, outline: Outline): P
 ${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-
+${groundingBlock(ctx)}
 Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
   return askOpenAI(SYSTEM_PROMPT, prompt, 1200);

@@ -15,6 +15,23 @@ fs.mkdirSync(tmpRoot, { recursive: true });
 
 const activeAudioJobs = new Set<string>();
 
+// Nenhum job de audiobook sobrevive a um restart do processo (roda só em memória).
+// Se o servidor reiniciar no meio de uma geração, o registro fica travado em
+// "generating" para sempre, sem erro e sem botão de tentar de novo na tela. Ao
+// subir, qualquer ebook nesse estado é órfão — marca como erro para liberar o retry.
+function recoverStaleAudioJobs() {
+  const stale = db.prepare("SELECT id FROM ebooks WHERE audio_status = 'generating'").all() as { id: string }[];
+  for (const { id } of stale) {
+    db.prepare("UPDATE ebooks SET audio_status = 'error', audio_error = ? WHERE id = ?").run(
+      "Geração interrompida por um reinício do servidor. Clique para tentar novamente.",
+      id
+    );
+    const workDir = path.join(tmpRoot, id);
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+recoverStaleAudioJobs();
+
 function getEbook(id: string): EbookRow | undefined {
   return db.prepare("SELECT * FROM ebooks WHERE id = ?").get(id) as EbookRow | undefined;
 }
