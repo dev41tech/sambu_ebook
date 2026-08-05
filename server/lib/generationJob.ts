@@ -8,7 +8,7 @@ import {
   generateAboutAuthor,
   type EbookContext,
   type Outline,
-} from "./anthropic";
+} from "./ai";
 import { renderEbookPdf } from "./pdf";
 import { renderEbookDocx } from "./docx";
 

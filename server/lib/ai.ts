@@ -1,20 +1,20 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
-let client: Anthropic | null = null;
+let client: OpenAI | null = null;
 
-function getClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
+function getClient(): OpenAI {
+  if (!process.env.OPENAI_API_KEY) {
     throw new Error(
-      "ANTHROPIC_API_KEY não configurada. Preencha o arquivo .env (veja .env.example)."
+      "OPENAI_API_KEY não configurada. Preencha o arquivo .env (veja .env.example)."
     );
   }
   if (!client) {
-    client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   }
   return client;
 }
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
 export interface EbookContext {
   theme: string;
@@ -43,19 +43,27 @@ function chapterCountFor(pageCount: number): number {
   return Math.min(12, Math.max(3, raw));
 }
 
-async function askClaude(system: string, prompt: string, maxTokens: number): Promise<string> {
-  const anthropic = getClient();
-  const response = await anthropic.messages.create({
+async function askOpenAI(
+  system: string,
+  prompt: string,
+  maxTokens: number,
+  jsonMode = false
+): Promise<string> {
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
     model: MODEL,
     max_tokens: maxTokens,
-    system,
-    messages: [{ role: "user", content: prompt }],
+    ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt },
+    ],
   });
-  const block = response.content.find((c) => c.type === "text");
-  if (!block || block.type !== "text") {
+  const text = response.choices[0]?.message?.content;
+  if (!text) {
     throw new Error("Resposta vazia da IA.");
   }
-  return block.text.trim();
+  return text.trim();
 }
 
 function extractJson(text: string): string {
@@ -88,7 +96,7 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
 
 ${titleInstruction}
 
-Responda APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
+Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
 {
   "title": "...",
   "subtitle": "...",
@@ -97,7 +105,7 @@ Responda APENAS com um JSON válido neste formato exato, sem nenhum texto antes 
   ]
 }`;
 
-  const raw = await askClaude(SYSTEM_PROMPT, prompt, 2000);
+  const raw = await askOpenAI(SYSTEM_PROMPT, prompt, 2000, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
   if (!parsed.chapters || parsed.chapters.length === 0) {
@@ -113,7 +121,7 @@ A introdução deve apresentar o problema/desejo do leitor, gerar conexão e mos
 ${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
-  return askClaude(SYSTEM_PROMPT, prompt, 1500);
+  return askOpenAI(SYSTEM_PROMPT, prompt, 1500);
 }
 
 export async function generateChapter(
@@ -131,7 +139,7 @@ Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: $
 ${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo deles.` : "Este é o primeiro capítulo."}
 
 Escreva aproximadamente ${wordsPerChapter} palavras, com parágrafos bem estruturados, exemplos práticos e, quando fizer sentido, uma pequena lista ou dica em destaque. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
-  return askClaude(SYSTEM_PROMPT, prompt, 4000);
+  return askOpenAI(SYSTEM_PROMPT, prompt, 4000);
 }
 
 export async function generateConclusion(ctx: EbookContext, outline: Outline): Promise<string> {
@@ -139,7 +147,7 @@ export async function generateConclusion(ctx: EbookContext, outline: Outline): P
 ${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}. Termine com um chamado à ação prático para o leitor aplicar o que aprendeu.
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
-  return askClaude(SYSTEM_PROMPT, prompt, 1200);
+  return askOpenAI(SYSTEM_PROMPT, prompt, 1200);
 }
 
 export async function generateAboutAuthor(
@@ -150,5 +158,5 @@ export async function generateAboutAuthor(
   const prompt = `Escreva uma seção "Sobre o Autor" para um ebook, em ${language}, para o autor "${authorName}".
 ${authorBio ? `Use como base esta informação fornecida pelo autor, sem inventar credenciais além dela: "${authorBio}"` : "O autor não forneceu bio — escreva algo genérico e breve, sem inventar credenciais específicas (formação, prêmios, cargos)."}
 Escreva de 60 a 120 palavras, em terceira pessoa. Responda apenas com o texto final.`;
-  return askClaude(SYSTEM_PROMPT, prompt, 500);
+  return askOpenAI(SYSTEM_PROMPT, prompt, 500);
 }
