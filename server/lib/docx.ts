@@ -6,12 +6,13 @@ import {
   Packer,
   Paragraph,
   TextRun,
+  ImageRun,
   HeadingLevel,
   AlignmentType,
   PageBreak,
   BorderStyle,
 } from "docx";
-import type { EbookRow } from "./db";
+import { db, type EbookRow } from "./db";
 import { getTemplate } from "../templates/index";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,34 @@ fs.mkdirSync(exportsDir, { recursive: true });
 
 function hex(color: string): string {
   return color.replace("#", "").toUpperCase();
+}
+
+function imageParagraph(filePath: string, size: number): Paragraph | null {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    return new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 300 },
+      children: [
+        new ImageRun({
+          type: "png",
+          data: buffer,
+          transformation: { width: size, height: size },
+        }),
+      ],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function chapterImageParagraphs(chapterId: string): Paragraph[] {
+  const rows = db
+    .prepare("SELECT path FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
+    .all(chapterId) as { path: string }[];
+  return rows
+    .map((r) => imageParagraph(r.path, 320))
+    .filter((p): p is Paragraph => !!p);
 }
 
 function bodyParagraphs(text: string, color: string): Paragraph[] {
@@ -38,7 +67,7 @@ function bodyParagraphs(text: string, color: string): Paragraph[] {
 
 export async function renderEbookDocx(
   ebook: EbookRow,
-  chapters: { title: string; content: string }[]
+  chapters: { id: string; title: string; content: string }[]
 ): Promise<string> {
   const t = getTemplate(ebook.template);
   const year = new Date().getFullYear();
@@ -47,6 +76,11 @@ export async function renderEbookDocx(
   const text = hex(t.text);
 
   const children: Paragraph[] = [];
+
+  if (ebook.cover_path) {
+    const cover = imageParagraph(ebook.cover_path, 380);
+    if (cover) children.push(cover);
+  }
 
   children.push(
     new Paragraph({
@@ -138,6 +172,7 @@ export async function renderEbookDocx(
         spacing: { after: 300 },
         children: [new TextRun({ text: c.title, color: heading, bold: true })],
       }),
+      ...chapterImageParagraphs(c.id),
       ...bodyParagraphs(c.content, text),
       new Paragraph({ children: [new PageBreak()] })
     );

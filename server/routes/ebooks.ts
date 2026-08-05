@@ -10,6 +10,7 @@ export const ebooksRouter = Router();
 
 const TEMPLATE_IDS = new Set(VISUAL_TEMPLATES.map((t) => t.id));
 const TONES = new Set(["Motivador", "Técnico e direto", "Descontraído", "Formal"]);
+const COVER_STYLES = new Set(["Ilustração digital", "Fotorrealista", "Minimalista", "Colorido e vibrante"]);
 
 ebooksRouter.get("/templates", (_req, res) => {
   res.json(VISUAL_TEMPLATES);
@@ -40,6 +41,10 @@ ebooksRouter.post("/", (req, res) => {
   const titleMode = body.title_mode === "manual" ? "manual" : "ai";
   const customTitle = String(body.custom_title ?? "").trim();
   const customSubtitle = String(body.custom_subtitle ?? "").trim();
+  const generateCover = !!body.generate_cover;
+  const coverStyle = String(body.cover_style ?? "Ilustração digital");
+  const generateImages = !!body.generate_images;
+  const imageCount = generateImages ? Number(body.image_count) : 0;
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
@@ -61,13 +66,22 @@ ebooksRouter.post("/", (req, res) => {
     res.status(400).json({ error: "Informe o título manual ou deixe a IA gerar." });
     return;
   }
+  if (generateCover && !COVER_STYLES.has(coverStyle)) {
+    res.status(400).json({ error: "Estilo de capa inválido." });
+    return;
+  }
+  if (generateImages && (!Number.isFinite(imageCount) || imageCount < 1 || imageCount > 39)) {
+    res.status(400).json({ error: "Quantidade de imagens internas deve estar entre 1 e 39." });
+    return;
+  }
 
   const id = randomUUID();
   db.prepare(
     `INSERT INTO ebooks
       (id, title, subtitle, theme, audience, tone, language, template, page_count,
-       author_name, author_bio, include_copyright, include_about, title_mode, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
+       author_name, author_bio, include_copyright, include_about, title_mode,
+       generate_cover, cover_style, generate_images, image_count, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
   ).run(
     id,
     titleMode === "manual" ? customTitle : "",
@@ -82,11 +96,25 @@ ebooksRouter.post("/", (req, res) => {
     authorBio,
     includeCopyright ? 1 : 0,
     includeAbout ? 1 : 0,
-    titleMode
+    titleMode,
+    generateCover ? 1 : 0,
+    generateCover || generateImages ? coverStyle : "",
+    generateImages ? 1 : 0,
+    generateImages ? imageCount : 0
   );
 
   ensureGenerationRunning(id);
   res.status(201).json({ id });
+});
+
+ebooksRouter.post("/:id/retry", (req, res) => {
+  const row = loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  if (row.status === "error") {
+    db.prepare("UPDATE ebooks SET status = 'generating', error_message = NULL WHERE id = ?").run(row.id);
+  }
+  ensureGenerationRunning(row.id);
+  res.json({ ok: true });
 });
 
 function loadEbookOr404(id: string, res: import("express").Response): EbookRow | null {
@@ -116,6 +144,16 @@ ebooksRouter.delete("/:id", (req, res) => {
   }
   db.prepare("DELETE FROM ebooks WHERE id = ?").run(row.id);
   res.json({ ok: true });
+});
+
+ebooksRouter.get("/:id/cover", (req, res) => {
+  const row = loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  if (!row.cover_path || !fs.existsSync(row.cover_path)) {
+    res.status(404).json({ error: "Capa ainda não disponível." });
+    return;
+  }
+  res.sendFile(row.cover_path);
 });
 
 ebooksRouter.get("/:id/pdf", (req, res) => {

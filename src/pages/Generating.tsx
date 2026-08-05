@@ -4,8 +4,10 @@ import { api, type EbookDetail } from "../lib/api";
 
 const STEP_LABEL: Record<string, string> = {
   outline: "Planejando a estrutura do seu ebook…",
+  cover: "Gerando a arte da capa…",
   intro: "Escrevendo a introdução…",
   chapter: "Escrevendo o próximo capítulo…",
+  images: "Gerando as imagens internas…",
   conclusion: "Amarrando a conclusão…",
   about: "Escrevendo a seção Sobre o Autor…",
   export: "Montando o PDF e o DOCX finais…",
@@ -16,16 +18,16 @@ export default function Generating() {
   const navigate = useNavigate();
   const [ebook, setEbook] = useState<EbookDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const cancelledRef = useRef(false);
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-
+  function startPolling() {
     async function tick() {
+      if (!id) return;
       try {
-        const data = await api.getEbook(id!);
-        if (cancelled) return;
+        const data = await api.getEbook(id);
+        if (cancelledRef.current) return;
         setEbook(data);
         if (data.status === "ready") {
           navigate(`/ebooks/${id}`);
@@ -37,24 +39,52 @@ export default function Generating() {
         }
         pollRef.current = window.setTimeout(tick, 2500);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Erro ao consultar progresso.");
+        if (!cancelledRef.current) setError(err instanceof Error ? err.message : "Erro ao consultar progresso.");
       }
     }
-
     tick();
+  }
+
+  useEffect(() => {
+    if (!id) return;
+    cancelledRef.current = false;
+    startPolling();
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       if (pollRef.current) window.clearTimeout(pollRef.current);
     };
-  }, [id, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  async function handleRetry() {
+    if (!id) return;
+    setRetrying(true);
+    try {
+      await api.retryEbook(id);
+      setError(null);
+      startPolling();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível reiniciar a geração.");
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   const chaptersTotal = ebook?.chapters_total ?? 0;
   const chaptersDone = ebook?.chapters_done ?? 0;
-  const stepsBeforeChapters = 2; // outline + intro
-  const stepsAfterChapters = 2; // conclusion + export
+  const hasCover = !!ebook?.generate_cover;
+  const hasImages = !!ebook?.generate_images;
+  const stepsBeforeChapters = 2 + (hasCover ? 1 : 0); // outline + intro (+ capa)
+  const stepsAfterChapters = 2 + (hasImages ? 1 : 0); // conclusion + export (+ imagens)
   const totalSteps = stepsBeforeChapters + Math.max(chaptersTotal, 1) + stepsAfterChapters;
+  const imagesFraction = hasImages && ebook && ebook.image_count > 0 ? ebook.images_done / ebook.image_count : 0;
   const doneSteps =
-    (chaptersTotal > 0 ? 1 : 0) + (ebook?.intro ? 1 : 0) + chaptersDone + (ebook?.conclusion ? 1 : 0);
+    (chaptersTotal > 0 ? 1 : 0) +
+    (hasCover ? (ebook?.cover_path ? 1 : 0) : 0) +
+    (ebook?.intro ? 1 : 0) +
+    chaptersDone +
+    imagesFraction +
+    (ebook?.conclusion ? 1 : 0);
   const percent = Math.min(100, Math.round((doneSteps / totalSteps) * 100));
 
   return (
@@ -69,10 +99,11 @@ export default function Generating() {
           <div className="space-y-3">
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
             <button
-              onClick={() => window.location.reload()}
-              className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+              onClick={handleRetry}
+              disabled={retrying}
+              className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
             >
-              Tentar novamente
+              {retrying ? "Reiniciando…" : "Tentar novamente"}
             </button>
           </div>
         ) : (

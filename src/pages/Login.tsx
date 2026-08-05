@@ -27,7 +27,7 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-4">
       <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-8 shadow-sm">
         <h1 className="text-2xl font-semibold tracking-tight">
-          Ebook <span className="italic text-amber-700">Forge</span>
+          Ebook <span className="italic text-amber-700">Dias</span>
         </h1>
         <p className="mt-1 text-sm text-neutral-500">Acesso restrito — uso pessoal.</p>
 

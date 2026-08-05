@@ -54,7 +54,31 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_chapters_ebook ON chapters(ebook_id);
+
+  CREATE TABLE IF NOT EXISTS chapter_images (
+    id TEXT PRIMARY KEY,
+    ebook_id TEXT NOT NULL REFERENCES ebooks(id) ON DELETE CASCADE,
+    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chapter_images_chapter ON chapter_images(chapter_id);
 `);
+
+function ensureColumn(table: string, column: string, ddl: string) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
+ensureColumn("ebooks", "generate_cover", "generate_cover INTEGER NOT NULL DEFAULT 0");
+ensureColumn("ebooks", "cover_style", "cover_style TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "cover_path", "cover_path TEXT");
+ensureColumn("ebooks", "generate_images", "generate_images INTEGER NOT NULL DEFAULT 0");
+ensureColumn("ebooks", "image_count", "image_count INTEGER NOT NULL DEFAULT 0");
+ensureColumn("ebooks", "images_done", "images_done INTEGER NOT NULL DEFAULT 0");
 
 export type EbookStatus = "draft" | "generating" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
@@ -88,6 +112,12 @@ export interface EbookRow {
   audio_path: string | null;
   audio_status: AudioStatus;
   audio_error: string | null;
+  generate_cover: number;
+  cover_style: string;
+  cover_path: string | null;
+  generate_images: number;
+  image_count: number;
+  images_done: number;
   created_at: string;
 }
 
@@ -99,4 +129,12 @@ export interface ChapterRow {
   summary: string;
   content: string;
   audio_path: string | null;
+}
+
+export interface ChapterImageRow {
+  id: string;
+  ebook_id: string;
+  chapter_id: string;
+  path: string;
+  created_at: string;
 }

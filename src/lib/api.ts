@@ -57,6 +57,11 @@ export interface EbookDetail extends EbookSummary {
   current_step: string | null;
   error_message: string | null;
   audio_error: string | null;
+  generate_cover: number;
+  cover_path: string | null;
+  generate_images: number;
+  image_count: number;
+  images_done: number;
   chapters: Chapter[];
 }
 
@@ -81,6 +86,10 @@ export interface NewEbookPayload {
   title_mode: "ai" | "manual";
   custom_title?: string;
   custom_subtitle?: string;
+  generate_cover?: boolean;
+  cover_style?: string;
+  generate_images?: boolean;
+  image_count?: number;
 }
 
 export const api = {
@@ -96,4 +105,5 @@ export const api = {
   getEbook: (id: string) => request<EbookDetail>(`/ebooks/${id}`),
   deleteEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}`, { method: "DELETE" }),
   startAudiobook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/audiobook`, { method: "POST" }),
+  retryEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/retry`, { method: "POST" }),
 };

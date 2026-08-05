@@ -11,6 +11,7 @@ import {
 } from "./ai";
 import { renderEbookPdf } from "./pdf";
 import { renderEbookDocx } from "./docx";
+import { generateCoverImage, generateChapterImage } from "./images";
 
 const activeJobs = new Set<string>();
 
@@ -66,7 +67,15 @@ async function runJob(ebookId: string) {
       outline = JSON.parse(row.outline_json);
     }
 
-    // Etapa 2: introdução
+    // Etapa 2: capa (opcional)
+    if (row.generate_cover && !row.cover_path) {
+      setStep(ebookId, "cover");
+      const coverPath = await generateCoverImage(ebookId, outline.title, row.theme, row.cover_style);
+      db.prepare("UPDATE ebooks SET cover_path = ? WHERE id = ?").run(coverPath, ebookId);
+      row = getEbook(ebookId)!;
+    }
+
+    // Etapa 3: introdução
     if (!row.intro) {
       setStep(ebookId, "intro");
       const intro = await generateIntro(ctx, outline);
@@ -74,10 +83,10 @@ async function runJob(ebookId: string) {
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 3: capítulos, um de cada vez
+    // Etapa 4: capítulos, um de cada vez
     const chapters = db
       .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(ebookId) as { id: string; idx: number; title: string; content: string }[];
+      .all(ebookId) as { id: string; idx: number; title: string; summary: string; content: string }[];
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
@@ -89,6 +98,26 @@ async function runJob(ebookId: string) {
     }
 
     row = getEbook(ebookId)!;
+
+    // Etapa 4b: imagens internas (opcional), distribuídas entre os capítulos em sequência
+    if (row.generate_images && chapters.length > 0 && row.images_done < row.image_count) {
+      setStep(ebookId, "images");
+      for (let i = row.images_done; i < row.image_count; i++) {
+        const chapter = chapters[i % chapters.length];
+        const imagePath = await generateChapterImage(
+          ebookId,
+          `${chapter.id}-${i}`,
+          chapter.title,
+          chapter.summary || chapter.title,
+          row.cover_style
+        );
+        db.prepare(
+          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path) VALUES (?, ?, ?, ?)"
+        ).run(randomUUID(), ebookId, chapter.id, imagePath);
+        db.prepare("UPDATE ebooks SET images_done = images_done + 1 WHERE id = ?").run(ebookId);
+      }
+      row = getEbook(ebookId)!;
+    }
 
     // Etapa 4: conclusão
     if (!row.conclusion) {
@@ -111,7 +140,7 @@ async function runJob(ebookId: string) {
     row = getEbook(ebookId)!;
     const finalChapters = db
       .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(ebookId) as { title: string; content: string }[];
+      .all(ebookId) as { id: string; title: string; content: string }[];
 
     const pdfPath = await renderEbookPdf(row, finalChapters);
     const docxPath = await renderEbookDocx(row, finalChapters);

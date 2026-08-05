@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
-import type { EbookRow } from "./db";
+import { db, type EbookRow } from "./db";
 import { getTemplate } from "../templates/index";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,22 @@ function paragraphs(text: string): string {
     .join("\n");
 }
 
+function imageToDataUri(filePath: string): string | null {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    return `data:image/png;base64,${buffer.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+function chapterImages(chapterId: string): string[] {
+  const rows = db
+    .prepare("SELECT path FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
+    .all(chapterId) as { path: string }[];
+  return rows.map((r) => imageToDataUri(r.path)).filter((u): u is string => !!u);
+}
+
 function decorationHtml(decoration: string): string {
   switch (decoration) {
     case "thin_border":
@@ -58,15 +74,17 @@ function decorationHtml(decoration: string): string {
 
 function buildHtml(
   ebook: EbookRow,
-  chapters: { title: string; content: string }[]
+  chapters: { id: string; title: string; content: string }[]
 ): string {
   const t = getTemplate(ebook.template);
   const year = new Date().getFullYear();
 
+  const coverImageUri = ebook.cover_path ? imageToDataUri(ebook.cover_path) : null;
+
   const coverPage = `
-    <section class="page cover">
-      ${decorationHtml(t.decoration)}
-      <div class="cover-inner">
+    <section class="page cover" ${coverImageUri ? `style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;"` : ""}>
+      ${coverImageUri ? `<div class="cover-scrim"></div>` : decorationHtml(t.decoration)}
+      <div class="cover-inner${coverImageUri ? " with-image" : ""}">
         <p class="eyebrow">${escapeHtml(ebook.theme)}</p>
         <h1 class="cover-title">${escapeHtml(ebook.title)}</h1>
         ${ebook.subtitle ? `<p class="cover-subtitle">${escapeHtml(ebook.subtitle)}</p>` : ""}
@@ -92,15 +110,20 @@ function buildHtml(
     : "";
 
   const chapterPages = chapters
-    .map(
-      (c, i) => `
+    .map((c, i) => {
+      const images = chapterImages(c.id);
+      const imagesHtml = images
+        .map((uri) => `<img class="chapter-image" src="${uri}" alt="" />`)
+        .join("\n");
+      return `
       <section class="page chapter">
         ${decorationHtml(t.decoration)}
         <p class="chapter-eyebrow">Capítulo ${i + 1}</p>
         <h2 class="chapter-title">${escapeHtml(c.title)}</h2>
+        ${imagesHtml}
         <div class="body-text">${paragraphs(c.content)}</div>
-      </section>`
-    )
+      </section>`;
+    })
     .join("\n");
 
   const conclusionPage = ebook.conclusion
@@ -141,7 +164,18 @@ function buildHtml(
   .deco-corner { position: absolute; top: 0; left: 0; height: 6mm; width: 40mm; background: ${t.accent}; }
 
   .cover { display: flex; align-items: center; justify-content: center; text-align: center; }
+  .cover-scrim {
+    position: absolute; inset: 0;
+    background: linear-gradient(to top, ${t.pageBg} 0%, rgba(0,0,0,0.28) 45%, rgba(0,0,0,0.15) 100%);
+  }
   .cover-inner { position: relative; z-index: 1; }
+  .cover-inner.with-image .cover-title, .cover-inner.with-image .cover-subtitle, .cover-inner.with-image .cover-author {
+    text-shadow: 0 1px 8px rgba(0,0,0,0.35);
+  }
+  .chapter-image {
+    display: block; width: 100%; max-height: 70mm; object-fit: cover;
+    border-radius: 3mm; margin: 0 0 5mm;
+  }
   .eyebrow, .chapter-eyebrow {
     text-transform: uppercase; letter-spacing: 0.16em; font-size: 9pt;
     color: ${t.accent}; font-family: ${t.headingFont};
@@ -178,7 +212,7 @@ function buildHtml(
 
 export async function renderEbookPdf(
   ebook: EbookRow,
-  chapters: { title: string; content: string }[]
+  chapters: { id: string; title: string; content: string }[]
 ): Promise<string> {
   const html = buildHtml(ebook, chapters);
   const browser = await puppeteer.launch({
@@ -187,9 +221,9 @@ export async function renderEbookPdf(
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    await page.setContent(html, { waitUntil: "load", timeout: 120000 });
     const outPath = path.join(exportsDir, `${ebook.id}.pdf`);
-    await page.pdf({ path: outPath, printBackground: true, preferCSSPageSize: true });
+    await page.pdf({ path: outPath, printBackground: true, preferCSSPageSize: true, timeout: 120000 });
     return outPath;
   } finally {
     await browser.close();

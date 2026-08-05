@@ -45,6 +45,16 @@ export default function EbookDetail() {
     }
   }
 
+  async function handleRetry() {
+    if (!id) return;
+    try {
+      await api.retryEbook(id);
+      navigate(`/ebooks/${id}/gerando`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível reiniciar a geração.");
+    }
+  }
+
   async function handleDelete() {
     if (!id || !ebook) return;
     if (!window.confirm(`Excluir "${ebook.title}"? Essa ação não pode ser desfeita.`)) return;
@@ -57,16 +67,31 @@ export default function EbookDetail() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <div>
-        <p className="text-xs font-medium uppercase tracking-widest text-neutral-500">{ebook.theme}</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">{ebook.title || ebook.theme}</h1>
-        {ebook.subtitle && <p className="mt-1 text-neutral-600">{ebook.subtitle}</p>}
+      <div className="flex items-start gap-5">
+        {ebook.status === "ready" && ebook.cover_path && (
+          <img
+            src={`/api/ebooks/${ebook.id}/cover`}
+            alt="Capa do ebook"
+            className="h-32 w-24 shrink-0 rounded-md border border-neutral-200 object-cover shadow-sm"
+          />
+        )}
+        <div>
+          <p className="text-xs font-medium uppercase tracking-widest text-neutral-500">{ebook.theme}</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{ebook.title || ebook.theme}</h1>
+          {ebook.subtitle && <p className="mt-1 text-neutral-600">{ebook.subtitle}</p>}
+        </div>
       </div>
 
       {ebook.status === "error" && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           <p className="font-medium">A geração deste ebook falhou.</p>
           <p className="mt-1">{ebook.error_message || "Erro desconhecido."}</p>
+          <button
+            onClick={handleRetry}
+            className="mt-3 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+          >
+            Tentar novamente
+          </button>
         </div>
       )}
 
