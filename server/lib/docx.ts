@@ -23,7 +23,7 @@ function hex(color: string): string {
   return color.replace("#", "").toUpperCase();
 }
 
-function imageParagraph(filePath: string, size: number): Paragraph | null {
+function imageParagraph(filePath: string, width: number, height: number): Paragraph | null {
   try {
     const buffer = fs.readFileSync(filePath);
     return new Paragraph({
@@ -33,7 +33,7 @@ function imageParagraph(filePath: string, size: number): Paragraph | null {
         new ImageRun({
           type: "png",
           data: buffer,
-          transformation: { width: size, height: size },
+          transformation: { width, height },
         }),
       ],
     });
@@ -47,7 +47,7 @@ function chapterImageParagraphs(chapterId: string): Paragraph[] {
     .prepare("SELECT path FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
     .all(chapterId) as { path: string }[];
   return rows
-    .map((r) => imageParagraph(r.path, 320))
+    .map((r) => imageParagraph(r.path, 420, 280))
     .filter((p): p is Paragraph => !!p);
 }
 
@@ -78,7 +78,7 @@ export async function renderEbookDocx(
   const children: Paragraph[] = [];
 
   if (ebook.cover_path) {
-    const cover = imageParagraph(ebook.cover_path, 380);
+    const cover = imageParagraph(ebook.cover_path, 320, 480);
     if (cover) children.push(cover);
   }
 

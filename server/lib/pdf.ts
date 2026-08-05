@@ -81,10 +81,21 @@ function buildHtml(
 
   const coverImageUri = ebook.cover_path ? imageToDataUri(ebook.cover_path) : null;
 
-  const coverPage = `
-    <section class="page cover" ${coverImageUri ? `style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;"` : ""}>
-      ${coverImageUri ? `<div class="cover-scrim"></div>` : decorationHtml(t.decoration)}
-      <div class="cover-inner${coverImageUri ? " with-image" : ""}">
+  const coverPage = coverImageUri
+    ? `
+    <section class="page cover cover-photo" style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;">
+      <div class="cover-panel">
+        <p class="eyebrow eyebrow-light">${escapeHtml(ebook.theme)}</p>
+        <div class="cover-rule"></div>
+        <h1 class="cover-title cover-title-light">${escapeHtml(ebook.title)}</h1>
+        ${ebook.subtitle ? `<p class="cover-subtitle cover-subtitle-light">${escapeHtml(ebook.subtitle)}</p>` : ""}
+        ${ebook.author_name ? `<p class="cover-author cover-author-light">${escapeHtml(ebook.author_name)}</p>` : ""}
+      </div>
+    </section>`
+    : `
+    <section class="page cover">
+      ${decorationHtml(t.decoration)}
+      <div class="cover-inner">
         <p class="eyebrow">${escapeHtml(ebook.theme)}</p>
         <h1 class="cover-title">${escapeHtml(ebook.title)}</h1>
         ${ebook.subtitle ? `<p class="cover-subtitle">${escapeHtml(ebook.subtitle)}</p>` : ""}
@@ -113,7 +124,7 @@ function buildHtml(
     .map((c, i) => {
       const images = chapterImages(c.id);
       const imagesHtml = images
-        .map((uri) => `<img class="chapter-image" src="${uri}" alt="" />`)
+        .map((uri) => `<div class="chapter-image-wrap"><img class="chapter-image" src="${uri}" alt="" /></div>`)
         .join("\n");
       return `
       <section class="page chapter">
@@ -163,18 +174,30 @@ function buildHtml(
   .deco-rule-bottom { position: absolute; bottom: 12mm; left: 16mm; right: 16mm; height: 0.5mm; background: ${t.accent}; }
   .deco-corner { position: absolute; top: 0; left: 0; height: 6mm; width: 40mm; background: ${t.accent}; }
 
-  .cover { display: flex; align-items: center; justify-content: center; text-align: center; }
-  .cover-scrim {
-    position: absolute; inset: 0;
-    background: linear-gradient(to top, ${t.pageBg} 0%, rgba(0,0,0,0.28) 45%, rgba(0,0,0,0.15) 100%);
-  }
+  .cover { display: flex; align-items: center; justify-content: center; text-align: center; padding: 18mm 16mm; }
   .cover-inner { position: relative; z-index: 1; }
-  .cover-inner.with-image .cover-title, .cover-inner.with-image .cover-subtitle, .cover-inner.with-image .cover-author {
-    text-shadow: 0 1px 8px rgba(0,0,0,0.35);
+
+  .cover-photo { padding: 0; display: block; }
+  .cover-panel {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 14mm 14mm 16mm;
+    text-align: left;
+    background: linear-gradient(to top, rgba(10,10,10,0.86) 0%, rgba(10,10,10,0.86) 62%, rgba(10,10,10,0) 100%);
+  }
+  .cover-rule { width: 14mm; height: 0.6mm; background: ${t.accent}; margin: 3mm 0 4mm; }
+  .eyebrow-light { color: ${t.accent}; }
+  .cover-title-light { color: #ffffff; }
+  .cover-subtitle-light { color: rgba(255,255,255,0.86); }
+  .cover-author-light { color: rgba(255,255,255,0.7); }
+
+  .chapter-image-wrap {
+    margin: 0 0 5mm; padding: 2mm; background: ${t.pageBg};
+    border: 1px solid ${t.accent}30; border-radius: 1.5mm;
+    box-shadow: 0 1mm 3mm rgba(0,0,0,0.08);
   }
   .chapter-image {
-    display: block; width: 100%; max-height: 70mm; object-fit: cover;
-    border-radius: 3mm; margin: 0 0 5mm;
+    display: block; width: 100%; max-height: 62mm; object-fit: cover;
+    border-radius: 1mm;
   }
   .eyebrow, .chapter-eyebrow {
     text-transform: uppercase; letter-spacing: 0.16em; font-size: 9pt;
@@ -188,6 +211,9 @@ function buildHtml(
   }
   .cover-subtitle { font-size: 13pt; color: ${t.text}; margin: 0 0 8mm; }
   .cover-author { font-size: 11pt; color: ${t.accent}; margin-top: 10mm; }
+  .cover-panel .cover-title { margin-top: 0; font-size: ${32 * t.headingScale}pt; }
+  .cover-panel .cover-subtitle { margin-bottom: 5mm; }
+  .cover-panel .cover-author { margin-top: 5mm; font-size: 10pt; letter-spacing: 0.04em; }
 
   .section-title, .chapter-title {
     font-family: ${t.headingFont}; color: ${t.heading};
