@@ -6,6 +6,7 @@ import session from "express-session";
 import FileStoreFactory from "session-file-store";
 import { authRouter } from "./routes/auth";
 import { ebooksRouter } from "./routes/ebooks";
+import { ideiasRouter } from "./routes/ideias";
 import { requireAuth } from "./lib/requireAuth";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,7 @@ app.use(
 
 app.use("/api/auth", authRouter);
 app.use("/api/ebooks", requireAuth, ebooksRouter);
+app.use("/api/ideias", requireAuth, ideiasRouter);
 
 if (process.env.NODE_ENV === "production") {
   const distDir = path.resolve(__dirname, "..", "dist");

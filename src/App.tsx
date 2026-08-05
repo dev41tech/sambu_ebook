@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import NewEbook from "./pages/NewEbook";
 import Generating from "./pages/Generating";
 import EbookDetail from "./pages/EbookDetail";
+import Ideias from "./pages/Ideias";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -26,6 +27,9 @@ function Shell({ children }: { children: React.ReactNode }) {
             </Link>
             <Link to="/ebooks/novo" className="text-neutral-600 hover:text-neutral-900">
               Criar novo
+            </Link>
+            <Link to="/ideias" className="text-neutral-600 hover:text-neutral-900">
+              Ideias de nichos
             </Link>
             <button onClick={handleLogout} className="text-neutral-500 hover:text-neutral-900">
               Sair
@@ -98,6 +102,14 @@ export default function App() {
         element={
           <RequireAuth>
             <EbookDetail />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ideias"
+        element={
+          <RequireAuth>
+            <Ideias />
           </RequireAuth>
         }
       />

@@ -60,6 +60,13 @@ export interface EbookDetail extends EbookSummary {
   chapters: Chapter[];
 }
 
+export interface NicheIdea {
+  id: string;
+  category: string;
+  name: string;
+  description: string;
+}
+
 export interface NewEbookPayload {
   theme: string;
   audience: string;
@@ -82,6 +89,7 @@ export const api = {
     request<{ ok: true }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
   templates: () => request<VisualTemplate[]>("/ebooks/templates"),
+  listIdeias: () => request<NicheIdea[]>("/ideias"),
   listEbooks: () => request<EbookSummary[]>("/ebooks"),
   createEbook: (payload: NewEbookPayload) =>
     request<{ id: string }>("/ebooks", { method: "POST", body: JSON.stringify(payload) }),

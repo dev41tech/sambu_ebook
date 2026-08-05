@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, type VisualTemplate } from "../lib/api";
 import TemplatePicker from "../components/TemplatePicker";
 
@@ -13,8 +13,9 @@ const LANGUAGES = [
 
 export default function NewEbook() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [templates, setTemplates] = useState<VisualTemplate[]>([]);
-  const [theme, setTheme] = useState("");
+  const [theme, setTheme] = useState(() => searchParams.get("tema") ?? "");
   const [audience, setAudience] = useState("");
   const [tone, setTone] = useState(TONES[0]);
   const [language, setLanguage] = useState(LANGUAGES[0]);
