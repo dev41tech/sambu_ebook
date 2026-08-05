@@ -71,7 +71,7 @@ async function runJob(ebookId: string) {
     // Etapa 2: capa (opcional)
     if (row.generate_cover && !row.cover_path) {
       setStep(ebookId, "cover");
-      const coverPath = await generateCoverImage(ebookId, outline.title, row.theme, row.cover_style);
+      const coverPath = await generateCoverImage(ebookId, outline.title, row.theme, row.cover_suggestion);
       db.prepare("UPDATE ebooks SET cover_path = ? WHERE id = ?").run(coverPath, ebookId);
       row = getEbook(ebookId)!;
     }
@@ -112,7 +112,7 @@ async function runJob(ebookId: string) {
           `${chapter.id}-${i}`,
           chapter.title,
           chapter.summary || chapter.title,
-          row.cover_style
+          row.image_suggestion
         );
         db.prepare(
           "INSERT INTO chapter_images (id, ebook_id, chapter_id, path) VALUES (?, ?, ?, ?)"

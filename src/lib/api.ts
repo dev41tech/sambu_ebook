@@ -58,9 +58,11 @@ export interface EbookDetail extends EbookSummary {
   error_message: string | null;
   audio_error: string | null;
   generate_cover: number;
+  cover_suggestion: string;
   cover_path: string | null;
   generate_images: number;
   image_count: number;
+  image_suggestion: string;
   images_done: number;
   chapters: Chapter[];
 }
@@ -87,9 +89,10 @@ export interface NewEbookPayload {
   custom_title?: string;
   custom_subtitle?: string;
   generate_cover?: boolean;
-  cover_style?: string;
+  cover_suggestion?: string;
   generate_images?: boolean;
   image_count?: number;
+  image_suggestion?: string;
 }
 
 export const api = {

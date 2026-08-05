@@ -10,7 +10,6 @@ const LANGUAGES = [
   "Inglês",
   "Espanhol",
 ];
-const COVER_STYLES = ["Ilustração digital", "Fotorrealista", "Minimalista", "Colorido e vibrante"];
 
 export default function NewEbook() {
   const navigate = useNavigate();
@@ -26,9 +25,10 @@ export default function NewEbook() {
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
   const [generateCover, setGenerateCover] = useState(false);
-  const [coverStyle, setCoverStyle] = useState(COVER_STYLES[0]);
+  const [coverSuggestion, setCoverSuggestion] = useState("");
   const [generateImages, setGenerateImages] = useState(false);
   const [imageCount, setImageCount] = useState(3);
+  const [imageSuggestion, setImageSuggestion] = useState("");
   const [authorName, setAuthorName] = useState("");
   const [authorBio, setAuthorBio] = useState("");
   const [includeCopyright, setIncludeCopyright] = useState(false);
@@ -72,9 +72,10 @@ export default function NewEbook() {
         custom_title: customTitle.trim(),
         custom_subtitle: customSubtitle.trim(),
         generate_cover: generateCover,
-        cover_style: coverStyle,
+        cover_suggestion: coverSuggestion.trim(),
         generate_images: generateImages,
         image_count: imageCount,
+        image_suggestion: imageSuggestion.trim(),
       });
       navigate(`/ebooks/${id}/gerando`);
     } catch (err) {
@@ -195,51 +196,78 @@ export default function NewEbook() {
           <p className="text-xs text-neutral-500">Mínimo 10, máximo 50 páginas.</p>
         </div>
 
-        <div className="space-y-3 rounded-md border border-neutral-200 p-4">
-          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
-            <input type="checkbox" checked={generateCover} onChange={(e) => setGenerateCover(e.target.checked)} />
-            Gerar capa?
-          </label>
-          {generateCover && (
-            <div className="space-y-2">
-              <label className="text-sm text-neutral-700">Estilo da capa</label>
-              <select
-                className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                value={coverStyle}
-                onChange={(e) => setCoverStyle(e.target.value)}
-              >
-                {COVER_STYLES.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-neutral-500">Gerada por IA (OpenAI) — consome sua cota da API.</p>
-            </div>
-          )}
+        <div className="rounded-md border border-neutral-200 p-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr] sm:gap-6">
+            <label className="flex items-start gap-2 text-sm font-medium text-neutral-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={generateCover}
+                onChange={(e) => setGenerateCover(e.target.checked)}
+              />
+              Gerar capa?
+            </label>
+            {generateCover && (
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-neutral-700">Sugestão para a capa</label>
+                <textarea
+                  className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                  value={coverSuggestion}
+                  onChange={(e) => setCoverSuggestion(e.target.value)}
+                  placeholder="Ex.: capa moderna, profissional, tons azul e branco, título em destaque"
+                  rows={3}
+                  maxLength={500}
+                />
+                <p className="text-xs text-neutral-500">
+                  Descreva como a IA deve gerar o arquivo de imagem da capa. Gerada por IA (OpenAI) — consome sua cota da API.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="space-y-3 rounded-md border border-neutral-200 p-4">
-          <label className="flex items-center gap-2 text-sm font-medium text-neutral-700">
-            <input type="checkbox" checked={generateImages} onChange={(e) => setGenerateImages(e.target.checked)} />
-            Gerar imagens dentro do ebook?
-          </label>
-          {generateImages && (
-            <div className="space-y-2">
-              <label className="text-sm text-neutral-700">Quantidade de imagens internas</label>
+        <div className="rounded-md border border-neutral-200 p-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr] sm:gap-6">
+            <label className="flex items-start gap-2 text-sm font-medium text-neutral-700">
               <input
-                type="number"
-                min={1}
-                max={39}
-                className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                value={imageCount}
-                onChange={(e) => setImageCount(Number(e.target.value))}
+                type="checkbox"
+                className="mt-0.5"
+                checked={generateImages}
+                onChange={(e) => setGenerateImages(e.target.checked)}
               />
-              <p className="text-xs text-neutral-500">
-                Mínimo 1, máximo 39. Distribuídas entre os capítulos. Gerada por IA (OpenAI) — consome sua cota da API.
-              </p>
-            </div>
-          )}
+              Gerar imagens dentro do ebook?
+            </label>
+            {generateImages && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-neutral-700">Sugestão para as imagens</label>
+                  <textarea
+                    className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                    value={imageSuggestion}
+                    onChange={(e) => setImageSuggestion(e.target.value)}
+                    placeholder="Ex.: ilustrações minimalistas, profissionais, estilo clean, coerentes com o conteúdo"
+                    rows={3}
+                    maxLength={500}
+                  />
+                  <p className="text-xs text-neutral-500">Descreva como a IA deve gerar os arquivos de imagem do e-book.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-neutral-700">Quantidade de imagens internas</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={39}
+                    className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                    value={imageCount}
+                    onChange={(e) => setImageCount(Number(e.target.value))}
+                  />
+                  <p className="text-xs text-neutral-500">
+                    Mínimo 1, máximo 39. Distribuídas entre os capítulos. Gerada por IA (OpenAI) — consome sua cota da API.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">

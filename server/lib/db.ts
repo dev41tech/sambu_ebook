@@ -79,6 +79,8 @@ ensureColumn("ebooks", "cover_path", "cover_path TEXT");
 ensureColumn("ebooks", "generate_images", "generate_images INTEGER NOT NULL DEFAULT 0");
 ensureColumn("ebooks", "image_count", "image_count INTEGER NOT NULL DEFAULT 0");
 ensureColumn("ebooks", "images_done", "images_done INTEGER NOT NULL DEFAULT 0");
+ensureColumn("ebooks", "cover_suggestion", "cover_suggestion TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "image_suggestion", "image_suggestion TEXT NOT NULL DEFAULT ''");
 
 export type EbookStatus = "draft" | "generating" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
@@ -114,9 +116,11 @@ export interface EbookRow {
   audio_error: string | null;
   generate_cover: number;
   cover_style: string;
+  cover_suggestion: string;
   cover_path: string | null;
   generate_images: number;
   image_count: number;
+  image_suggestion: string;
   images_done: number;
   created_at: string;
 }

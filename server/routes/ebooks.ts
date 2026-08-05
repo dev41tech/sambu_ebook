@@ -10,7 +10,6 @@ export const ebooksRouter = Router();
 
 const TEMPLATE_IDS = new Set(VISUAL_TEMPLATES.map((t) => t.id));
 const TONES = new Set(["Motivador", "Técnico e direto", "Descontraído", "Formal"]);
-const COVER_STYLES = new Set(["Ilustração digital", "Fotorrealista", "Minimalista", "Colorido e vibrante"]);
 
 ebooksRouter.get("/templates", (_req, res) => {
   res.json(VISUAL_TEMPLATES);
@@ -42,9 +41,10 @@ ebooksRouter.post("/", (req, res) => {
   const customTitle = String(body.custom_title ?? "").trim();
   const customSubtitle = String(body.custom_subtitle ?? "").trim();
   const generateCover = !!body.generate_cover;
-  const coverStyle = String(body.cover_style ?? "Ilustração digital");
+  const coverSuggestion = String(body.cover_suggestion ?? "").trim().slice(0, 500);
   const generateImages = !!body.generate_images;
   const imageCount = generateImages ? Number(body.image_count) : 0;
+  const imageSuggestion = String(body.image_suggestion ?? "").trim().slice(0, 500);
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
@@ -66,10 +66,6 @@ ebooksRouter.post("/", (req, res) => {
     res.status(400).json({ error: "Informe o título manual ou deixe a IA gerar." });
     return;
   }
-  if (generateCover && !COVER_STYLES.has(coverStyle)) {
-    res.status(400).json({ error: "Estilo de capa inválido." });
-    return;
-  }
   if (generateImages && (!Number.isFinite(imageCount) || imageCount < 1 || imageCount > 39)) {
     res.status(400).json({ error: "Quantidade de imagens internas deve estar entre 1 e 39." });
     return;
@@ -80,8 +76,8 @@ ebooksRouter.post("/", (req, res) => {
     `INSERT INTO ebooks
       (id, title, subtitle, theme, audience, tone, language, template, page_count,
        author_name, author_bio, include_copyright, include_about, title_mode,
-       generate_cover, cover_style, generate_images, image_count, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
+       generate_cover, cover_suggestion, generate_images, image_count, image_suggestion, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
   ).run(
     id,
     titleMode === "manual" ? customTitle : "",
@@ -98,9 +94,10 @@ ebooksRouter.post("/", (req, res) => {
     includeAbout ? 1 : 0,
     titleMode,
     generateCover ? 1 : 0,
-    generateCover || generateImages ? coverStyle : "",
+    generateCover ? coverSuggestion : "",
     generateImages ? 1 : 0,
-    generateImages ? imageCount : 0
+    generateImages ? imageCount : 0,
+    generateImages ? imageSuggestion : ""
   );
 
   ensureGenerationRunning(id);

@@ -23,17 +23,9 @@ function getClient(): OpenAI {
 
 const IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
-function styleHint(style: string): string {
-  switch (style) {
-    case "Fotorrealista":
-      return "fotografia realista, iluminação natural, alta definição";
-    case "Minimalista":
-      return "estilo minimalista, poucas cores, muito espaço em branco, composição limpa";
-    case "Colorido e vibrante":
-      return "cores vibrantes e saturadas, estilo moderno e energético";
-    default:
-      return "ilustração digital estilizada, cores harmoniosas";
-  }
+function styleHint(suggestion: string): string {
+  const trimmed = suggestion.trim();
+  return trimmed || "ilustração digital estilizada, cores harmoniosas";
 }
 
 async function requestImage(prompt: string): Promise<Buffer> {
@@ -63,9 +55,9 @@ export async function generateCoverImage(
   ebookId: string,
   title: string,
   theme: string,
-  style: string
+  suggestion: string
 ): Promise<string> {
-  const prompt = `Capa de ebook profissional e atraente para um livro sobre "${theme}", com o clima do título "${title}". ${styleHint(style)}. Composição vertical, sem nenhum texto ou letras na imagem, apenas elementos visuais e simbólicos relacionados ao tema.`;
+  const prompt = `Capa de ebook profissional e atraente para um livro sobre "${theme}", com o clima do título "${title}". Siga esta orientação de estilo dada pelo autor: ${styleHint(suggestion)}. Composição vertical, sem nenhum texto ou letras na imagem, apenas elementos visuais e simbólicos relacionados ao tema.`;
   const buffer = await requestImage(prompt);
   const outPath = path.join(imagesDir, `${ebookId}-cover.png`);
   fs.writeFileSync(outPath, buffer);
@@ -77,9 +69,9 @@ export async function generateChapterImage(
   chapterId: string,
   chapterTitle: string,
   chapterSummary: string,
-  style: string
+  suggestion: string
 ): Promise<string> {
-  const prompt = `Ilustração para um capítulo de ebook chamado "${chapterTitle}", que fala sobre: ${chapterSummary}. ${styleHint(style)}. Sem nenhum texto ou letras na imagem.`;
+  const prompt = `Ilustração para um capítulo de ebook chamado "${chapterTitle}", que fala sobre: ${chapterSummary}. Siga esta orientação de estilo dada pelo autor: ${styleHint(suggestion)}. Sem nenhum texto ou letras na imagem.`;
   const buffer = await requestImage(prompt);
   const outPath = path.join(imagesDir, `${ebookId}-${chapterId}.png`);
   fs.writeFileSync(outPath, buffer);
