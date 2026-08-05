@@ -60,6 +60,7 @@ db.exec(`
     ebook_id TEXT NOT NULL REFERENCES ebooks(id) ON DELETE CASCADE,
     chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
     path TEXT NOT NULL,
+    alt_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -81,6 +82,8 @@ ensureColumn("ebooks", "image_count", "image_count INTEGER NOT NULL DEFAULT 0");
 ensureColumn("ebooks", "images_done", "images_done INTEGER NOT NULL DEFAULT 0");
 ensureColumn("ebooks", "cover_suggestion", "cover_suggestion TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "image_suggestion", "image_suggestion TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "cover_alt_text", "cover_alt_text TEXT NOT NULL DEFAULT ''");
+ensureColumn("chapter_images", "alt_text", "alt_text TEXT NOT NULL DEFAULT ''");
 
 export type EbookStatus = "draft" | "generating" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
@@ -118,6 +121,7 @@ export interface EbookRow {
   cover_style: string;
   cover_suggestion: string;
   cover_path: string | null;
+  cover_alt_text: string;
   generate_images: number;
   image_count: number;
   image_suggestion: string;
@@ -140,5 +144,6 @@ export interface ChapterImageRow {
   ebook_id: string;
   chapter_id: string;
   path: string;
+  alt_text: string;
   created_at: string;
 }

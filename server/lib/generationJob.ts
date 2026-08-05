@@ -71,8 +71,12 @@ async function runJob(ebookId: string) {
     // Etapa 2: capa (opcional)
     if (row.generate_cover && !row.cover_path) {
       setStep(ebookId, "cover");
-      const coverPath = await generateCoverImage(ebookId, outline.title, row.theme, row.cover_suggestion);
-      db.prepare("UPDATE ebooks SET cover_path = ? WHERE id = ?").run(coverPath, ebookId);
+      const cover = await generateCoverImage(ebookId, outline.title, row.theme, row.audience, row.cover_suggestion);
+      db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
+        cover.path,
+        cover.altText,
+        ebookId
+      );
       row = getEbook(ebookId)!;
     }
 
@@ -107,16 +111,19 @@ async function runJob(ebookId: string) {
       setStep(ebookId, "images");
       for (let i = row.images_done; i < row.image_count; i++) {
         const chapter = chapters[i % chapters.length];
-        const imagePath = await generateChapterImage(
+        const image = await generateChapterImage(
           ebookId,
           `${chapter.id}-${i}`,
+          i,
           chapter.title,
           chapter.summary || chapter.title,
-          row.image_suggestion
+          row.audience,
+          row.image_suggestion,
+          row.cover_suggestion
         );
         db.prepare(
-          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path) VALUES (?, ?, ?, ?)"
-        ).run(randomUUID(), ebookId, chapter.id, imagePath);
+          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path, alt_text) VALUES (?, ?, ?, ?, ?)"
+        ).run(randomUUID(), ebookId, chapter.id, image.path, image.altText);
         db.prepare("UPDATE ebooks SET images_done = images_done + 1 WHERE id = ?").run(ebookId);
       }
       row = getEbook(ebookId)!;

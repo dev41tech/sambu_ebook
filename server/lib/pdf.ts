@@ -48,11 +48,13 @@ function imageToDataUri(filePath: string): string | null {
   }
 }
 
-function chapterImages(chapterId: string): string[] {
+function chapterImages(chapterId: string): { uri: string; alt: string }[] {
   const rows = db
-    .prepare("SELECT path FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { path: string }[];
-  return rows.map((r) => imageToDataUri(r.path)).filter((u): u is string => !!u);
+    .prepare("SELECT path, alt_text FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
+    .all(chapterId) as { path: string; alt_text: string }[];
+  return rows
+    .map((r) => ({ uri: imageToDataUri(r.path), alt: r.alt_text }))
+    .filter((r): r is { uri: string; alt: string } => !!r.uri);
 }
 
 function decorationHtml(decoration: string): string {
@@ -83,7 +85,7 @@ function buildHtml(
 
   const coverPage = coverImageUri
     ? `
-    <section class="page cover cover-photo" style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;">
+    <section class="page cover cover-photo" role="img" aria-label="${escapeHtml(ebook.cover_alt_text || ebook.title)}" style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;">
       <div class="cover-panel">
         <p class="eyebrow eyebrow-light">${escapeHtml(ebook.theme)}</p>
         <div class="cover-rule"></div>
@@ -124,7 +126,10 @@ function buildHtml(
     .map((c, i) => {
       const images = chapterImages(c.id);
       const imagesHtml = images
-        .map((uri) => `<div class="chapter-image-wrap"><img class="chapter-image" src="${uri}" alt="" /></div>`)
+        .map(
+          (img) =>
+            `<div class="chapter-image-wrap"><img class="chapter-image" src="${img.uri}" alt="${escapeHtml(img.alt)}" /></div>`
+        )
         .join("\n");
       return `
       <section class="page chapter">

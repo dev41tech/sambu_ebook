@@ -4,6 +4,13 @@ import { api, type VisualTemplate } from "../lib/api";
 import TemplatePicker from "../components/TemplatePicker";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
+
+function suggestedImageCount(pages: number): number {
+  if (pages <= 10) return 4;
+  if (pages <= 20) return 8;
+  if (pages <= 30) return 11;
+  return 16;
+}
 const LANGUAGES = [
   "Português (Brasil)",
   "Português (Portugal)",
@@ -233,7 +240,10 @@ export default function NewEbook() {
                 type="checkbox"
                 className="mt-0.5"
                 checked={generateImages}
-                onChange={(e) => setGenerateImages(e.target.checked)}
+                onChange={(e) => {
+                  setGenerateImages(e.target.checked);
+                  if (e.target.checked) setImageCount(suggestedImageCount(pageCount));
+                }}
               />
               Gerar imagens dentro do ebook?
             </label>
@@ -262,7 +272,9 @@ export default function NewEbook() {
                     onChange={(e) => setImageCount(Number(e.target.value))}
                   />
                   <p className="text-xs text-neutral-500">
-                    Mínimo 1, máximo 39. Distribuídas entre os capítulos. Gerada por IA (OpenAI) — consome sua cota da API.
+                    Sugestão automática com base no tamanho do livro — ajuste como quiser (1 a 39). Distribuídas entre
+                    os capítulos, variando entre cena, conceito e composição. Gerada por IA (OpenAI) — consome sua
+                    cota da API.
                   </p>
                 </div>
               </div>
