@@ -14,17 +14,27 @@ fs.mkdirSync(previewsDir, { recursive: true });
 
 export function findChrome(): string {
   const candidates = [
+    // CHROME_PATH primeiro: em container (Docker/EasyPanel) é a única pista correta.
+    process.env.CHROME_PATH,
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    process.env.CHROME_PATH,
   ].filter(Boolean) as string[];
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;
   }
   throw new Error(
-    "Não encontrei o Google Chrome instalado. Defina CHROME_PATH no .env apontando para o chrome.exe."
+    "Não encontrei o Chrome/Chromium. Defina CHROME_PATH apontando para o executável " +
+      "(ex.: /usr/bin/chromium no container, chrome.exe no Windows)."
   );
 }
+
+// Sem --no-sandbox o Chromium recusa subir rodando como root, que é o caso do container
+// (o Dockerfile não define USER). --disable-dev-shm-usage evita o crash causado pelo
+// /dev/shm de 64MB padrão do Docker em documentos grandes.
+export const CHROME_LAUNCH_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"];
 
 // Ebooks técnicos usam um layout mais sóbrio (sem selo decorativo, sem capitular) —
 // mais perto de um livro informativo/acadêmico. Os demais usam o layout literário.
@@ -362,6 +372,7 @@ async function renderPdfFile(
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
     headless: true,
+    args: CHROME_LAUNCH_ARGS,
   });
   try {
     const page = await browser.newPage();
@@ -516,7 +527,7 @@ export async function renderPageThumbnails(
   fs.mkdirSync(dir, { recursive: true });
 
   const html = buildHtml(ebook, chapters);
-  const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true });
+  const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true, args: CHROME_LAUNCH_ARGS });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 700, height: 1000 });

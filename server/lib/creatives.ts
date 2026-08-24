@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
-import { findChrome } from "./pdf";
+import { findChrome, CHROME_LAUNCH_ARGS } from "./pdf";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml } from "./markdown";
 
@@ -115,7 +115,7 @@ export async function renderCreative(
   const imageDataUri = imageToDataUri(baseImagePath);
   const html = buildHtml(creative, imageDataUri, brandName);
 
-  const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true });
+  const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true, args: CHROME_LAUNCH_ARGS });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: dims.width, height: dims.height, deviceScaleFactor: 1 });
