@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+covers
+knowledge
+.git
+.env
+.env.local
+.claude
+*.log
