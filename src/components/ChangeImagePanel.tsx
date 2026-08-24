@@ -1,5 +1,6 @@
 import { useState } from "react";
 import PexelsPicker from "./PexelsPicker";
+import LocalCoverPicker from "./LocalCoverPicker";
 import type { PexelsPhoto, RegenerateImagePayload } from "../lib/api";
 
 export default function ChangeImagePanel({
@@ -9,6 +10,7 @@ export default function ChangeImagePanel({
   error,
   onSubmit,
   onCancel,
+  allowLocal,
 }: {
   orientation: "portrait" | "landscape";
   defaultQuery: string;
@@ -16,21 +18,25 @@ export default function ChangeImagePanel({
   error: string | null;
   onSubmit: (payload: RegenerateImagePayload) => void;
   onCancel: () => void;
+  allowLocal?: boolean;
 }) {
-  const [source, setSource] = useState<"ai" | "stock">("ai");
+  const [source, setSource] = useState<"ai" | "stock" | "local">("ai");
   const [suggestion, setSuggestion] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState<PexelsPhoto | null>(null);
+  const [selectedLocalFile, setSelectedLocalFile] = useState<string | null>(null);
 
   function handleSubmit() {
     if (source === "ai") {
       onSubmit({ source: "ai", suggestion: suggestion.trim() });
-    } else if (selectedPhoto) {
+    } else if (source === "stock" && selectedPhoto) {
       onSubmit({
         source: "stock",
         stock_url: selectedPhoto.downloadUrl,
         alt_text: selectedPhoto.alt,
         credit: `Foto de ${selectedPhoto.photographer} (Pexels)`,
       });
+    } else if (source === "local" && selectedLocalFile) {
+      onSubmit({ source: "local", local_file: selectedLocalFile });
     }
   }
 
@@ -51,9 +57,18 @@ export default function ChangeImagePanel({
         >
           Banco de imagens
         </button>
+        {allowLocal && (
+          <button
+            type="button"
+            onClick={() => setSource("local")}
+            className={`rounded-full px-3 py-1 ${source === "local" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-600"}`}
+          >
+            Minha imagem
+          </button>
+        )}
       </div>
 
-      {source === "ai" ? (
+      {source === "ai" && (
         <textarea
           value={suggestion}
           onChange={(e) => setSuggestion(e.target.value)}
@@ -61,7 +76,8 @@ export default function ChangeImagePanel({
           placeholder="Orientação para a nova imagem (opcional)"
           className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
         />
-      ) : (
+      )}
+      {source === "stock" && (
         <PexelsPicker
           initialQuery={defaultQuery}
           orientation={orientation}
@@ -69,6 +85,7 @@ export default function ChangeImagePanel({
           onSelect={setSelectedPhoto}
         />
       )}
+      {source === "local" && <LocalCoverPicker selected={selectedLocalFile} onSelect={setSelectedLocalFile} />}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -76,7 +93,9 @@ export default function ChangeImagePanel({
         <button
           type="button"
           onClick={handleSubmit}
-          disabled={busy || (source === "stock" && !selectedPhoto)}
+          disabled={
+            busy || (source === "stock" && !selectedPhoto) || (source === "local" && !selectedLocalFile)
+          }
           className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
         >
           {busy ? "Aplicando…" : "Usar esta imagem"}

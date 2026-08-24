@@ -3,14 +3,16 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 import { db, type EbookRow } from "./db";
-import { getTemplate } from "../templates/index";
+import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const exportsDir = path.resolve(__dirname, "..", "..", "data", "exports");
 fs.mkdirSync(exportsDir, { recursive: true });
+const previewsDir = path.resolve(__dirname, "..", "..", "data", "previews");
+fs.mkdirSync(previewsDir, { recursive: true });
 
-function findChrome(): string {
+export function findChrome(): string {
   const candidates = [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
@@ -22,6 +24,30 @@ function findChrome(): string {
   throw new Error(
     "Não encontrei o Google Chrome instalado. Defina CHROME_PATH no .env apontando para o chrome.exe."
   );
+}
+
+// Ebooks técnicos usam um layout mais sóbrio (sem selo decorativo, sem capitular) —
+// mais perto de um livro informativo/acadêmico. Os demais usam o layout literário.
+function isPlainInformative(ebook: EbookRow): boolean {
+  return ebook.category === "tecnico";
+}
+
+const ROMAN_NUMERALS: [number, string][] = [
+  [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
+  [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
+  [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"],
+];
+
+function toRoman(num: number): string {
+  let n = num;
+  let result = "";
+  for (const [value, symbol] of ROMAN_NUMERALS) {
+    while (n >= value) {
+      result += symbol;
+      n -= value;
+    }
+  }
+  return result;
 }
 
 function imageToDataUri(filePath: string): string | null {
@@ -72,17 +98,27 @@ function decorationHtml(decoration: string): string {
   }
 }
 
-function buildHtml(
+export function buildHtml(
   ebook: EbookRow,
   chapters: { id: string; title: string; content: string }[]
 ): string {
-  const t = getTemplate(ebook.template);
+  const t = BOOK_TEMPLATE;
   const year = new Date().getFullYear();
+  const isProfessional = isPlainInformative(ebook);
 
   const coverImageUri = ebook.cover_path ? imageToDataUri(ebook.cover_path) : null;
+  // Capa importada pelo usuário (upload próprio) já é um design pronto — o app não deve
+  // sobrepor título/subtítulo por cima, senão duplica/atropela o que a pessoa já criou.
+  // Só compomos texto por cima de capas geradas por IA ou de banco de imagens (fotos
+  // "cruas", pensadas desde o início para receber esse texto por cima).
+  const isImportedCover = ebook.cover_source === "local";
 
   const coverPage = coverImageUri
-    ? `
+    ? isImportedCover
+      ? `
+    <section class="page cover cover-photo" role="img" aria-label="${escapeAttr(ebook.cover_alt_text || ebook.title)}" style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;">
+    </section>`
+      : `
     <section class="page cover cover-photo" role="img" aria-label="${escapeAttr(ebook.cover_alt_text || ebook.title)}" style="background-image:url('${coverImageUri}');background-size:cover;background-position:center;">
       <div class="cover-panel">
         <p class="eyebrow eyebrow-light">${escapeHtml(ebook.theme)}</p>
@@ -132,13 +168,16 @@ function buildHtml(
           return `<div class="chapter-image-wrap"><img class="chapter-image" src="${img.uri}" alt="${escapeAttr(img.alt)}" /></div>`;
         })
         .join("\n");
+      const heading = isProfessional
+        ? `<h2 class="chapter-title chapter-title-plain">${i + 1}. ${escapeHtml(c.title)}</h2>`
+        : `<div class="chapter-badge"><span>${toRoman(i + 1)}</span></div>
+        <h2 class="chapter-title">${escapeHtml(c.title)}</h2>`;
       return `
       <section class="page chapter">
-        ${decorationHtml(t.decoration)}
-        <p class="chapter-eyebrow">Capítulo ${i + 1}</p>
-        <h2 class="chapter-title">${escapeHtml(c.title)}</h2>
+        ${isProfessional ? "" : decorationHtml(t.decoration)}
+        ${heading}
         ${imagesHtml}
-        <div class="body-text">${renderMarkdownToHtml(c.content)}</div>
+        <div class="body-text${isProfessional ? "" : " drop-cap"}">${renderMarkdownToHtml(c.content)}</div>
       </section>`;
     })
     .join("\n");
@@ -170,16 +209,27 @@ function buildHtml(
 <head>
 <meta charset="utf-8" />
 <style>
-  @page { size: A5; margin: 0; }
+  /* background aqui garante que a folha inteira tenha a cor de fundo do livro mesmo
+     quando uma seção termina antes do fim da página física (senão sobra branco). */
+  @page { size: A5; margin: 0; background: ${t.pageBg}; }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: ${t.bodyFont}; color: ${t.text}; }
+  /* Fundo de página como base do documento inteiro — quando a última página física de
+     uma seção termina antes do fim da folha, essa cor "vaza" por trás em vez de deixar
+     um vazio branco (a seção .page não estica pra preencher a página inteira sozinha). */
+  body { margin: 0; font-family: ${t.bodyFont}; color: ${t.text}; background: ${t.pageBg}; }
   .page {
     position: relative;
-    width: 148mm; height: 210mm;
+    width: 148mm; min-height: 210mm;
     padding: 18mm 16mm;
     background: ${t.pageBg};
     page-break-after: always;
-    overflow: hidden;
+    overflow: visible;
+    /* "clone" garante que CADA página física de uma seção que transborda (não só a
+       primeira/última) receba o padding completo — sem isso, o Chrome tira o padding
+       inferior das páginas intermediárias e o texto flui até a borda da folha, por cima
+       do rodapé. */
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
   }
   .deco-border { position: absolute; inset: 6mm; border: 1px solid ${t.accent}; pointer-events: none; }
   .deco-left { position: absolute; top: 0; bottom: 0; left: 0; width: 5mm; background: ${t.accent}; }
@@ -193,7 +243,7 @@ function buildHtml(
   .deco-drule-top { position: absolute; top: 10mm; left: 16mm; right: 16mm; height: 1.6mm; border-top: 0.4mm solid ${t.accent}; border-bottom: 0.4mm solid ${t.accent}; }
 
   .cover { display: flex; align-items: center; justify-content: center; text-align: center; padding: 18mm 16mm; }
-  .cover-inner { position: relative; z-index: 1; }
+  .cover-inner { position: relative; z-index: 1; max-width: 100%; }
 
   .cover-photo { padding: 0; display: block; }
   .cover-panel {
@@ -212,6 +262,7 @@ function buildHtml(
     margin: 0 0 5mm; padding: 2mm; background: ${t.pageBg};
     border: 1px solid ${t.accent}30; border-radius: 1.5mm;
     box-shadow: 0 1mm 3mm rgba(0,0,0,0.08);
+    break-inside: avoid;
   }
   .chapter-image {
     display: block; width: 100%; max-height: 62mm; object-fit: cover;
@@ -221,11 +272,30 @@ function buildHtml(
     text-transform: uppercase; letter-spacing: 0.16em; font-size: 9pt;
     color: ${t.accent}; font-family: ${t.headingFont};
   }
+  .chapter-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 17mm; height: 10mm; margin: 0 0 4mm;
+    border: 0.4mm solid ${t.accent}; border-radius: 50%;
+  }
+  .chapter-badge span {
+    font-family: ${t.headingFont}; font-weight: 700; font-size: 11pt;
+    letter-spacing: 0.05em; color: ${t.accent};
+  }
+  .chapter-title-plain {
+    margin-top: 8mm; line-height: 1.3;
+    overflow-wrap: break-word; word-break: break-word;
+  }
+  .drop-cap > p:first-child::first-letter {
+    font-family: ${t.headingFont}; font-weight: 700; color: ${t.heading};
+    float: left; font-size: 3.4em; line-height: 0.82;
+    padding: 1mm 2mm 0 0;
+  }
   .cover-title {
     font-family: ${t.headingFont}; color: ${t.heading};
     font-size: ${28 * t.headingScale}pt; margin: 6mm 0 4mm;
     text-transform: ${t.uppercaseHeadings ? "uppercase" : "none"};
     line-height: 1.15;
+    overflow-wrap: break-word; word-break: break-word; hyphens: auto;
   }
   .cover-subtitle { font-size: 13pt; color: ${t.text}; margin: 0 0 8mm; }
   .cover-author { font-size: 11pt; color: ${t.accent}; margin-top: 10mm; }
@@ -237,9 +307,10 @@ function buildHtml(
     font-family: ${t.headingFont}; color: ${t.heading};
     font-size: ${18 * t.headingScale}pt; margin: 2mm 0 8mm;
     text-transform: ${t.uppercaseHeadings ? "uppercase" : "none"};
+    overflow-wrap: break-word; word-break: break-word;
   }
   .body-text { font-size: 10.5pt; line-height: 1.65; text-align: justify; }
-  .body-text p { margin: 0; text-indent: 6mm; orphans: 2; widows: 2; }
+  .body-text p { margin: 0; text-indent: 6mm; orphans: 3; widows: 3; }
   .body-text p:first-child,
   .body-text h3 + p, .body-text h4 + p,
   .body-text ul + p, .body-text ol + p { text-indent: 0; }
@@ -250,18 +321,27 @@ function buildHtml(
     font-family: ${t.headingFont}; color: ${t.heading};
     font-size: ${13 * t.headingScale}pt; margin: 6mm 0 3mm; line-height: 1.3;
     text-transform: ${t.uppercaseHeadings ? "uppercase" : "none"};
+    break-after: avoid; break-inside: avoid;
   }
   .body-text h4 {
     font-family: ${t.headingFont}; color: ${t.accent};
     font-size: ${11 * t.headingScale}pt; margin: 5mm 0 2mm; font-style: italic;
+    break-after: avoid; break-inside: avoid;
   }
   .body-text ul, .body-text ol { margin: 1mm 0 4mm; padding-left: 6mm; text-align: left; }
-  .body-text li { margin: 0 0 1.5mm; padding-left: 1mm; }
+  .body-text li { margin: 0 0 1.5mm; padding-left: 1mm; break-inside: avoid; }
+  .chapter-title, .chapter-eyebrow { break-after: avoid; }
   .copyright { font-size: 9pt; color: ${t.text}; opacity: 0.8; margin-top: 60mm; text-align: left; }
   .copyright p { text-indent: 0; }
+  /* position:fixed se repete em TODA página impressa no motor de impressão do Chrome
+     (diferente de absolute, que fica preso à página onde o elemento nasceu) — é assim
+     que garantimos a cor de fundo do livro em cada folha física, mesmo quando uma seção
+     termina antes do fim da página e não haveria mais nenhum elemento ali embaixo. */
+  .page-bg-fill { position: fixed; inset: 0; background: ${t.pageBg}; z-index: -1; }
 </style>
 </head>
 <body>
+  <div class="page-bg-fill"></div>
   ${coverPage}
   ${copyrightPage}
   ${introPage}
@@ -273,10 +353,11 @@ function buildHtml(
 </html>`;
 }
 
-export async function renderEbookPdf(
+async function renderPdfFile(
   ebook: EbookRow,
-  chapters: { id: string; title: string; content: string }[]
-): Promise<string> {
+  chapters: { id: string; title: string; content: string }[],
+  detectClipping: boolean
+): Promise<{ path: string; clippingIssues: number }> {
   const html = buildHtml(ebook, chapters);
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
@@ -285,9 +366,181 @@ export async function renderEbookPdf(
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load", timeout: 120000 });
+    let clippingIssues = 0;
+    if (detectClipping) {
+      clippingIssues = await page.evaluate(() => {
+        const all = Array.from(document.querySelectorAll("*"));
+        return all.filter((el) => {
+          const s = getComputedStyle(el);
+          const clips = s.overflowY === "hidden" || s.overflowY === "clip";
+          return clips && el.scrollHeight > el.clientHeight + 2;
+        }).length;
+      });
+    }
+    const t = BOOK_TEMPLATE;
+    const isProfessional = isPlainInformative(ebook);
+    // Livros de perfil profissional/técnico seguem convenção de não ficção: número de
+    // página discreto no topo. Os demais mantêm rodapé com título + número entre colchetes.
+    const headerTemplate = isProfessional
+      ? `<div style="width:100%; text-align:right; padding:0 16mm; box-sizing:border-box; font-family:${t.bodyFont}; font-size:8pt; color:${t.text}; opacity:0.6;"><span class="pageNumber"></span></div>`
+      : "<span></span>";
+    const footerTemplate = isProfessional
+      ? "<span></span>"
+      : `<div style="width:100%; display:flex; justify-content:space-between; align-items:center; padding:0 16mm; box-sizing:border-box; font-family:${t.bodyFont}; font-size:8pt; color:${t.text}; opacity:0.7;">
+      <span>${escapeHtml(ebook.title)}</span>
+      <span>[&nbsp;<span class="pageNumber"></span>&nbsp;]</span>
+    </div>`;
     const outPath = path.join(exportsDir, `${ebook.id}.pdf`);
-    await page.pdf({ path: outPath, printBackground: true, preferCSSPageSize: true, timeout: 120000 });
-    return outPath;
+    await page.pdf({
+      path: outPath,
+      // Largura/altura explícitas (A5) em vez de preferCSSPageSize: quando
+      // preferCSSPageSize é true, o Chrome usa a margem do `@page` (0, porque o `.page`
+      // já cobre a folha inteira e cria sua própria margem visual via padding) para
+      // decidir onde o TEXTO quebra de página, mas ainda reserva o espaço da margem
+      // abaixo (JS) só para desenhar o rodapé por cima — o texto flui até o fim da folha
+      // sem saber que ali embaixo tem um rodapé, e os dois ficam sobrepostos. Passando
+      // width/height/margin direto (sem preferCSSPageSize), a MESMA margem vale tanto
+      // para onde o texto quebra quanto para onde o rodapé é desenhado — sem conflito.
+      width: "148mm",
+      height: "210mm",
+      printBackground: true,
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
+      margin: isProfessional
+        ? { top: "10mm", bottom: "0mm", left: "0mm", right: "0mm" }
+        : { top: "0mm", bottom: "12mm", left: "0mm", right: "0mm" },
+      timeout: 120000,
+    });
+    return { path: outPath, clippingIssues };
+  } finally {
+    await browser.close();
+  }
+}
+
+export async function renderEbookPdf(
+  ebook: EbookRow,
+  chapters: { id: string; title: string; content: string }[]
+): Promise<string> {
+  const { path: outPath } = await renderPdfFile(ebook, chapters, false);
+  return outPath;
+}
+
+export interface PdfValidation {
+  textCoverage: number;
+  clippingIssues: number;
+  sourceWordCount: number;
+  pdfWordCount: number;
+}
+
+function normalizeForComparison(text: string): string {
+  return text
+    .replace(/[#*_`>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function wordCount(text: string): number {
+  const normalized = normalizeForComparison(text);
+  return normalized ? normalized.split(" ").filter(Boolean).length : 0;
+}
+
+function canonicalText(ebook: EbookRow, chapters: { content: string }[]): string {
+  const parts = [ebook.intro, ...chapters.map((c) => c.content), ebook.conclusion, ebook.about_author].filter(
+    (p): p is string => !!p
+  );
+  return parts.join("\n\n");
+}
+
+export async function renderEbookPdfValidated(
+  ebook: EbookRow,
+  chapters: { id: string; title: string; content: string }[]
+): Promise<{ path: string; pageCount: number; validation: PdfValidation }> {
+  const { path: outPath, clippingIssues } = await renderPdfFile(ebook, chapters, true);
+
+  const { PDFParse } = await import("pdf-parse");
+  const buffer = fs.readFileSync(outPath);
+  const parser = new PDFParse({ data: buffer });
+  let pdfText = "";
+  let pageCount = 0;
+  try {
+    const result = await parser.getText();
+    pdfText = result.text || "";
+    pageCount = result.total ?? result.pages?.length ?? 0;
+  } finally {
+    await parser.destroy();
+  }
+
+  const source = canonicalText(ebook, chapters);
+  const sourceWordCount = wordCount(source);
+  const pdfWordCount = wordCount(pdfText);
+  const textCoverage = sourceWordCount > 0 ? Math.min(1, pdfWordCount / sourceWordCount) : 1;
+
+  return {
+    path: outPath,
+    pageCount,
+    validation: { textCoverage, clippingIssues, sourceWordCount, pdfWordCount },
+  };
+}
+
+export interface LayoutPreview {
+  pageCount: number;
+  clippingIssues: number;
+  overflowIssues: number;
+}
+
+function previewDirFor(ebookId: string): string {
+  return path.join(previewsDir, ebookId);
+}
+
+export function layoutPreviewPagePath(ebookId: string, index: number): string {
+  return path.join(previewDirFor(ebookId), `page-${index}.png`);
+}
+
+// Gera um PNG por seção do livro (capa, introdução, cada capítulo, conclusão...) direto
+// do HTML renderizado, para o usuário conferir a diagramação visualmente antes de
+// exportar — sem precisar exportar o PDF final pra descobrir que algo ficou ruim.
+// Um capítulo ficar mais alto que 210mm é NORMAL (o texto flui pra uma página extra,
+// de propósito — ver o comentário em `.page` no CSS acima), então isso não é sinalizado
+// como problema. Os dois problemas reais que detectamos são: texto cortado por
+// overflow:hidden (clippingIssues) e elemento vazando pra fora da largura fixa da
+// página (overflowIssues) — o mesmo padrão do bug do título com nome de arquivo cru
+// que quebrava a diagramação da capa.
+export async function renderPageThumbnails(
+  ebook: EbookRow,
+  chapters: { id: string; title: string; content: string }[]
+): Promise<LayoutPreview> {
+  const dir = previewDirFor(ebook.id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+
+  const html = buildHtml(ebook, chapters);
+  const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 700, height: 1000 });
+    await page.setContent(html, { waitUntil: "load", timeout: 120000 });
+
+    const clippingIssues = await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll("*"));
+      return all.filter((el) => {
+        const s = getComputedStyle(el);
+        const clips = s.overflowY === "hidden" || s.overflowY === "clip";
+        return clips && el.scrollHeight > el.clientHeight + 2;
+      }).length;
+    });
+
+    const overflowIssues = await page.evaluate(() => {
+      const pages = Array.from(document.querySelectorAll(".page"));
+      return pages.filter((p) => p.scrollWidth > p.clientWidth + 2).length;
+    });
+
+    const sections = await page.$$(".page");
+    for (let i = 0; i < sections.length; i++) {
+      await sections[i].screenshot({ path: layoutPreviewPagePath(ebook.id, i) as `${string}.png` });
+    }
+    return { pageCount: sections.length, clippingIssues, overflowIssues };
   } finally {
     await browser.close();
   }

@@ -9,13 +9,15 @@ import { ebooksRouter } from "./routes/ebooks";
 import { ideiasRouter } from "./routes/ideias";
 import { pexelsRouter } from "./routes/pexels";
 import { referenceRouter } from "./routes/reference";
+import { renderRouter } from "./routes/render";
+import { localCoversRouter } from "./routes/localCovers";
 import { requireAuth } from "./lib/requireAuth";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FileStore = FileStoreFactory(session);
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 const sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
@@ -39,6 +41,8 @@ app.use("/api/ebooks", requireAuth, ebooksRouter);
 app.use("/api/ideias", requireAuth, ideiasRouter);
 app.use("/api/pexels", requireAuth, pexelsRouter);
 app.use("/api/reference", requireAuth, referenceRouter);
+app.use("/api/render", requireAuth, renderRouter);
+app.use("/api/local-covers", requireAuth, localCoversRouter);
 
 if (process.env.NODE_ENV === "production") {
   const distDir = path.resolve(__dirname, "..", "dist");
@@ -48,7 +52,7 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-const port = Number(process.env.PORT) || 3001;
+const port = Number(process.env.SERVER_PORT) || 3001;
 app.listen(port, () => {
   console.log(`[sambu-ebooks] servidor rodando em http://localhost:${port}`);
 });

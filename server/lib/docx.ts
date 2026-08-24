@@ -13,7 +13,7 @@ import {
   BorderStyle,
 } from "docx";
 import { db, type EbookRow } from "./db";
-import { getTemplate } from "../templates/index";
+import { BOOK_TEMPLATE } from "../templates/index";
 import { parseBlocks, parseInlineSegments } from "./markdown";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,7 @@ export async function renderEbookDocx(
   ebook: EbookRow,
   chapters: { id: string; title: string; content: string }[]
 ): Promise<string> {
-  const t = getTemplate(ebook.template);
+  const t = BOOK_TEMPLATE;
   const year = new Date().getFullYear();
   const accent = hex(t.accent);
   const heading = hex(t.heading);

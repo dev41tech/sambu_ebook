@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { withRetry } from "./retry";
 
 let client: OpenAI | null = null;
 
@@ -22,6 +23,7 @@ export interface EbookContext {
   tone: string;
   language: string;
   pageCount: number;
+  wordsPerPage: number;
   titleMode: "ai" | "manual";
   customTitle?: string | null;
   customSubtitle?: string | null;
@@ -103,15 +105,17 @@ async function askOpenAI(
   jsonMode = false
 ): Promise<string> {
   const openai = getClient();
-  const response = await openai.chat.completions.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: prompt },
-    ],
-  });
+  const response = await withRetry(() =>
+    openai.chat.completions.create({
+      model: MODEL,
+      max_tokens: maxTokens,
+      ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: prompt },
+      ],
+    })
+  );
   const text = response.choices[0]?.message?.content;
   if (!text) {
     throw new Error("Resposta vazia da IA.");
@@ -221,7 +225,7 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
 - Público-alvo: ${ctx.audience}
 - Tom de voz: ${ctx.tone}
 - Idioma do ebook: ${ctx.language}
-- Extensão alvo: ~${ctx.pageCount} páginas (aproximadamente ${ctx.pageCount * 250} palavras no total)
+- Extensão alvo: ~${ctx.pageCount} páginas (aproximadamente ${ctx.pageCount * ctx.wordsPerPage} palavras no total)
 - Número de capítulos: exatamente ${chapterCount}
 ${ctx.authorContext ? `- Contexto/voz do autor fornecido: ${ctx.authorContext}` : ""}
 ${groundingBlock(ctx)}
@@ -267,7 +271,7 @@ export async function generateChapter(
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
-  const wordsPerChapter = Math.round((ctx.pageCount * 250) / outline.chapters.length);
+  const wordsPerChapter = Math.round((ctx.pageCount * ctx.wordsPerPage) / outline.chapters.length);
   const opening = CHAPTER_OPENINGS[chapterIndex % CHAPTER_OPENINGS.length];
   const closingPool = isLastChapter ? CHAPTER_CLOSINGS_LAST : CHAPTER_CLOSINGS;
   const closing = closingPool[chapterIndex % closingPool.length];

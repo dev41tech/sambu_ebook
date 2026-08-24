@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
+import { withRetry } from "./retry";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const imagesDir = path.resolve(__dirname, "..", "..", "data", "images");
@@ -39,13 +40,15 @@ async function requestImage(
   quality: "high" | "medium"
 ): Promise<Buffer> {
   const openai = getClient();
-  const response = await openai.images.generate({
-    model: IMAGE_MODEL,
-    prompt,
-    size,
-    quality,
-    n: 1,
-  });
+  const response = await withRetry(() =>
+    openai.images.generate({
+      model: IMAGE_MODEL,
+      prompt,
+      size,
+      quality,
+      n: 1,
+    })
+  );
   const item = response.data?.[0];
   if (!item) {
     throw new Error("A IA não retornou nenhuma imagem.");
@@ -101,11 +104,12 @@ export async function generateCoverImage(
   suggestion: string
 ): Promise<GeneratedImage> {
   const safety = precisaBlindagemSaude(theme, audience) ? `\n${BLINDAGEM_SAUDE}` : "";
-  const prompt = `Crie a arte de capa de um ebook profissional, no padrão visual de uma editora de verdade, para um livro sobre "${theme}" (título: "${title}").
+  const prompt = `Crie uma ilustração/fotografia editorial de alta qualidade para servir de ARTE DE FUNDO da capa de um ebook sobre "${theme}".
+IMPORTANTE: esta imagem é APENAS a arte de fundo, não é um mockup de capa pronta — ela não deve conter nenhum texto, título, subtítulo, nome de autor ou tipografia de nenhum tipo. Título, subtítulo e nome do autor serão adicionados depois, por cima, via código.
 ${buildAudienceLine(audience)}
 Objetivo: comunicar o tema em poucos segundos e funcionar bem mesmo em miniatura reduzida.
 Orientação de estilo do autor: ${styleHint(suggestion)}.
-Composição: um elemento visual principal como ponto focal, com espaço reservado e limpo no terço superior OU inferior da imagem para receber título, subtítulo e nome do autor por cima depois — deixe essa área com menos detalhe para não competir com o texto.
+Composição: um elemento visual principal como ponto focal, com espaço reservado e limpo no terço superior OU inferior da imagem para receber título, subtítulo e nome do autor por cima depois — deixe essa área com menos detalhe para não competir com o texto que será adicionado depois.
 Paleta de cores coesa e sofisticada (2 a 3 cores dominantes). Iluminação intencional, com contraste que dê profundidade. Qualidade de capa de editora/revista, não arte genérica de banco de imagens.
 ${REPRESENTACAO_PESSOAS}
 ${EXCLUSOES}${safety}`;
@@ -150,4 +154,37 @@ ${EXCLUSOES}${safety}`;
   const outPath = path.join(imagesDir, `${ebookId}-${chapterId}.png`);
   fs.writeFileSync(outPath, buffer);
   return { path: outPath, altText: `Ilustração do capítulo "${chapterTitle}": ${chapterSummary}` };
+}
+
+const MARKETING_SIZES: Record<string, "1024x1536" | "1536x1024" | "1024x1024"> = {
+  capa: "1024x1536",
+  post: "1024x1024",
+  story: "1024x1536",
+  banner: "1536x1024",
+};
+
+// Imagem-base de um criativo de marketing (capa alternativa, post, story, banner) — sem
+// texto embutido, já que headline/subheadline/CTA são compostos por cima depois via
+// Puppeteer. Deixa uma área limpa para o texto, igual à capa do livro.
+export async function generateMarketingImage(
+  ebookId: string,
+  creativeId: string,
+  tipo: string,
+  descricaoVisual: string,
+  theme: string,
+  audience: string
+): Promise<GeneratedImage> {
+  const size = MARKETING_SIZES[tipo] || "1024x1024";
+  const safety = precisaBlindagemSaude(theme, audience, descricaoVisual) ? `\n${BLINDAGEM_SAUDE}` : "";
+  const prompt = `Crie uma imagem publicitária para divulgar um ebook sobre "${theme}", sem nenhum texto embutido na imagem.
+Cena: ${descricaoVisual}.
+${buildAudienceLine(audience)}
+Deixe uma área limpa e com menos detalhe (terço superior ou inferior) reservada para receber título e botão de ação por cima depois — não a preencha com elementos que vão competir com o texto.
+Qualidade de anúncio/capa de editora profissional, não arte genérica de banco de imagens. Paleta coesa, iluminação intencional.
+${REPRESENTACAO_PESSOAS}
+${EXCLUSOES}${safety}`;
+  const buffer = await requestImage(prompt, size, "medium");
+  const outPath = path.join(imagesDir, `${ebookId}-marketing-${creativeId}.png`);
+  fs.writeFileSync(outPath, buffer);
+  return { path: outPath, altText: `Imagem publicitária (${tipo}) para o ebook sobre ${theme}.` };
 }

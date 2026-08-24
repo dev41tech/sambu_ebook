@@ -11,7 +11,6 @@ const STEP_LABEL: Record<string, string> = {
   images: "Gerando as imagens internas…",
   conclusion: "Amarrando a conclusão…",
   about: "Escrevendo a seção Sobre o Autor…",
-  export: "Montando o PDF e o DOCX finais…",
 };
 
 type ChecklistStatus = "done" | "current" | "pending";
@@ -78,12 +77,6 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
     });
   }
 
-  items.push({
-    key: "export",
-    label: "Finalizando PDF e DOCX",
-    status: step === "export" ? "current" : "pending",
-  });
-
   return items;
 }
 
@@ -121,7 +114,7 @@ export default function Generating() {
         const data = await api.getEbook(id);
         if (cancelledRef.current) return;
         setEbook(data);
-        if (data.status === "ready") {
+        if (data.status === "review" || data.status === "ready") {
           navigate(`/ebooks/${id}`);
           return;
         }
@@ -168,7 +161,7 @@ export default function Generating() {
   const hasImages = !!ebook?.generate_images;
   const hasAbout = !!(ebook?.include_about && ebook?.author_name);
   const stepsBeforeChapters = 2 + (hasCover ? 1 : 0); // outline + intro (+ capa)
-  const stepsAfterChapters = 2 + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // conclusion + export (+ imagens + sobre o autor)
+  const stepsAfterChapters = 1 + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // conclusão (+ imagens + sobre o autor)
   const totalSteps = stepsBeforeChapters + Math.max(chaptersTotal, 1) + stepsAfterChapters;
   const imagesFraction = hasImages && ebook && ebook.image_count > 0 ? ebook.images_done / ebook.image_count : 0;
   const doneSteps =

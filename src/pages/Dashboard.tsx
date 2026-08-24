@@ -7,6 +7,7 @@ import KindleReader from "../components/KindleReader";
 const STATUS_LABEL: Record<EbookSummary["status"], string> = {
   draft: "Rascunho",
   generating: "Gerando",
+  review: "Aguardando revisão",
   ready: "Pronto",
   error: "Erro",
 };
@@ -14,6 +15,7 @@ const STATUS_LABEL: Record<EbookSummary["status"], string> = {
 const STATUS_CLASS: Record<EbookSummary["status"], string> = {
   draft: "bg-neutral-100 text-neutral-600",
   generating: "bg-amber-100 text-amber-700",
+  review: "bg-sky-100 text-sky-700",
   ready: "bg-emerald-100 text-emerald-700",
   error: "bg-red-100 text-red-700",
 };
@@ -24,6 +26,26 @@ export default function Dashboard() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewEbook, setPreviewEbook] = useState<EbookDetail | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function handleDelete(id: string) {
+    if (!window.confirm("Excluir este ebook e todos os arquivos gerados (PDF, DOCX, EPUB, imagens, áudio)? Essa ação não pode ser desfeita.")) {
+      return;
+    }
+    setDeletingId(id);
+    try {
+      await api.deleteEbook(id);
+      setEbooks((prev) => (prev ? prev.filter((e) => e.id !== id) : prev));
+      if (previewId === id) {
+        setPreviewId(null);
+        setPreviewEbook(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao excluir o ebook.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   useEffect(() => {
     api
@@ -95,15 +117,29 @@ export default function Dashboard() {
                     </span>
                   </div>
                   <p className="text-sm text-neutral-500">
-                    Tema: <span className="text-neutral-800">{e.theme}</span> · {e.page_count} páginas
+                    Tema: <span className="text-neutral-800">{e.theme}</span> · {e.page_count} páginas · {e.version}
                   </p>
-                  <Link
-                    to={e.status === "generating" ? `/ebooks/${e.id}/gerando` : `/ebooks/${e.id}`}
-                    onClick={(evt) => evt.stopPropagation()}
-                    className="mt-auto rounded-md border border-neutral-300 px-3 py-1.5 text-center text-sm font-medium hover:bg-neutral-50"
-                  >
-                    {e.status === "generating" ? "Ver progresso" : "Abrir"}
-                  </Link>
+                  <div className="mt-auto flex gap-2">
+                    <Link
+                      to={e.status === "generating" ? `/ebooks/${e.id}/gerando` : `/ebooks/${e.id}`}
+                      onClick={(evt) => evt.stopPropagation()}
+                      className="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-center text-sm font-medium hover:bg-neutral-50"
+                    >
+                      {e.status === "generating" ? "Ver progresso" : "Abrir"}
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={(evt) => {
+                        evt.stopPropagation();
+                        handleDelete(e.id);
+                      }}
+                      disabled={deletingId === e.id}
+                      title="Excluir ebook"
+                      className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      {deletingId === e.id ? "…" : "Excluir"}
+                    </button>
+                  </div>
                 </div>
               );
             })}

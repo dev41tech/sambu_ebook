@@ -8,8 +8,10 @@ const root = path.resolve(__dirname, "..");
 function run(name, scriptPath, args) {
   const child = spawn(process.execPath, [scriptPath, ...args], {
     cwd: root,
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  child.stdout.on("data", (chunk) => process.stdout.write(chunk));
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
   child.on("exit", (code) => {
     console.log(`[${name}] encerrou com código ${code}`);
     process.exit(code ?? 0);

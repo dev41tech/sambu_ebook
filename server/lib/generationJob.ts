@@ -15,11 +15,17 @@ import { renderEbookDocx } from "./docx";
 import { renderEbookEpub } from "./epub";
 import { generateCoverImage, generateChapterImage } from "./images";
 import { searchPhotos, downloadPhoto } from "./pexels";
+import { useLocalCover } from "./localCovers";
 import { getKnowledgeContext } from "./knowledge";
 import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings } from "./memory";
 
+// Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
+// uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
+// simultâneo sem controle. O excedente fica na fila e começa assim que uma vaga libera.
+const MAX_CONCURRENT_JOBS = 2;
 const activeJobs = new Set<string>();
+const queuedJobs: string[] = [];
 
 function getEbook(id: string): EbookRow | undefined {
   return db.prepare("SELECT * FROM ebooks WHERE id = ?").get(id) as EbookRow | undefined;
@@ -38,6 +44,7 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
     tone: row.tone,
     language: row.language,
     pageCount: row.page_count,
+    wordsPerPage: row.words_per_page,
     titleMode: row.title_mode as "ai" | "manual",
     referenceMaterial: row.reference_material || null,
     extraInstructions: row.extra_instructions || null,
@@ -50,11 +57,13 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
 async function runJob(ebookId: string) {
   try {
     let row = getEbook(ebookId);
-    if (!row || row.status === "ready") return;
+    if (!row || row.status === "review" || row.status === "ready") return;
 
     // Etapa 0: pesquisa na internet (opcional — só roda se TAVILY_API_KEY estiver
     // configurada, e uma única vez por ebook, reaproveitado em todos os capítulos).
-    if (hasWebSearch() && !row.web_research) {
+    // Ebooks importados de arquivo já chegam com outline_json preenchido e não precisam
+    // de pesquisa, já que não passam pela escrita por IA.
+    if (hasWebSearch() && !row.web_research && !row.outline_json) {
       setStep(ebookId, "research");
       try {
         const results = await searchWeb(`${row.theme} ${row.audience}`.trim());
@@ -107,6 +116,13 @@ async function runJob(ebookId: string) {
           row.cover_credit,
           ebookId
         );
+      } else if (row.cover_source === "local" && row.cover_local_file) {
+        const cover = useLocalCover(row.cover_local_file, outline.title, ebookId);
+        db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
+          cover.path,
+          cover.altText,
+          ebookId
+        );
       } else {
         const cover = await generateCoverImage(ebookId, outline.title, row.theme, row.audience, row.cover_suggestion);
         db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
@@ -118,8 +134,9 @@ async function runJob(ebookId: string) {
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 3: introdução
-    if (!row.intro) {
+    // Etapa 3: introdução (intro === '' significa "conteúdo importado sem introdução
+    // separada" — só regeramos por IA quando o campo ainda é NULL, nunca escrito).
+    if (row.intro === null) {
       setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline);
       const intro = await humanizeText(draft, `Introdução do ebook "${outline.title}"`, 1500);
@@ -192,8 +209,8 @@ async function runJob(ebookId: string) {
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 5: conclusão
-    if (!row.conclusion) {
+    // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
+    if (row.conclusion === null) {
       setStep(ebookId, "conclusion");
       const draft = await generateConclusion(ctx, outline);
       const conclusion = await humanizeText(draft, `Conclusão do ebook "${outline.title}"`, 1200);
@@ -209,32 +226,50 @@ async function runJob(ebookId: string) {
       row = getEbook(ebookId)!;
     }
 
-    // Etapa 6: exportação PDF + DOCX
-    setStep(ebookId, "export");
-    row = getEbook(ebookId)!;
-    const finalChapters = db
-      .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(ebookId) as { id: string; title: string; content: string }[];
-
-    const pdfPath = await renderEbookPdf(row, finalChapters);
-    const docxPath = await renderEbookDocx(row, finalChapters);
-    const epubPath = await renderEbookEpub(row, finalChapters);
-
-    db.prepare(
-      "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?"
-    ).run(pdfPath, docxPath, epubPath, ebookId);
+    // Etapa 6: conteúdo pronto — para aqui para revisão, sem exportar ainda.
+    // A exportação final (PDF/DOCX/EPUB) só roda quando o usuário confirma pela
+    // tela de revisão (ver finalizeEbookExport, chamado por POST /:id/finalize).
+    db.prepare("UPDATE ebooks SET status = 'review', current_step = NULL WHERE id = ?").run(ebookId);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
     db.prepare("UPDATE ebooks SET status = 'error', error_message = ? WHERE id = ?").run(message, ebookId);
   } finally {
     activeJobs.delete(ebookId);
+    startNextQueuedJob();
+  }
+}
+
+function startNextQueuedJob() {
+  while (activeJobs.size < MAX_CONCURRENT_JOBS && queuedJobs.length > 0) {
+    const nextId = queuedJobs.shift()!;
+    if (activeJobs.has(nextId)) continue;
+    const row = getEbook(nextId);
+    if (!row || row.status === "review" || row.status === "ready") continue;
+    activeJobs.add(nextId);
+    void runJob(nextId);
   }
 }
 
 export function ensureGenerationRunning(ebookId: string) {
-  if (activeJobs.has(ebookId)) return;
+  if (activeJobs.has(ebookId) || queuedJobs.includes(ebookId)) return;
   const row = getEbook(ebookId);
-  if (!row || row.status === "ready") return;
-  activeJobs.add(ebookId);
-  void runJob(ebookId);
+  if (!row || row.status === "review" || row.status === "ready") return;
+  queuedJobs.push(ebookId);
+  startNextQueuedJob();
+}
+
+export async function finalizeEbookExport(ebookId: string): Promise<void> {
+  const row = getEbook(ebookId);
+  if (!row) throw new Error("Ebook não encontrado.");
+  const chapters = db
+    .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
+    .all(ebookId) as { id: string; title: string; content: string }[];
+
+  const pdfPath = await renderEbookPdf(row, chapters);
+  const docxPath = await renderEbookDocx(row, chapters);
+  const epubPath = await renderEbookEpub(row, chapters);
+
+  db.prepare(
+    "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?"
+  ).run(pdfPath, docxPath, epubPath, ebookId);
 }

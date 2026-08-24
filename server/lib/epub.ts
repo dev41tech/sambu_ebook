@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import JSZip from "jszip";
 import { db, type EbookRow } from "./db";
-import { getTemplate } from "../templates/index";
+import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,11 +57,50 @@ ${bodyHtml}
 </html>`;
 }
 
+export interface EpubValidation {
+  structureOk: boolean;
+  missingChapters: string[];
+  malformedFiles: string[];
+}
+
+const BALANCED_TAGS = ["div", "p", "h1", "h2", "h3", "h4", "ul", "ol", "li", "nav", "body", "html"];
+
+// Checagem estrutural leve — sem depender de Java/epubcheck. Confere os arquivos
+// obrigatórios do EPUB3 e um balanceamento simples de tags nos XHTML gerados. Não
+// substitui uma validação completa de schema, mas pega a maioria das quebras reais
+// (tag não fechada por um bug no parser de markdown, arquivo ausente do manifesto).
+async function validateEpubStructure(zip: JSZip, textFiles: { href: string; content: string }[]): Promise<EpubValidation> {
+  const requiredFiles = ["mimetype", "META-INF/container.xml", "OEBPS/content.opf", "OEBPS/nav.xhtml"];
+  const missingChapters = requiredFiles.filter((f) => !zip.file(f));
+
+  const malformedFiles: string[] = [];
+  for (const f of textFiles) {
+    if (!f.content.trim().startsWith("<?xml")) {
+      malformedFiles.push(f.href);
+      continue;
+    }
+    for (const tag of BALANCED_TAGS) {
+      const openCount = (f.content.match(new RegExp(`<${tag}[ >]`, "g")) || []).length;
+      const closeCount = (f.content.match(new RegExp(`</${tag}>`, "g")) || []).length;
+      if (openCount !== closeCount) {
+        malformedFiles.push(f.href);
+        break;
+      }
+    }
+  }
+
+  return {
+    structureOk: missingChapters.length === 0 && malformedFiles.length === 0,
+    missingChapters,
+    malformedFiles,
+  };
+}
+
 export async function renderEbookEpub(
   ebook: EbookRow,
   chapters: { id: string; title: string; content: string }[]
 ): Promise<string> {
-  const t = getTemplate(ebook.template);
+  const t = BOOK_TEMPLATE;
   const year = new Date().getFullYear();
   const bookId = `urn:uuid:${randomUUID()}`;
   const modified = new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -326,4 +365,21 @@ ${navListItems}
   const outPath = path.join(exportsDir, `${ebook.id}.epub`);
   fs.writeFileSync(outPath, buffer);
   return outPath;
+}
+
+export async function renderEbookEpubValidated(
+  ebook: EbookRow,
+  chapters: { id: string; title: string; content: string }[]
+): Promise<{ path: string; validation: EpubValidation }> {
+  const outPath = await renderEbookEpub(ebook, chapters);
+  const buffer = fs.readFileSync(outPath);
+  const zip = await JSZip.loadAsync(buffer);
+  const textFiles: { href: string; content: string }[] = [];
+  for (const [relPath, file] of Object.entries(zip.files)) {
+    if (relPath.startsWith("OEBPS/text/") && relPath.endsWith(".xhtml") && !file.dir) {
+      textFiles.push({ href: relPath, content: await file.async("string") });
+    }
+  }
+  const validation = await validateEpubStructure(zip, textFiles);
+  return { path: outPath, validation };
 }

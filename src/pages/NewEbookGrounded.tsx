@@ -1,18 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type VisualTemplate, type PexelsPhoto, type EbookCategory } from "../lib/api";
-import TemplatePicker from "../components/TemplatePicker";
+import { api, type PexelsPhoto, type EbookCategory } from "../lib/api";
 import PexelsPicker from "../components/PexelsPicker";
+import LocalCoverPicker from "../components/LocalCoverPicker";
+import ImportIcon from "../components/ImportIcon";
 import ReferenceMaterialPicker from "../components/ReferenceMaterialPicker";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
-
-function suggestedImageCount(pages: number): number {
-  if (pages <= 10) return 4;
-  if (pages <= 20) return 8;
-  if (pages <= 30) return 11;
-  return 16;
-}
 
 const LANGUAGES = ["Português (Brasil)", "Português (Portugal)", "Inglês", "Espanhol"];
 
@@ -34,39 +28,28 @@ const COPY: Record<"tecnico" | "comportamental", { eyebrow: string; title: strin
 export default function NewEbookGrounded({ category }: { category: "tecnico" | "comportamental" }) {
   const navigate = useNavigate();
   const copy = COPY[category];
-  const [templates, setTemplates] = useState<VisualTemplate[]>([]);
   const [referenceMaterial, setReferenceMaterial] = useState("");
   const [theme, setTheme] = useState("");
   const [audience, setAudience] = useState("");
   const [tone, setTone] = useState(copy.defaultTone);
   const [language, setLanguage] = useState(LANGUAGES[0]);
-  const [template, setTemplate] = useState("editorial");
   const [pageCount, setPageCount] = useState(20);
+  const [wordsPerPage, setWordsPerPage] = useState(250);
   const [titleMode, setTitleMode] = useState<"ai" | "manual">("ai");
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
   const [extraInstructions, setExtraInstructions] = useState("");
   const [generateCover, setGenerateCover] = useState(false);
   const [coverSuggestion, setCoverSuggestion] = useState("");
-  const [coverSource, setCoverSource] = useState<"ai" | "stock">("ai");
+  const [coverSource, setCoverSource] = useState<"ai" | "stock" | "local">("ai");
   const [selectedCoverPhoto, setSelectedCoverPhoto] = useState<PexelsPhoto | null>(null);
-  const [generateImages, setGenerateImages] = useState(false);
-  const [imageCount, setImageCount] = useState(3);
-  const [imageSuggestion, setImageSuggestion] = useState("");
-  const [imageSource, setImageSource] = useState<"ai" | "stock">("ai");
+  const [selectedLocalCover, setSelectedLocalCover] = useState<string | null>(null);
   const [authorName, setAuthorName] = useState("");
   const [authorBio, setAuthorBio] = useState("");
   const [includeCopyright, setIncludeCopyright] = useState(false);
   const [includeAbout, setIncludeAbout] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.templates().then((t) => {
-      setTemplates(t);
-      if (t.length > 0) setTemplate(t[0].id);
-    });
-  }, []);
 
   useEffect(() => {
     setTone(copy.defaultTone);
@@ -79,9 +62,13 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
     audience.trim().length > 0 &&
     pageCount >= 10 &&
     pageCount <= 50 &&
+    wordsPerPage >= 150 &&
+    wordsPerPage <= 500 &&
     (titleMode === "ai" || customTitle.trim().length > 0) &&
-    (!generateImages || (imageCount >= 1 && imageCount <= 39)) &&
-    (!generateCover || coverSource === "ai" || !!selectedCoverPhoto);
+    (!generateCover ||
+      coverSource === "ai" ||
+      (coverSource === "stock" && !!selectedCoverPhoto) ||
+      (coverSource === "local" && !!selectedLocalCover));
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -97,8 +84,8 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         audience: audience.trim(),
         tone,
         language,
-        template,
         page_count: pageCount,
+        words_per_page: wordsPerPage,
         author_name: authorName.trim(),
         author_bio: authorBio.trim(),
         include_copyright: includeCopyright,
@@ -112,10 +99,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         cover_stock_url: selectedCoverPhoto?.downloadUrl ?? "",
         cover_credit: selectedCoverPhoto ? `Foto de ${selectedCoverPhoto.photographer} (Pexels)` : "",
         cover_alt_text: selectedCoverPhoto?.alt ?? "",
-        generate_images: generateImages,
-        image_count: imageCount,
-        image_suggestion: imageSuggestion.trim(),
-        image_source: imageSource,
+        cover_local_file: selectedLocalCover ?? "",
       });
       navigate(`/ebooks/${id}/gerando`);
     } catch (err) {
@@ -190,11 +174,6 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           </div>
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-neutral-700">Template visual</label>
-          <TemplatePicker templates={templates} value={template} onChange={setTemplate} />
-        </div>
-
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">
           <p className="text-sm font-medium text-neutral-700">Título do ebook</p>
           <div className="flex gap-4 text-sm">
@@ -239,128 +218,104 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           />
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-neutral-700">Número de páginas</label>
-          <input
-            type="number"
-            min={10}
-            max={50}
-            className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
-            value={pageCount}
-            onChange={(e) => setPageCount(Number(e.target.value))}
-          />
-          <p className="text-xs text-neutral-500">Mínimo 10, máximo 50 páginas.</p>
-        </div>
-
-        <div className="rounded-md border border-neutral-200 p-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr] sm:gap-6">
-            <label className="flex items-start gap-2 text-sm font-medium text-neutral-700">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={generateCover}
-                onChange={(e) => setGenerateCover(e.target.checked)}
-              />
-              Gerar capa?
-            </label>
-            {generateCover && (
-              <div className="space-y-3">
-                <div className="flex gap-4 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={coverSource === "ai"} onChange={() => setCoverSource("ai")} />
-                    Gerar por IA
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={coverSource === "stock"} onChange={() => setCoverSource("stock")} />
-                    Buscar foto (banco de imagens)
-                  </label>
-                </div>
-
-                {coverSource === "ai" ? (
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-neutral-700">Sugestão para a capa</label>
-                    <textarea
-                      className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                      value={coverSuggestion}
-                      onChange={(e) => setCoverSuggestion(e.target.value)}
-                      placeholder="Ex.: capa moderna, profissional, tons azul e branco, título em destaque"
-                      rows={3}
-                      maxLength={500}
-                    />
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-neutral-700">Escolha uma foto</label>
-                    <PexelsPicker
-                      initialQuery={theme || "negócios"}
-                      orientation="portrait"
-                      selectedId={selectedCoverPhoto?.id ?? null}
-                      onSelect={setSelectedCoverPhoto}
-                    />
-                    {!selectedCoverPhoto && (
-                      <p className="text-xs text-amber-700">Selecione uma foto para continuar.</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-neutral-700">Número de páginas</label>
+            <input
+              type="number"
+              min={10}
+              max={50}
+              className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              value={pageCount}
+              onChange={(e) => setPageCount(Number(e.target.value))}
+            />
+            <p className="text-xs text-neutral-500">Mínimo 10, máximo 50 páginas.</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-neutral-700">Palavras por página</label>
+            <input
+              type="number"
+              min={150}
+              max={500}
+              step={10}
+              className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              value={wordsPerPage}
+              onChange={(e) => setWordsPerPage(Number(e.target.value))}
+            />
+            <p className="text-xs text-neutral-500">Mínimo 150, máximo 500 palavras.</p>
           </div>
         </div>
 
-        <div className="rounded-md border border-neutral-200 p-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr] sm:gap-6">
-            <label className="flex items-start gap-2 text-sm font-medium text-neutral-700">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={generateImages}
-                onChange={(e) => {
-                  setGenerateImages(e.target.checked);
-                  if (e.target.checked) setImageCount(suggestedImageCount(pageCount));
-                }}
-              />
-              Gerar imagens dentro do ebook?
-            </label>
-            {generateImages && (
-              <div className="space-y-3">
-                <div className="flex gap-4 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={imageSource === "ai"} onChange={() => setImageSource("ai")} />
-                    Gerar por IA
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="radio" checked={imageSource === "stock"} onChange={() => setImageSource("stock")} />
-                    Buscar fotos (banco de imagens) automaticamente
-                  </label>
-                </div>
-                <div className="space-y-1.5">
-                  <textarea
-                    className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                    value={imageSuggestion}
-                    onChange={(e) => setImageSuggestion(e.target.value)}
-                    placeholder={
-                      imageSource === "ai"
-                        ? "Sugestão de estilo para as imagens…"
-                        : "Termo de busca (opcional) — deixe em branco para buscar pelo tema"
-                    }
-                    rows={2}
-                    maxLength={500}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-neutral-700">Quantidade de imagens internas</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={39}
-                    className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
-                    value={imageCount}
-                    onChange={(e) => setImageCount(Number(e.target.value))}
-                  />
-                </div>
-              </div>
-            )}
+        <div className="space-y-3 rounded-md border border-neutral-200 p-4">
+          <p className="text-sm font-medium text-neutral-700">Capa do ebook</p>
+          <div className="flex flex-wrap gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => setGenerateCover(false)}
+              className={`rounded-full px-3 py-1.5 ${!generateCover ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-600"}`}
+            >
+              Sem capa
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setGenerateCover(true);
+                setCoverSource("local");
+              }}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 ${generateCover && coverSource === "local" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-600"}`}
+            >
+              <ImportIcon /> Importar capa
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setGenerateCover(true);
+                setCoverSource("ai");
+              }}
+              className={`rounded-full px-3 py-1.5 ${generateCover && coverSource === "ai" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-600"}`}
+            >
+              Gerar por IA
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setGenerateCover(true);
+                setCoverSource("stock");
+              }}
+              className={`rounded-full px-3 py-1.5 ${generateCover && coverSource === "stock" ? "bg-neutral-900 text-white" : "border border-neutral-300 text-neutral-600"}`}
+            >
+              Banco de imagens
+            </button>
           </div>
+
+          {generateCover && coverSource === "local" && (
+            <LocalCoverPicker selected={selectedLocalCover} onSelect={setSelectedLocalCover} />
+          )}
+          {generateCover && coverSource === "ai" && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-neutral-700">Sugestão para a capa</label>
+              <textarea
+                className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                value={coverSuggestion}
+                onChange={(e) => setCoverSuggestion(e.target.value)}
+                placeholder="Ex.: capa moderna, profissional, tons azul e branco, título em destaque"
+                rows={3}
+                maxLength={500}
+              />
+            </div>
+          )}
+          {generateCover && coverSource === "stock" && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-neutral-700">Escolha uma foto</label>
+              <PexelsPicker
+                initialQuery={theme || "negócios"}
+                orientation="portrait"
+                selectedId={selectedCoverPhoto?.id ?? null}
+                onSelect={setSelectedCoverPhoto}
+              />
+              {!selectedCoverPhoto && <p className="text-xs text-amber-700">Selecione uma foto para continuar.</p>}
+            </div>
+          )}
         </div>
 
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">

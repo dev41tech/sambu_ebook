@@ -9,6 +9,7 @@ fs.mkdirSync(dataDir, { recursive: true });
 
 export const db = new Database(path.join(dataDir, "app.db"));
 db.pragma("journal_mode = WAL");
+db.pragma("busy_timeout = 5000");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS ebooks (
@@ -94,6 +95,10 @@ ensureColumn("ebooks", "category", "category TEXT NOT NULL DEFAULT 'geral'");
 ensureColumn("ebooks", "reference_material", "reference_material TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "extra_instructions", "extra_instructions TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "web_research", "web_research TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "marketing_json", "marketing_json TEXT");
+ensureColumn("ebooks", "cover_local_file", "cover_local_file TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "version", "version TEXT NOT NULL DEFAULT 'v1.0'");
+ensureColumn("ebooks", "words_per_page", "words_per_page INTEGER NOT NULL DEFAULT 250");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS learnings (
@@ -113,7 +118,7 @@ export interface LearningRow {
   created_at: string;
 }
 
-export type EbookStatus = "draft" | "generating" | "ready" | "error";
+export type EbookStatus = "draft" | "generating" | "review" | "ready" | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
 export type EbookCategory = "geral" | "tecnico" | "comportamental";
 
@@ -127,6 +132,7 @@ export interface EbookRow {
   language: string;
   template: string;
   page_count: number;
+  words_per_page: number;
   author_name: string;
   author_bio: string;
   include_copyright: number;
@@ -144,6 +150,7 @@ export interface EbookRow {
   pdf_path: string | null;
   docx_path: string | null;
   epub_path: string | null;
+  marketing_json: string | null;
   audio_path: string | null;
   audio_status: AudioStatus;
   audio_error: string | null;
@@ -152,9 +159,11 @@ export interface EbookRow {
   cover_suggestion: string;
   cover_path: string | null;
   cover_alt_text: string;
-  cover_source: "ai" | "stock";
+  cover_source: "ai" | "stock" | "local";
   cover_stock_url: string;
   cover_credit: string;
+  cover_local_file: string;
+  version: string;
   generate_images: number;
   image_count: number;
   image_suggestion: string;

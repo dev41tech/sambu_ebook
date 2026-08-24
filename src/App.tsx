@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import NewEbook from "./pages/NewEbook";
 import NewEbookGrounded from "./pages/NewEbookGrounded";
+import ImportEbook from "./pages/ImportEbook";
 import Generating from "./pages/Generating";
 import EbookDetail from "./pages/EbookDetail";
 import Ideias from "./pages/Ideias";
@@ -29,6 +30,9 @@ function Shell({ children }: { children: React.ReactNode }) {
             </Link>
             <Link to="/ebooks/novo" className="text-neutral-600 hover:text-neutral-900">
               Criar novo
+            </Link>
+            <Link to="/ebooks/importar" className="text-neutral-600 hover:text-neutral-900">
+              Importar arquivo
             </Link>
             <Link to="/ebooks/novo-tecnico" className="text-neutral-600 hover:text-neutral-900">
               Ebooks Técnicos
@@ -94,6 +98,14 @@ export default function App() {
         element={
           <RequireAuth>
             <NewEbook />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ebooks/importar"
+        element={
+          <RequireAuth>
+            <ImportEbook />
           </RequireAuth>
         }
       />
