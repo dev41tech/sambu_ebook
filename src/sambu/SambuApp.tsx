@@ -582,7 +582,9 @@ export default function SambuApp({ user }: { user: User }) {
     if (params.get("search")) setQuery(params.get("search") || "");
     fetch("/api/progress")
       .then((r) => (r.ok ? r.json() : {}))
-      .then((d) => d.progress && setSaved((s) => ({ ...s, ...d.progress })))
+      .then((d: { progress?: Record<string, number> }) => {
+        if (d.progress) setSaved((s) => ({ ...s, ...d.progress }));
+      })
       .catch(() => {});
     fetch("/api/favorites")
       .then((r) => (r.ok ? r.json() : { favorites: [] }))
@@ -2026,7 +2028,7 @@ function Studio({
 }
 
 function StudioForm({ tab }: { tab: string }) {
-  const common = {
+  const common: Record<string, string[]> = {
     obra: [
       "Título|title",
       "Subtítulo|subtitle",

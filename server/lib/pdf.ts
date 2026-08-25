@@ -12,10 +12,6 @@ fs.mkdirSync(exportsDir, { recursive: true });
 const previewsDir = path.resolve(__dirname, "..", "..", "data", "previews");
 fs.mkdirSync(previewsDir, { recursive: true });
 
-// Containers (Docker/EasyPanel) rodam o Chromium como root, e o sandbox do Chrome
-// recusa iniciar como root sem essas flags.
-export const CHROME_LAUNCH_ARGS = ["--no-sandbox", "--disable-setuid-sandbox"];
-
 export function findChrome(): string {
   const candidates = [
     // CHROME_PATH primeiro: em container (Docker/EasyPanel) é a única pista correta.
