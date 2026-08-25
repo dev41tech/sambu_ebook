@@ -43,6 +43,11 @@ function Shell({ children }: { children: React.ReactNode }) {
             <Link to="/ideias" className="text-neutral-600 hover:text-neutral-900">
               Ideias de nichos
             </Link>
+            {/* A vitrine roda numa entrada Vite própria (loja.html), por isso é
+                um link normal e não uma rota do react-router. */}
+            <a href="/loja.html" className="font-medium text-amber-700 hover:text-amber-800">
+              Vitrine
+            </a>
             <button onClick={handleLogout} className="text-neutral-500 hover:text-neutral-900">
               Sair
             </button>

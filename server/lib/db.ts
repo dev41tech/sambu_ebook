@@ -110,6 +110,80 @@ db.exec(`
   );
 `);
 
+// Tabelas da vitrine (portadas do Sambu Online). O catálogo em si continua sendo
+// a tabela `ebooks` — estas guardam só o que é do leitor: onde parou, o que
+// favoritou, plano e dados de perfil.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reading_progress (
+    id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL,
+    book_id TEXT NOT NULL,
+    chapter INTEGER NOT NULL DEFAULT 0,
+    progress INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_owner_book
+    ON reading_progress(user_email, book_id);
+
+  CREATE TABLE IF NOT EXISTS favorites (
+    id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL,
+    book_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_owner_book
+    ON favorites(user_email, book_id);
+
+  CREATE TABLE IF NOT EXISTS bookmarks (
+    id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL,
+    book_id TEXT NOT NULL,
+    chapter INTEGER NOT NULL DEFAULT 0,
+    chapter_id TEXT,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_owner_book_chapter
+    ON bookmarks(user_email, book_id, chapter);
+
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    user_email TEXT NOT NULL UNIQUE,
+    plan TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'trialing',
+    current_period_end TEXT,
+    cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS profiles (
+    email TEXT PRIMARY KEY,
+    full_name TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    birth_date TEXT NOT NULL DEFAULT '',
+    locale TEXT NOT NULL DEFAULT 'pt-BR',
+    pronouns TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'BR',
+    role TEXT NOT NULL DEFAULT 'reader',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_events (
+    id TEXT PRIMARY KEY,
+    user_email TEXT,
+    event TEXT NOT NULL,
+    book_id TEXT,
+    chapter_id TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
 export interface LearningRow {
   id: string;
   ebook_id: string | null;
