@@ -223,13 +223,13 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
             <label className="text-sm font-medium text-neutral-700">Número de páginas</label>
             <input
               type="number"
-              min={10}
-              max={50}
+              min={1}
+              max={1000}
               className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
               value={pageCount}
               onChange={(e) => setPageCount(Number(e.target.value))}
             />
-            <p className="text-xs text-neutral-500">Mínimo 10, máximo 50 páginas.</p>
+            <p className="text-xs text-neutral-500">Mínimo 1, máximo 1000 páginas.</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-neutral-700">Palavras por página</label>

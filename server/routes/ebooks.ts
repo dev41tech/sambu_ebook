@@ -16,7 +16,13 @@ import { renderEbookEpub } from "../lib/epub";
 import { addLearning } from "../lib/memory";
 import { generateMarketingStrategy, type MarketingCreative, type MarketingStrategy } from "../lib/marketing";
 import { renderCreative } from "../lib/creatives";
-import { parseManuscript, estimatePageCount, extractFullTextFromPdf, prettifyFilenameTitle } from "../lib/importContent";
+import {
+  parseManuscript,
+  estimatePageCount,
+  extractFullTextFromPdf,
+  extractFullTextFromEpub,
+  prettifyFilenameTitle,
+} from "../lib/importContent";
 
 export const ebooksRouter = Router();
 
@@ -73,8 +79,8 @@ ebooksRouter.post("/", (req, res) => {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
     return;
   }
-  if (!Number.isFinite(pageCount) || pageCount < 10 || pageCount > 50) {
-    res.status(400).json({ error: "Número de páginas deve estar entre 10 e 50." });
+  if (!Number.isFinite(pageCount) || pageCount < 1 || pageCount > 1000) {
+    res.status(400).json({ error: "Número de páginas deve estar entre 1 e 1000." });
     return;
   }
   if (!Number.isFinite(wordsPerPage) || wordsPerPage < 150 || wordsPerPage > 500) {
@@ -152,17 +158,17 @@ ebooksRouter.post("/", (req, res) => {
   res.status(201).json({ id });
 });
 
-const IMPORT_EXTENSIONS = new Set([".txt", ".md", ".pdf"]);
+const IMPORT_EXTENSIONS = new Set([".txt", ".md", ".pdf", ".epub"]);
 
 ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
   if (!req.file) {
-    res.status(400).json({ error: "Envie um arquivo .txt, .md ou .pdf com o conteúdo do ebook." });
+    res.status(400).json({ error: "Envie um arquivo .txt, .md, .pdf ou .epub com o conteúdo do ebook." });
     return;
   }
   const ext = path.extname(req.file.originalname).toLowerCase();
   if (!IMPORT_EXTENSIONS.has(ext)) {
     res.status(400).json({
-      error: "Formato não suportado. Envie um arquivo .txt, .md ou .pdf (.docx ainda não é suportado).",
+      error: "Formato não suportado. Envie um arquivo .txt, .md, .pdf ou .epub (.docx ainda não é suportado).",
     });
     return;
   }
@@ -201,7 +207,12 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
 
   let rawText: string;
   try {
-    rawText = ext === ".pdf" ? await extractFullTextFromPdf(req.file.buffer) : req.file.buffer.toString("utf-8");
+    rawText =
+      ext === ".pdf"
+        ? await extractFullTextFromPdf(req.file.buffer)
+        : ext === ".epub"
+          ? await extractFullTextFromEpub(req.file.buffer)
+          : req.file.buffer.toString("utf-8");
   } catch (err) {
     res.status(422).json({ error: err instanceof Error ? err.message : "Falha ao ler o arquivo enviado." });
     return;

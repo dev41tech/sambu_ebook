@@ -144,6 +144,97 @@ export function parseManuscript(
 // inteiro). Aqui usamos um teto bem mais alto, só para evitar um upload absurdo travar o servidor.
 const MAX_IMPORT_CHARS = 400_000;
 
+function extractAttr(tag: string, name: string): string | null {
+  const m = tag.match(new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i"));
+  return m ? m[1] : null;
+}
+
+// Converte o <body> de uma página XHTML do EPUB em texto simples, promovendo os
+// cabeçalhos (h1/h2/h3) para o formato "# Título" reconhecido por parseManuscript() —
+// sem isso, cada capítulo do EPUB viraria um bloco de texto sem separação nenhuma.
+function htmlBodyToHeadedText(html: string): string {
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const body = bodyMatch ? bodyMatch[1] : html;
+  const withoutScripts = body
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+  const withHeadings = withoutScripts.replace(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi, (_m, inner) => {
+    const text = inner.replace(/<[^>]+>/g, "").trim();
+    return `\n# ${text}\n`;
+  });
+  const withBreaks = withHeadings
+    .replace(/<\/(p|div|li|h[4-6]|br|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n");
+  const textOnly = withBreaks.replace(/<[^>]+>/g, " ");
+  const decoded = textOnly
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  return decoded
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export async function extractFullTextFromEpub(buffer: Buffer): Promise<string> {
+  const { default: JSZip } = await import("jszip");
+  const zip = await JSZip.loadAsync(buffer);
+
+  const containerFile = zip.file("META-INF/container.xml");
+  if (!containerFile) {
+    throw new Error("Arquivo EPUB inválido: não encontrei META-INF/container.xml.");
+  }
+  const opfPath = extractAttr(await containerFile.async("string"), "full-path");
+  if (!opfPath) {
+    throw new Error("Arquivo EPUB inválido: não encontrei o arquivo .opf.");
+  }
+  const opfFile = zip.file(opfPath);
+  if (!opfFile) {
+    throw new Error("Arquivo EPUB inválido: arquivo .opf referenciado não existe.");
+  }
+  const opfXml = await opfFile.async("string");
+  const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+
+  const manifest = new Map<string, { href: string; mediaType: string }>();
+  for (const tagMatch of opfXml.matchAll(/<item\b[^>]*>/gi)) {
+    const id = extractAttr(tagMatch[0], "id");
+    const href = extractAttr(tagMatch[0], "href");
+    const mediaType = extractAttr(tagMatch[0], "media-type") || "";
+    if (id && href) manifest.set(id, { href, mediaType });
+  }
+
+  const spineIds: string[] = [];
+  for (const tagMatch of opfXml.matchAll(/<itemref\b[^>]*>/gi)) {
+    const idref = extractAttr(tagMatch[0], "idref");
+    if (idref) spineIds.push(idref);
+  }
+  if (spineIds.length === 0) {
+    throw new Error("Arquivo EPUB inválido: não encontrei a ordem de leitura (spine).");
+  }
+
+  const sections: string[] = [];
+  for (const id of spineIds) {
+    const item = manifest.get(id);
+    if (!item || !/html|xml/i.test(item.mediaType)) continue;
+    const fullPath = decodeURIComponent(opfDir + item.href);
+    const file = zip.file(fullPath);
+    if (!file) continue;
+    const text = htmlBodyToHeadedText(await file.async("string"));
+    if (text) sections.push(text);
+  }
+
+  const fullText = sections.join("\n\n").trim();
+  if (!fullText) {
+    throw new Error("Não encontrei texto legível nesse EPUB.");
+  }
+  return fullText.slice(0, MAX_IMPORT_CHARS);
+}
+
 export async function extractFullTextFromPdf(buffer: Buffer): Promise<string> {
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: buffer });

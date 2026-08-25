@@ -89,15 +89,15 @@ export default function ImportEbook() {
           <label className="text-sm font-medium text-neutral-700">Arquivo do ebook</label>
           <input
             type="file"
-            accept=".txt,.md,.pdf"
+            accept=".txt,.md,.pdf,.epub"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="block w-full text-sm"
             required
           />
           <p className="text-xs text-neutral-500">
-            Aceita .txt, .md ou .pdf (.docx ainda não é suportado). Se o arquivo tiver títulos de capítulo (ex.:
-            "# Capítulo 1" ou "Capítulo 1"), eles são reconhecidos automaticamente; senão, o texto inteiro vira um
-            único capítulo para você dividir na revisão.
+            Aceita .txt, .md, .pdf ou .epub (.docx ainda não é suportado). Se o arquivo tiver títulos de capítulo
+            (ex.: "# Capítulo 1" ou "Capítulo 1"), eles são reconhecidos automaticamente; senão, o texto inteiro vira
+            um único capítulo para você dividir na revisão.
           </p>
         </div>
 
