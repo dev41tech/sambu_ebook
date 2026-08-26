@@ -19,6 +19,7 @@ import { useLocalCover } from "./localCovers";
 import { getKnowledgeContext } from "./knowledge";
 import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings } from "./memory";
+import { startAudiobookGeneration } from "./tts";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
 // uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
@@ -272,4 +273,11 @@ export async function finalizeEbookExport(ebookId: string): Promise<void> {
   db.prepare(
     "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?"
   ).run(pdfPath, docxPath, epubPath, ebookId);
+
+  // Quando o usuário marcou o audiobook já na criação, a narração dispara sozinha
+  // aqui — só depois do texto finalizado, que é quando há capítulos para narrar.
+  // Sem isso a marcação na tela de criação ficaria guardada e nunca usada.
+  if (row.audio_requested && row.audio_status !== "ready" && row.audio_status !== "generating") {
+    startAudiobookGeneration(ebookId);
+  }
 }
