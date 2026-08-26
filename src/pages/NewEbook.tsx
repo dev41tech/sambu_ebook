@@ -348,6 +348,10 @@ export default function NewEbook() {
             A narração é gerada depois que os capítulos ficam prontos, com a voz configurada
             no servidor. Você também pode gerar depois, na tela do ebook.
           </p>
+          <p className="text-xs text-amber-700">
+            Consome cota da ElevenLabs por caractere narrado — um livro de 50 páginas gera
+            dezenas de MB de áudio. Deixe desmarcado se não precisar do audiobook agora.
+          </p>
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}
