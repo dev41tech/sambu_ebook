@@ -99,6 +99,15 @@ ensureColumn("ebooks", "marketing_json", "marketing_json TEXT");
 ensureColumn("ebooks", "cover_local_file", "cover_local_file TEXT NOT NULL DEFAULT ''");
 ensureColumn("ebooks", "version", "version TEXT NOT NULL DEFAULT 'v1.0'");
 ensureColumn("ebooks", "words_per_page", "words_per_page INTEGER NOT NULL DEFAULT 250");
+// Classificação para busca na vitrine. `category_main` guarda o caminho
+// "Grupo > Subcategoria" escolhido na criação (o mesmo valor que vai em `theme`,
+// que alimenta o prompt da IA); `categories_secondary` é um array JSON de
+// caminhos adicionais.
+ensureColumn("ebooks", "category_main", "category_main TEXT NOT NULL DEFAULT ''");
+ensureColumn("ebooks", "categories_secondary", "categories_secondary TEXT NOT NULL DEFAULT '[]'");
+// Item 2: a escolha do audiobook passou a ser feita já na criação.
+ensureColumn("ebooks", "audio_requested", "audio_requested INTEGER NOT NULL DEFAULT 0");
+ensureColumn("ebooks", "audio_voice", "audio_voice TEXT NOT NULL DEFAULT ''");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS learnings (
@@ -228,6 +237,10 @@ export interface EbookRow {
   audio_path: string | null;
   audio_status: AudioStatus;
   audio_error: string | null;
+  audio_requested: number;
+  audio_voice: string;
+  category_main: string;
+  categories_secondary: string;
   generate_cover: number;
   cover_style: string;
   cover_suggestion: string;

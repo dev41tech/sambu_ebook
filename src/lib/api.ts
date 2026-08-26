@@ -150,6 +150,9 @@ export interface NewEbookPayload {
   category?: EbookCategory;
   reference_material?: string;
   extra_instructions?: string;
+  category_main?: string;
+  categories_secondary?: string[];
+  audio_requested?: boolean;
 }
 
 export const api = {

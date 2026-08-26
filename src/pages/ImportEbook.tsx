@@ -4,6 +4,7 @@ import { api, type PexelsPhoto } from "../lib/api";
 import PexelsPicker from "../components/PexelsPicker";
 import LocalCoverPicker from "../components/LocalCoverPicker";
 import ImportIcon from "../components/ImportIcon";
+import ClassificacaoPicker from "../components/ClassificacaoPicker";
 
 const LANGUAGES = ["Português (Brasil)", "Português (Portugal)", "Inglês", "Espanhol"];
 
@@ -12,6 +13,7 @@ export default function ImportEbook() {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [theme, setTheme] = useState("");
+  const [secundarias, setSecundarias] = useState<string[]>([]);
   const [audience, setAudience] = useState("");
   const [language, setLanguage] = useState(LANGUAGES[0]);
   const [authorName, setAuthorName] = useState("");
@@ -43,6 +45,8 @@ export default function ImportEbook() {
       form.append("file", file);
       form.append("title", title.trim());
       form.append("theme", theme.trim());
+      form.append("category_main", theme.trim());
+      form.append("categories_secondary", JSON.stringify(secundarias));
       form.append("audience", audience.trim());
       form.append("language", language);
       form.append("author_name", authorName.trim());
@@ -95,9 +99,10 @@ export default function ImportEbook() {
             required
           />
           <p className="text-xs text-neutral-500">
-            Aceita .txt, .md, .pdf ou .epub (.docx ainda não é suportado). Se o arquivo tiver títulos de capítulo
-            (ex.: "# Capítulo 1" ou "Capítulo 1"), eles são reconhecidos automaticamente; senão, o texto inteiro vira
-            um único capítulo para você dividir na revisão.
+            Aceita .txt, .md, .pdf ou .epub (.docx ainda não é suportado). No <strong>.epub</strong> os capítulos
+            seguem a divisão do próprio arquivo, e capa e página de direitos são descartadas. Em .txt, .md e .pdf,
+            títulos como "# Capítulo 1" ou "Capítulo 1" são reconhecidos; se nada for encontrado, o texto entra
+            inteiro num bloco só para você dividir na revisão — nenhum capítulo é inventado.
           </p>
         </div>
 
@@ -111,15 +116,13 @@ export default function ImportEbook() {
           />
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-neutral-700">Tema / Nicho (opcional)</label>
-          <input
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-            placeholder="Usado só para orientar a capa/imagens geradas por IA; se vazio, usamos o título"
-          />
-        </div>
+        <ClassificacaoPicker
+          principal={theme}
+          onPrincipal={setTheme}
+          secundarias={secundarias}
+          onSecundarias={setSecundarias}
+          obrigatorio={false}
+        />
 
         <div className="space-y-2">
           <label className="text-sm font-medium text-neutral-700">Público-alvo (opcional)</label>

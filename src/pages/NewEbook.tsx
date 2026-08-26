@@ -4,6 +4,7 @@ import { api, type PexelsPhoto } from "../lib/api";
 import PexelsPicker from "../components/PexelsPicker";
 import LocalCoverPicker from "../components/LocalCoverPicker";
 import ImportIcon from "../components/ImportIcon";
+import ClassificacaoPicker from "../components/ClassificacaoPicker";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
 
@@ -27,6 +28,8 @@ export default function NewEbook() {
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
   const [extraInstructions, setExtraInstructions] = useState("");
+  const [secundarias, setSecundarias] = useState<string[]>([]);
+  const [audioRequested, setAudioRequested] = useState(false);
   const [generateCover, setGenerateCover] = useState(false);
   const [coverSuggestion, setCoverSuggestion] = useState("");
   const [coverSource, setCoverSource] = useState<"ai" | "stock" | "local">("ai");
@@ -80,6 +83,9 @@ export default function NewEbook() {
         cover_credit: selectedCoverPhoto ? `Foto de ${selectedCoverPhoto.photographer} (Pexels)` : "",
         cover_alt_text: selectedCoverPhoto?.alt ?? "",
         cover_local_file: selectedLocalCover ?? "",
+        category_main: theme,
+        categories_secondary: secundarias,
+        audio_requested: audioRequested,
       });
       navigate(`/ebooks/${id}/gerando`);
     } catch (err) {
@@ -96,16 +102,12 @@ export default function NewEbook() {
       </h1>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-5 rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-neutral-700">Tema / Nicho</label>
-          <input
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-            placeholder="ex: emagrecimento"
-            required
-          />
-        </div>
+        <ClassificacaoPicker
+          principal={theme}
+          onPrincipal={setTheme}
+          secundarias={secundarias}
+          onSecundarias={setSecundarias}
+        />
 
         <div className="space-y-2">
           <label className="text-sm font-medium text-neutral-700">Público-alvo</label>
@@ -330,6 +332,22 @@ export default function NewEbook() {
               )}
             </>
           )}
+        </div>
+
+        <div className="space-y-2 rounded-md border border-neutral-200 p-4">
+          <p className="text-sm font-medium text-neutral-700">Audiobook</p>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={audioRequested}
+              onChange={(e) => setAudioRequested(e.target.checked)}
+            />
+            Gerar o audiobook junto com o ebook
+          </label>
+          <p className="text-xs text-neutral-500">
+            A narração é gerada depois que os capítulos ficam prontos, com a voz configurada
+            no servidor. Você também pode gerar depois, na tela do ebook.
+          </p>
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}

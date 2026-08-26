@@ -20,9 +20,10 @@ import {
   parseManuscript,
   estimatePageCount,
   extractFullTextFromPdf,
-  extractFullTextFromEpub,
+  extractEpubManuscript,
   prettifyFilenameTitle,
 } from "../lib/importContent";
+import { isCategoriaValida } from "../../src/lib/categorias";
 
 export const ebooksRouter = Router();
 
@@ -74,6 +75,22 @@ ebooksRouter.post("/", (req, res) => {
   const category = CATEGORIES.has(body.category) ? body.category : "geral";
   const referenceMaterial = String(body.reference_material ?? "").trim().slice(0, 20000);
   const extraInstructions = String(body.extra_instructions ?? "").trim().slice(0, 5000);
+  // Classificação: o caminho principal é o mesmo valor que vai em `theme`
+  // (é ele que alimenta o prompt da IA); as secundárias só classificam.
+  const categoryMain = String(body.category_main ?? theme).trim();
+  const categoriesSecondary = Array.isArray(body.categories_secondary)
+    ? (body.categories_secondary as unknown[])
+        .map((c) => String(c).trim())
+        .filter((c) => isCategoriaValida(c) && c !== categoryMain)
+        .slice(0, 8)
+    : [];
+  const audioRequested = !!body.audio_requested;
+  const audioVoice = String(body.audio_voice ?? "").trim().slice(0, 80);
+
+  if (categoryMain && !isCategoriaValida(categoryMain)) {
+    res.status(400).json({ error: "Categoria principal inválida." });
+    return;
+  }
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
@@ -120,8 +137,8 @@ ebooksRouter.post("/", (req, res) => {
        generate_cover, cover_suggestion, cover_source, cover_stock_url, cover_credit, cover_alt_text,
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
-       extra_instructions, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
+       extra_instructions, category_main, categories_secondary, audio_requested, audio_voice, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
   ).run(
     id,
     titleMode === "manual" ? customTitle : "",
@@ -151,7 +168,11 @@ ebooksRouter.post("/", (req, res) => {
     imageSource,
     category,
     referenceMaterial,
-    extraInstructions
+    extraInstructions,
+    categoryMain,
+    JSON.stringify(categoriesSecondary),
+    audioRequested ? 1 : 0,
+    audioVoice
   );
 
   ensureGenerationRunning(id);
@@ -205,33 +226,54 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
     return;
   }
 
-  let rawText: string;
+  const explicitTitle = String(body.title ?? "").trim();
+  const fallbackTitle = explicitTitle || prettifyFilenameTitle(path.basename(req.file.originalname, ext));
+
+  // O EPUB tem caminho próprio: cada documento do spine já é um capítulo, então
+  // respeitamos essa divisão em vez de procurar cabeçalho no texto corrido.
+  let manuscript;
   try {
-    rawText =
-      ext === ".pdf"
-        ? await extractFullTextFromPdf(req.file.buffer)
-        : ext === ".epub"
-          ? await extractFullTextFromEpub(req.file.buffer)
+    if (ext === ".epub") {
+      manuscript = await extractEpubManuscript(req.file.buffer, fallbackTitle, !!explicitTitle);
+    } else {
+      const rawText =
+        ext === ".pdf"
+          ? await extractFullTextFromPdf(req.file.buffer)
           : req.file.buffer.toString("utf-8");
+      if (!rawText.trim()) {
+        res.status(422).json({ error: "Não foi possível extrair texto do arquivo enviado." });
+        return;
+      }
+      manuscript = parseManuscript(rawText, fallbackTitle, !!explicitTitle);
+    }
   } catch (err) {
     res.status(422).json({ error: err instanceof Error ? err.message : "Falha ao ler o arquivo enviado." });
     return;
   }
-  if (!rawText.trim()) {
-    res.status(422).json({ error: "Não foi possível extrair texto do arquivo enviado." });
-    return;
-  }
 
-  const explicitTitle = String(body.title ?? "").trim();
-  const fallbackTitle = explicitTitle || prettifyFilenameTitle(path.basename(req.file.originalname, ext));
-  const manuscript = parseManuscript(rawText, fallbackTitle, !!explicitTitle);
-  if (manuscript.chapters.length === 0) {
+  if (manuscript.chapters.length === 0 && !manuscript.intro && !manuscript.conclusion) {
     res.status(422).json({ error: "Não foi possível identificar capítulos no arquivo enviado." });
     return;
   }
 
   const subtitle = String(body.subtitle ?? "").trim();
   const theme = String(body.theme ?? "").trim() || manuscript.title;
+  // Classificação é opcional na importação: um manuscrito pronto pode entrar sem
+  // categoria e ser classificado depois, na revisão.
+  const rawCategoryMain = String(body.category_main ?? "").trim();
+  const importCategoryMain = isCategoriaValida(rawCategoryMain) ? rawCategoryMain : "";
+  let importCategoriesSecondary: string[] = [];
+  try {
+    const parsed = JSON.parse(String(body.categories_secondary ?? "[]"));
+    if (Array.isArray(parsed)) {
+      importCategoriesSecondary = parsed
+        .map((c) => String(c).trim())
+        .filter((c) => isCategoriaValida(c) && c !== importCategoryMain)
+        .slice(0, 8);
+    }
+  } catch {
+    importCategoriesSecondary = [];
+  }
   const outline = {
     title: manuscript.title,
     subtitle,
@@ -247,8 +289,8 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
        outline_json, intro, conclusion, chapters_total, chapters_done,
        generate_cover, cover_suggestion, cover_source, cover_stock_url, cover_credit, cover_alt_text, cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
-       extra_instructions, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
+       extra_instructions, category_main, categories_secondary, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
   ).run(
     id,
     outline.title,
@@ -282,7 +324,9 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
     imageSource,
     "geral",
     "",
-    ""
+    "",
+    importCategoryMain,
+    JSON.stringify(importCategoriesSecondary)
   );
 
   const insertChapter = db.prepare(

@@ -96,11 +96,16 @@ export function parseManuscript(
   const hasHeadings = sections.some((s) => s.heading !== null);
 
   if (!hasHeadings) {
+    // Nenhum cabeçalho reconhecido: o texto entra inteiro, num bloco só, para o
+    // usuário dividir na revisão. Não inventamos um "Capítulo 1" que não existe
+    // no arquivo — o título abaixo deixa explícito que a divisão está pendente.
     const body = rawText.trim();
     return {
       title: fallbackTitle,
       intro: "",
-      chapters: body ? [{ title: "Capítulo 1", content: body }] : [],
+      chapters: body
+        ? [{ title: "Texto importado (dividir na revisão)", content: body }]
+        : [],
       conclusion: "",
     };
   }
@@ -181,7 +186,36 @@ function htmlBodyToHeadedText(html: string): string {
     .join("\n\n");
 }
 
-export async function extractFullTextFromEpub(buffer: Buffer): Promise<string> {
+export async function extractFullTextFromPdf(buffer: Buffer): Promise<string> {
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    const text = (result.text || "").trim();
+    if (!text) {
+      throw new Error("Não encontrei texto legível nesse PDF (pode ser um PDF escaneado/imagem).");
+    }
+    return text.slice(0, MAX_IMPORT_CHARS);
+  } finally {
+    await parser.destroy();
+  }
+}
+
+export function estimatePageCount(manuscript: ParsedManuscript): number {
+  const allText = [manuscript.intro, manuscript.conclusion, ...manuscript.chapters.map((c) => c.content)].join(" ");
+  const wordCount = allText.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.round(wordCount / 250));
+}
+
+// Extrai os capitulos de um EPUB respeitando a divisao do proprio arquivo: cada
+// documento do spine (a ordem de leitura declarada no .opf) vira um capitulo.
+// E mais fiel do que procurar cabecalho no texto corrido -- um capitulo sem <h1>
+// deixaria de ser detectado e grudaria no anterior.
+export async function extractEpubManuscript(
+  buffer: Buffer,
+  fallbackTitle: string,
+  titleIsExplicit = false
+): Promise<ParsedManuscript> {
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(buffer);
 
@@ -217,41 +251,68 @@ export async function extractFullTextFromEpub(buffer: Buffer): Promise<string> {
     throw new Error("Arquivo EPUB inválido: não encontrei a ordem de leitura (spine).");
   }
 
-  const sections: string[] = [];
+  // Titulo do livro pelos metadados, quando o usuario nao digitou um.
+  let title = fallbackTitle;
+  if (!titleIsExplicit) {
+    const dcTitle = opfXml.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i);
+    const found = dcTitle ? dcTitle[1].replace(/<[^>]+>/g, "").trim() : "";
+    if (found) title = found;
+  }
+
+  let intro = "";
+  let conclusion = "";
+  const chapters: ParsedChapter[] = [];
+  let ordem = 0;
+
   for (const id of spineIds) {
     const item = manifest.get(id);
     if (!item || !/html|xml/i.test(item.mediaType)) continue;
     const fullPath = decodeURIComponent(opfDir + item.href);
     const file = zip.file(fullPath);
     if (!file) continue;
-    const text = htmlBodyToHeadedText(await file.async("string"));
-    if (text) sections.push(text);
+
+    const html = await file.async("string");
+    const texto = htmlBodyToHeadedText(html);
+    if (!texto.trim()) continue;
+
+    ordem += 1;
+    // htmlBodyToHeadedText marca os cabecalhos com "# ". O primeiro deles e o
+    // titulo do capitulo; o resto do texto e o conteudo.
+    const linhas = texto.split("\n\n");
+    let tituloCap = "";
+    const corpo: string[] = [];
+    for (const linha of linhas) {
+      if (!tituloCap && linha.startsWith("# ")) {
+        tituloCap = linha.slice(2).trim();
+        continue;
+      }
+      corpo.push(linha.startsWith("# ") ? linha.slice(2).trim() : linha);
+    }
+    const conteudo = corpo.join("\n\n").trim();
+    if (!conteudo && !tituloCap) continue;
+
+    // Material de rosto (capa, folha de rosto, página de direitos) costuma vir
+    // nos primeiros documentos do spine e quase não tem texto. Se entrasse como
+    // capítulo, empurraria a Introdução para a lista de capítulos.
+    const pareceRosto =
+      conteudo.length < 200 &&
+      (ordem <= 3 || /direitos reservados|todos os direitos|copyright|©/i.test(conteudo));
+    if (pareceRosto) continue;
+
+    if (!tituloCap) tituloCap = `Parte ${ordem}`;
+
+    const lower = tituloCap.toLowerCase();
+    if (chapters.length === 0 && INTRO_WORDS.some((w) => lower.includes(w))) {
+      intro = intro ? `${intro}\n\n${conteudo}` : conteudo;
+    } else if (CONCLUSION_WORDS.some((w) => lower.includes(w))) {
+      conclusion = conclusion ? `${conclusion}\n\n${conteudo}` : conteudo;
+    } else {
+      chapters.push({ title: tituloCap, content: conteudo || tituloCap });
+    }
   }
 
-  const fullText = sections.join("\n\n").trim();
-  if (!fullText) {
+  if (chapters.length === 0 && !intro && !conclusion) {
     throw new Error("Não encontrei texto legível nesse EPUB.");
   }
-  return fullText.slice(0, MAX_IMPORT_CHARS);
-}
-
-export async function extractFullTextFromPdf(buffer: Buffer): Promise<string> {
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: buffer });
-  try {
-    const result = await parser.getText();
-    const text = (result.text || "").trim();
-    if (!text) {
-      throw new Error("Não encontrei texto legível nesse PDF (pode ser um PDF escaneado/imagem).");
-    }
-    return text.slice(0, MAX_IMPORT_CHARS);
-  } finally {
-    await parser.destroy();
-  }
-}
-
-export function estimatePageCount(manuscript: ParsedManuscript): number {
-  const allText = [manuscript.intro, manuscript.conclusion, ...manuscript.chapters.map((c) => c.content)].join(" ");
-  const wordCount = allText.trim().split(/\s+/).filter(Boolean).length;
-  return Math.max(1, Math.round(wordCount / 250));
+  return { title, intro, chapters, conclusion };
 }
