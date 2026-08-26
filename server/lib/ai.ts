@@ -35,7 +35,26 @@ export interface EbookContext {
   learnings?: string[];
 }
 
-const MAX_REFERENCE_CHARS = 9000;
+const MAX_REFERENCE_CHARS = 24000;
+
+// Quando o usuário junta vários artigos, cada bloco vem marcado com
+// "--- Fonte: ... ---". Um slice simples gastaria a verba inteira nos primeiros e
+// os últimos nunca chegariam ao modelo — o oposto do que se quer ao reunir várias
+// fontes. Aqui a verba é dividida em partes iguais entre elas.
+function recortarPorFonte(material: string, limite: number): string {
+  if (material.length <= limite) return material;
+
+  const partes = material.split(/(?=--- Fonte:)/g).filter((p) => p.trim());
+  if (partes.length <= 1) return material.slice(0, limite);
+
+  const cota = Math.floor(limite / partes.length);
+  return partes
+    .map((p) => {
+      if (p.length <= cota) return p.trimEnd();
+      return `${p.slice(0, cota).trimEnd()}\n[...trecho abreviado para caber no contexto...]`;
+    })
+    .join("\n\n");
+}
 
 // Bloco de "aterramento" injetado nos prompts quando o usuário forneceu material de
 // referência (Ebooks Técnicos/Comportamentais) — o conteúdo deve se basear nesse material
@@ -43,7 +62,7 @@ const MAX_REFERENCE_CHARS = 9000;
 function referenceBlock(ctx: EbookContext): string {
   const material = ctx.referenceMaterial?.trim();
   if (!material) return "";
-  const trimmed = material.slice(0, MAX_REFERENCE_CHARS);
+  const trimmed = recortarPorFonte(material, MAX_REFERENCE_CHARS);
   return `\nMATERIAL DE REFERÊNCIA fornecido pelo usuário — use como base principal do conteúdo. Não invente fatos, dados, estatísticas ou afirmações que contradigam ou vão muito além do que está aqui; quando precisar complementar com conhecimento geral, deixe claro que é uma explicação complementar, não parte do material original:\n"""\n${trimmed}\n"""\n`;
 }
 

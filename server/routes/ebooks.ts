@@ -73,7 +73,7 @@ ebooksRouter.post("/", (req, res) => {
   const imageSuggestion = String(body.image_suggestion ?? "").trim().slice(0, 500);
   const imageSource = body.image_source === "stock" ? "stock" : "ai";
   const category = CATEGORIES.has(body.category) ? body.category : "geral";
-  const referenceMaterial = String(body.reference_material ?? "").trim().slice(0, 20000);
+  const referenceMaterial = String(body.reference_material ?? "").trim().slice(0, 120000);
   const extraInstructions = String(body.extra_instructions ?? "").trim().slice(0, 5000);
   // Classificação: o caminho principal é o mesmo valor que vai em `theme`
   // (é ele que alimenta o prompt da IA); as secundárias só classificam.
