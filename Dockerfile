@@ -29,6 +29,8 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server
+# server/routes/ebooks.ts importa src/lib/categorias — sem isto o tsx quebra no start
+COPY --from=builder /app/src/lib ./src/lib
 COPY --from=builder /app/package.json ./package.json
 
 # Diretórios de dados persistentes — monte volumes do EasyPanel apontando para eles,
