@@ -60,8 +60,8 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
     referenceMaterial.trim().length > 0 &&
     theme.trim().length > 0 &&
     audience.trim().length > 0 &&
-    pageCount >= 10 &&
-    pageCount <= 50 &&
+    pageCount >= 1 &&
+    pageCount <= 1000 &&
     wordsPerPage >= 150 &&
     wordsPerPage <= 500 &&
     (titleMode === "ai" || customTitle.trim().length > 0) &&
@@ -212,10 +212,13 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
             className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
             value={extraInstructions}
             onChange={(e) => setExtraInstructions(e.target.value)}
-            placeholder="Ex.: dê ênfase à parte prática, evite jargão excessivo, siga a metodologia X…"
-            rows={2}
-            maxLength={1000}
+            placeholder="Ex.: dê ênfase à parte prática, evite jargão excessivo, siga a metodologia X… Cabe um resumo inteiro do que o livro deve cobrir."
+            rows={10}
+            maxLength={5000}
           />
+          <p className="text-xs text-neutral-500">
+            {extraInstructions.length}/5000 caracteres.
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">

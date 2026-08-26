@@ -73,7 +73,7 @@ ebooksRouter.post("/", (req, res) => {
   const imageSource = body.image_source === "stock" ? "stock" : "ai";
   const category = CATEGORIES.has(body.category) ? body.category : "geral";
   const referenceMaterial = String(body.reference_material ?? "").trim().slice(0, 20000);
-  const extraInstructions = String(body.extra_instructions ?? "").trim().slice(0, 1000);
+  const extraInstructions = String(body.extra_instructions ?? "").trim().slice(0, 5000);
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
