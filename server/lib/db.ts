@@ -1,197 +1,54 @@
-import Database from "better-sqlite3";
-import path from "node:path";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import postgres from "postgres";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(__dirname, "..", "..", "data");
-fs.mkdirSync(dataDir, { recursive: true });
-
-export const db = new Database(path.join(dataDir, "app.db"));
-db.pragma("journal_mode = WAL");
-db.pragma("busy_timeout = 5000");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS ebooks (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL DEFAULT '',
-    subtitle TEXT NOT NULL DEFAULT '',
-    theme TEXT NOT NULL,
-    audience TEXT NOT NULL,
-    tone TEXT NOT NULL,
-    language TEXT NOT NULL,
-    template TEXT NOT NULL,
-    page_count INTEGER NOT NULL,
-    author_name TEXT NOT NULL DEFAULT '',
-    author_bio TEXT NOT NULL DEFAULT '',
-    include_copyright INTEGER NOT NULL DEFAULT 0,
-    include_about INTEGER NOT NULL DEFAULT 0,
-    title_mode TEXT NOT NULL DEFAULT 'ai',
-    status TEXT NOT NULL DEFAULT 'draft',
-    error_message TEXT,
-    outline_json TEXT,
-    intro TEXT,
-    conclusion TEXT,
-    about_author TEXT,
-    chapters_total INTEGER NOT NULL DEFAULT 0,
-    chapters_done INTEGER NOT NULL DEFAULT 0,
-    current_step TEXT,
-    pdf_path TEXT,
-    docx_path TEXT,
-    audio_path TEXT,
-    audio_status TEXT NOT NULL DEFAULT 'none',
-    audio_error TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS chapters (
-    id TEXT PRIMARY KEY,
-    ebook_id TEXT NOT NULL REFERENCES ebooks(id) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL DEFAULT '',
-    content TEXT NOT NULL DEFAULT '',
-    audio_path TEXT
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_chapters_ebook ON chapters(ebook_id);
-
-  CREATE TABLE IF NOT EXISTS chapter_images (
-    id TEXT PRIMARY KEY,
-    ebook_id TEXT NOT NULL REFERENCES ebooks(id) ON DELETE CASCADE,
-    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    alt_text TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_chapter_images_chapter ON chapter_images(chapter_id);
-`);
-
-function ensureColumn(table: string, column: string, ddl: string) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  if (!cols.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-  }
+// Conexao com o Postgres. A DATABASE_URL vem do ambiente (no EasyPanel, em
+// "Ambiente"); nao ha fallback de propósito — sem banco o app nao tem o que
+// servir, e falhar aqui e melhor do que subir pela metade.
+//
+// O schema NAO e criado aqui. Ele vive em db/schema.sql e e aplicado uma vez
+// com `npm run db:schema`. Era o "CREATE TABLE IF NOT EXISTS" no boot que
+// deixava o app subir com banco vazio sem reclamar, e escondeu a perda de dados
+// de 2026-08-26.
+const url = process.env.DATABASE_URL;
+if (!url) {
+  throw new Error("DATABASE_URL nao definida — o app nao sobe sem banco.");
 }
 
-ensureColumn("ebooks", "generate_cover", "generate_cover INTEGER NOT NULL DEFAULT 0");
-ensureColumn("ebooks", "cover_style", "cover_style TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "cover_path", "cover_path TEXT");
-ensureColumn("ebooks", "generate_images", "generate_images INTEGER NOT NULL DEFAULT 0");
-ensureColumn("ebooks", "image_count", "image_count INTEGER NOT NULL DEFAULT 0");
-ensureColumn("ebooks", "images_done", "images_done INTEGER NOT NULL DEFAULT 0");
-ensureColumn("ebooks", "cover_suggestion", "cover_suggestion TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "image_suggestion", "image_suggestion TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "cover_alt_text", "cover_alt_text TEXT NOT NULL DEFAULT ''");
-ensureColumn("chapter_images", "alt_text", "alt_text TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "cover_source", "cover_source TEXT NOT NULL DEFAULT 'ai'");
-ensureColumn("ebooks", "cover_stock_url", "cover_stock_url TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "cover_credit", "cover_credit TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "image_source", "image_source TEXT NOT NULL DEFAULT 'ai'");
-ensureColumn("chapter_images", "credit", "credit TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "epub_path", "epub_path TEXT");
-ensureColumn("ebooks", "category", "category TEXT NOT NULL DEFAULT 'geral'");
-ensureColumn("ebooks", "reference_material", "reference_material TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "extra_instructions", "extra_instructions TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "web_research", "web_research TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "marketing_json", "marketing_json TEXT");
-ensureColumn("ebooks", "cover_local_file", "cover_local_file TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "version", "version TEXT NOT NULL DEFAULT 'v1.0'");
-ensureColumn("ebooks", "words_per_page", "words_per_page INTEGER NOT NULL DEFAULT 250");
-// Classificação para busca na vitrine. `category_main` guarda o caminho
-// "Grupo > Subcategoria" escolhido na criação (o mesmo valor que vai em `theme`,
-// que alimenta o prompt da IA); `categories_secondary` é um array JSON de
-// caminhos adicionais.
-ensureColumn("ebooks", "category_main", "category_main TEXT NOT NULL DEFAULT ''");
-ensureColumn("ebooks", "categories_secondary", "categories_secondary TEXT NOT NULL DEFAULT '[]'");
-// Item 2: a escolha do audiobook passou a ser feita já na criação.
-ensureColumn("ebooks", "audio_requested", "audio_requested INTEGER NOT NULL DEFAULT 0");
-ensureColumn("ebooks", "audio_voice", "audio_voice TEXT NOT NULL DEFAULT ''");
+export const sql = postgres(url, {
+  // O app roda num container so e faz geracao longa de ebook; um punhado de
+  // conexoes basta e evita estourar o limite da instancia compartilhada com o n8n.
+  max: 10,
+  idle_timeout: 30,
+  connect_timeout: 10,
+  onnotice: () => {},
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS learnings (
-    id TEXT PRIMARY KEY,
-    ebook_id TEXT REFERENCES ebooks(id) ON DELETE SET NULL,
-    category TEXT NOT NULL DEFAULT 'geral',
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+export type Conn = postgres.Sql | postgres.TransactionSql;
 
-// Tabelas da vitrine (portadas do Sambu Online). O catálogo em si continua sendo
-// a tabela `ebooks` — estas guardam só o que é do leitor: onde parou, o que
-// favoritou, plano e dados de perfil.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS reading_progress (
-    id TEXT PRIMARY KEY,
-    user_email TEXT NOT NULL,
-    book_id TEXT NOT NULL,
-    chapter INTEGER NOT NULL DEFAULT 0,
-    progress INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+// As tres funcoes abaixo existem para manter as queries do projeto exatamente
+// como estavam no SQLite — mesmo texto SQL, so com os placeholders `?` virando
+// `$1`, `$2`... Elas nao imitam um driver: sao um atalho para nao repetir
+// `sql.unsafe(...).then(r => r[0])` em 89 lugares.
+//
+// O parametro `conn` permite usar a mesma query dentro de uma transacao,
+// passando o `tx` do sql.begin().
 
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_owner_book
-    ON reading_progress(user_email, book_id);
+/** Todas as linhas. */
+export async function all<T>(text: string, params: unknown[] = [], conn: Conn = sql): Promise<T[]> {
+  const rows = await conn.unsafe(text, params as never[]);
+  return rows as unknown as T[];
+}
 
-  CREATE TABLE IF NOT EXISTS favorites (
-    id TEXT PRIMARY KEY,
-    user_email TEXT NOT NULL,
-    book_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+/** A primeira linha, ou undefined. Equivale ao .get() do better-sqlite3. */
+export async function one<T>(text: string, params: unknown[] = [], conn: Conn = sql): Promise<T | undefined> {
+  const rows = await conn.unsafe(text, params as never[]);
+  return rows[0] as unknown as T | undefined;
+}
 
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_owner_book
-    ON favorites(user_email, book_id);
-
-  CREATE TABLE IF NOT EXISTS bookmarks (
-    id TEXT PRIMARY KEY,
-    user_email TEXT NOT NULL,
-    book_id TEXT NOT NULL,
-    chapter INTEGER NOT NULL DEFAULT 0,
-    chapter_id TEXT,
-    label TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_owner_book_chapter
-    ON bookmarks(user_email, book_id, chapter);
-
-  CREATE TABLE IF NOT EXISTS subscriptions (
-    id TEXT PRIMARY KEY,
-    user_email TEXT NOT NULL UNIQUE,
-    plan TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'trialing',
-    current_period_end TEXT,
-    cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS profiles (
-    email TEXT PRIMARY KEY,
-    full_name TEXT NOT NULL DEFAULT '',
-    display_name TEXT NOT NULL DEFAULT '',
-    phone TEXT NOT NULL DEFAULT '',
-    birth_date TEXT NOT NULL DEFAULT '',
-    locale TEXT NOT NULL DEFAULT 'pt-BR',
-    pronouns TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT 'BR',
-    role TEXT NOT NULL DEFAULT 'reader',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS analytics_events (
-    id TEXT PRIMARY KEY,
-    user_email TEXT,
-    event TEXT NOT NULL,
-    book_id TEXT,
-    chapter_id TEXT,
-    metadata TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-`);
+/** INSERT/UPDATE/DELETE. Devolve quantas linhas foram afetadas. */
+export async function run(text: string, params: unknown[] = [], conn: Conn = sql): Promise<number> {
+  const rows = await conn.unsafe(text, params as never[]);
+  return rows.count ?? 0;
+}
 
 export interface LearningRow {
   id: string;
@@ -218,8 +75,8 @@ export interface EbookRow {
   words_per_page: number;
   author_name: string;
   author_bio: string;
-  include_copyright: number;
-  include_about: number;
+  include_copyright: boolean;
+  include_about: boolean;
   title_mode: string;
   status: EbookStatus;
   error_message: string | null;
@@ -237,11 +94,11 @@ export interface EbookRow {
   audio_path: string | null;
   audio_status: AudioStatus;
   audio_error: string | null;
-  audio_requested: number;
+  audio_requested: boolean;
   audio_voice: string;
   category_main: string;
   categories_secondary: string;
-  generate_cover: number;
+  generate_cover: boolean;
   cover_style: string;
   cover_suggestion: string;
   cover_path: string | null;
@@ -251,7 +108,7 @@ export interface EbookRow {
   cover_credit: string;
   cover_local_file: string;
   version: string;
-  generate_images: number;
+  generate_images: boolean;
   image_count: number;
   image_suggestion: string;
   image_source: "ai" | "stock";

@@ -1,25 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { db, type EbookCategory, type LearningRow } from "./db";
+import { all, run, type EbookCategory, type LearningRow } from "./db";
 
-export function addLearning(content: string, ebookId: string | null, category: EbookCategory = "geral") {
+export async function addLearning(content: string, ebookId: string | null, category: EbookCategory = "geral") {
   const text = content.trim();
   if (!text) return;
-  db.prepare("INSERT INTO learnings (id, ebook_id, category, content) VALUES (?, ?, ?, ?)").run(
+  await run("INSERT INTO learnings (id, ebook_id, category, content) VALUES ($1, $2, $3, $4)", [
     randomUUID(),
     ebookId,
     category,
-    text.slice(0, 1000)
-  );
+    text.slice(0, 1000),
+  ]);
 }
 
-export function getRecentLearnings(limit = 12): LearningRow[] {
-  return db.prepare("SELECT * FROM learnings ORDER BY created_at DESC LIMIT ?").all(limit) as LearningRow[];
+export async function getRecentLearnings(limit = 12): Promise<LearningRow[]> {
+  return all<LearningRow>("SELECT * FROM learnings ORDER BY created_at DESC LIMIT $1", [limit]);
 }
 
-export function listLearnings(): LearningRow[] {
-  return db.prepare("SELECT * FROM learnings ORDER BY created_at DESC").all() as LearningRow[];
+export async function listLearnings(): Promise<LearningRow[]> {
+  return all<LearningRow>("SELECT * FROM learnings ORDER BY created_at DESC");
 }
 
-export function deleteLearning(id: string) {
-  db.prepare("DELETE FROM learnings WHERE id = ?").run(id);
+export async function deleteLearning(id: string) {
+  await run("DELETE FROM learnings WHERE id = $1", [id]);
 }

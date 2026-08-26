@@ -4,7 +4,7 @@
 // original — a mesma lógica de validação vive aqui, dentro do Sambu Ebooks.
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { db, type EbookRow } from "../lib/db";
+import { all, one, run, type EbookRow } from "../lib/db";
 import { renderEbookPdfValidated } from "../lib/pdf";
 import { renderEbookEpubValidated } from "../lib/epub";
 
@@ -20,7 +20,7 @@ interface ManuscriptChapter {
   content_markdown: string;
 }
 
-function upsertManuscript(body: Record<string, unknown>): EbookRow {
+async function upsertManuscript(body: Record<string, unknown>): Promise<EbookRow> {
   const ebookId = String(body.ebook_id || randomUUID());
   const manuscript = (body.manuscript as Record<string, unknown>) || {};
   const chaptersIn: ManuscriptChapter[] = Array.isArray(manuscript.chapters)
@@ -42,79 +42,84 @@ function upsertManuscript(body: Record<string, unknown>): EbookRow {
   const pageCount = Number(body.page_count) || 20;
   const version = String(body.version || "").trim();
 
-  const exists = db.prepare("SELECT id, version FROM ebooks WHERE id = ?").get(ebookId) as
-    | { id: string; version: string }
-    | undefined;
+  const exists = await one<{ id: string; version: string }>(
+    "SELECT id, version FROM ebooks WHERE id = $1",
+    [ebookId]
+  );
   if (exists) {
     // Se o payload não trouxer versão explícita (ex.: re-render sem mudança editorial),
     // mantém a versão já registrada em vez de resetar para o default.
     const nextVersion = version || exists.version;
-    db.prepare(
-      `UPDATE ebooks SET title=?, subtitle=?, theme=?, audience=?, tone=?, language=?, template=?, page_count=?,
-       intro=?, conclusion=?, version=?, status='ready', error_message=NULL WHERE id=?`
-    ).run(
-      title,
-      subtitle,
-      theme,
-      audience,
-      tone,
-      language,
-      FIXED_TEMPLATE,
-      pageCount,
-      intro?.content_markdown || null,
-      conclusion?.content_markdown || null,
-      nextVersion,
-      ebookId
+    await run(
+      `UPDATE ebooks SET title=$1, subtitle=$2, theme=$3, audience=$4, tone=$5, language=$6, template=$7, page_count=$8,
+       intro=$9, conclusion=$10, version=$11, status='ready', error_message=NULL WHERE id=$12`,
+      [
+        title,
+        subtitle,
+        theme,
+        audience,
+        tone,
+        language,
+        FIXED_TEMPLATE,
+        pageCount,
+        intro?.content_markdown || null,
+        conclusion?.content_markdown || null,
+        nextVersion,
+        ebookId,
+      ]
     );
-    db.prepare("DELETE FROM chapters WHERE ebook_id = ?").run(ebookId);
+    await run("DELETE FROM chapters WHERE ebook_id = $1", [ebookId]);
   } else {
-    db.prepare(
+    await run(
       `INSERT INTO ebooks
         (id, title, subtitle, theme, audience, tone, language, template, page_count, title_mode, status, intro, conclusion, category, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'ready', ?, ?, 'geral', ?)`
-    ).run(
-      ebookId,
-      title,
-      subtitle,
-      theme,
-      audience,
-      tone,
-      language,
-      FIXED_TEMPLATE,
-      pageCount,
-      intro?.content_markdown || null,
-      conclusion?.content_markdown || null,
-      version || "v1.0"
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'manual', 'ready', $10, $11, 'geral', $12)`,
+      [
+        ebookId,
+        title,
+        subtitle,
+        theme,
+        audience,
+        tone,
+        language,
+        FIXED_TEMPLATE,
+        pageCount,
+        intro?.content_markdown || null,
+        conclusion?.content_markdown || null,
+        version || "v1.0",
+      ]
     );
   }
 
-  const insertChapter = db.prepare(
-    "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES (?, ?, ?, ?, '', ?)"
-  );
-  core.forEach((c, i) => {
-    insertChapter.run(randomUUID(), ebookId, i, c.title, c.content_markdown);
-  });
-  db.prepare("UPDATE ebooks SET chapters_total = ?, chapters_done = ? WHERE id = ?").run(
+  // for...of no lugar de forEach: o callback do forEach nao espera promise.
+  for (const [i, c] of core.entries()) {
+    await run(
+      "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES ($1, $2, $3, $4, '', $5)",
+      [randomUUID(), ebookId, i, c.title, c.content_markdown]
+    );
+  }
+  await run("UPDATE ebooks SET chapters_total = $1, chapters_done = $2 WHERE id = $3", [
     core.length,
     core.length,
-    ebookId
-  );
+    ebookId,
+  ]);
 
-  return db.prepare("SELECT * FROM ebooks WHERE id = ?").get(ebookId) as EbookRow;
+  return (await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]))!;
 }
 
 function loadChapters(ebookId: string) {
-  return db
-    .prepare("SELECT id, title, content FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-    .all(ebookId) as { id: string; title: string; content: string }[];
+  return all<{ id: string; title: string; content: string }>(
+    "SELECT id, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [ebookId]
+  );
 }
 
 renderRouter.post("/pdf", async (req, res) => {
   try {
-    const ebook = upsertManuscript(req.body ?? {});
-    const chapters = loadChapters(ebook.id);
+    const ebook = await upsertManuscript(req.body ?? {});
+    const chapters = await loadChapters(ebook.id);
     const { path: pdfPath, pageCount, validation } = await renderEbookPdfValidated(ebook, chapters);
-    db.prepare("UPDATE ebooks SET pdf_path = ? WHERE id = ?").run(pdfPath, ebook.id);
+    await run("UPDATE ebooks SET pdf_path = $1 WHERE id = $2", [pdfPath, ebook.id]);
 
     const ok = validation.textCoverage >= 0.995 && validation.clippingIssues === 0;
     res.status(ok ? 200 : 422).json({
@@ -137,10 +142,10 @@ renderRouter.post("/pdf", async (req, res) => {
 
 renderRouter.post("/epub", async (req, res) => {
   try {
-    const ebook = upsertManuscript(req.body ?? {});
-    const chapters = loadChapters(ebook.id);
+    const ebook = await upsertManuscript(req.body ?? {});
+    const chapters = await loadChapters(ebook.id);
     const { path: epubPath, validation } = await renderEbookEpubValidated(ebook, chapters);
-    db.prepare("UPDATE ebooks SET epub_path = ? WHERE id = ?").run(epubPath, ebook.id);
+    await run("UPDATE ebooks SET epub_path = $1 WHERE id = $2", [epubPath, ebook.id]);
 
     res.status(validation.structureOk ? 200 : 422).json({
       ok: validation.structureOk,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { db, type EbookRow } from "./db";
+import { all, one, run, sql, type EbookRow } from "./db";
 import {
   generateOutline,
   generateIntro,
@@ -28,17 +28,17 @@ const MAX_CONCURRENT_JOBS = 2;
 const activeJobs = new Set<string>();
 const queuedJobs: string[] = [];
 
-function getEbook(id: string): EbookRow | undefined {
-  return db.prepare("SELECT * FROM ebooks WHERE id = ?").get(id) as EbookRow | undefined;
+function getEbook(id: string): Promise<EbookRow | undefined> {
+  return one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
 }
 
-function setStep(id: string, step: string) {
-  db.prepare("UPDATE ebooks SET current_step = ? WHERE id = ?").run(step, id);
+async function setStep(id: string, step: string) {
+  await run("UPDATE ebooks SET current_step = $1 WHERE id = $2", [step, id]);
 }
 
 async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   const knowledgeContext = await getKnowledgeContext();
-  const learnings = getRecentLearnings(12).map((l) => l.content);
+  const learnings = (await getRecentLearnings(12)).map((l) => l.content);
   return {
     theme: row.theme,
     audience: row.audience,
@@ -57,7 +57,7 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
 
 async function runJob(ebookId: string) {
   try {
-    let row = getEbook(ebookId);
+    let row = await getEbook(ebookId);
     if (!row || row.status === "review" || row.status === "ready") return;
 
     // Etapa 0: pesquisa na internet (opcional — só roda se TAVILY_API_KEY estiver
@@ -65,13 +65,13 @@ async function runJob(ebookId: string) {
     // Ebooks importados de arquivo já chegam com outline_json preenchido e não precisam
     // de pesquisa, já que não passam pela escrita por IA.
     if (hasWebSearch() && !row.web_research && !row.outline_json) {
-      setStep(ebookId, "research");
+      await setStep(ebookId, "research");
       try {
         const results = await searchWeb(`${row.theme} ${row.audience}`.trim());
         const formatted = formatResearch(results);
         if (formatted) {
-          db.prepare("UPDATE ebooks SET web_research = ? WHERE id = ?").run(formatted, ebookId);
-          row = getEbook(ebookId)!;
+          await run("UPDATE ebooks SET web_research = $1 WHERE id = $2", [formatted, ebookId]);
+          row = (await getEbook(ebookId))!;
         }
       } catch (err) {
         // Pesquisa é um complemento opcional — não deve travar a geração do ebook.
@@ -84,87 +84,93 @@ async function runJob(ebookId: string) {
     // Etapa 1: outline
     let outline: Outline;
     if (!row.outline_json) {
-      setStep(ebookId, "outline");
+      await setStep(ebookId, "outline");
       outline = await generateOutline({
         ...ctx,
         customTitle: row.title_mode === "manual" ? row.title : null,
         customSubtitle: row.title_mode === "manual" ? row.subtitle : null,
       });
-      const insertChapter = db.prepare(
-        "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES (?, ?, ?, ?, ?, '')"
-      );
-      const tx = db.transaction(() => {
-        db.prepare(
-          "UPDATE ebooks SET title = ?, subtitle = ?, outline_json = ?, chapters_total = ? WHERE id = ?"
-        ).run(outline.title, outline.subtitle, JSON.stringify(outline), outline.chapters.length, ebookId);
-        outline.chapters.forEach((c, i) => {
-          insertChapter.run(randomUUID(), ebookId, i, c.title, c.summary);
-        });
+      // O db.transaction() do better-sqlite3 so aceitava funcao sincrona; aqui a
+      // transacao e do proprio driver. O `tx` passado como terceiro argumento faz
+      // as queries rodarem na mesma conexao -- sem ele elas sairiam da transacao.
+      await sql.begin(async (tx) => {
+        await run(
+          "UPDATE ebooks SET title = $1, subtitle = $2, outline_json = $3, chapters_total = $4 WHERE id = $5",
+          [outline.title, outline.subtitle, JSON.stringify(outline), outline.chapters.length, ebookId],
+          tx
+        );
+        for (const [i, c] of outline.chapters.entries()) {
+          await run(
+            "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES ($1, $2, $3, $4, $5, '')",
+            [randomUUID(), ebookId, i, c.title, c.summary],
+            tx
+          );
+        }
       });
-      tx();
-      row = getEbook(ebookId)!;
+      row = (await getEbook(ebookId))!;
     } else {
       outline = JSON.parse(row.outline_json);
     }
 
     // Etapa 2: capa (opcional)
     if (row.generate_cover && !row.cover_path) {
-      setStep(ebookId, "cover");
+      await setStep(ebookId, "cover");
       if (row.cover_source === "stock" && row.cover_stock_url) {
         const cover = await downloadPhoto(row.cover_stock_url, "", row.cover_alt_text || outline.title, `${ebookId}-cover`);
-        db.prepare("UPDATE ebooks SET cover_path = ?, cover_credit = ? WHERE id = ?").run(
+        await run("UPDATE ebooks SET cover_path = $1, cover_credit = $2 WHERE id = $3", [
           cover.path,
           row.cover_credit,
-          ebookId
-        );
+          ebookId,
+        ]);
       } else if (row.cover_source === "local" && row.cover_local_file) {
         const cover = useLocalCover(row.cover_local_file, outline.title, ebookId);
-        db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
+        await run("UPDATE ebooks SET cover_path = $1, cover_alt_text = $2 WHERE id = $3", [
           cover.path,
           cover.altText,
-          ebookId
-        );
+          ebookId,
+        ]);
       } else {
         const cover = await generateCoverImage(ebookId, outline.title, row.theme, row.audience, row.cover_suggestion);
-        db.prepare("UPDATE ebooks SET cover_path = ?, cover_alt_text = ? WHERE id = ?").run(
+        await run("UPDATE ebooks SET cover_path = $1, cover_alt_text = $2 WHERE id = $3", [
           cover.path,
           cover.altText,
-          ebookId
-        );
+          ebookId,
+        ]);
       }
-      row = getEbook(ebookId)!;
+      row = (await getEbook(ebookId))!;
     }
 
     // Etapa 3: introdução (intro === '' significa "conteúdo importado sem introdução
     // separada" — só regeramos por IA quando o campo ainda é NULL, nunca escrito).
     if (row.intro === null) {
-      setStep(ebookId, "intro");
+      await setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline);
       const intro = await humanizeText(draft, `Introdução do ebook "${outline.title}"`, 1500);
-      db.prepare("UPDATE ebooks SET intro = ? WHERE id = ?").run(intro, ebookId);
-      row = getEbook(ebookId)!;
+      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
+      row = (await getEbook(ebookId))!;
     }
 
     // Etapa 4: capítulos, um de cada vez
-    const chapters = db
-      .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(ebookId) as { id: string; idx: number; title: string; summary: string; content: string }[];
+    const chapters = await all<{ id: string; idx: number; title: string; summary: string; content: string }>(
+      "SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+      [ebookId]
+    );
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
-      setStep(ebookId, "chapter");
+      await setStep(ebookId, "chapter");
       const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
       const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
       const content = await humanizeText(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
-      db.prepare("UPDATE chapters SET content = ? WHERE id = ?").run(content, chapter.id);
-      db.prepare("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = ?").run(ebookId);
+      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
+      await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
     }
 
-    row = getEbook(ebookId)!;
+    row = (await getEbook(ebookId))!;
 
     // Etapa 4b: imagens internas (opcional), distribuídas entre os capítulos em sequência
     if (row.generate_images && chapters.length > 0 && row.images_done < row.image_count) {
-      setStep(ebookId, "images");
+      await setStep(ebookId, "images");
       const usedPhotoIds = new Set<number>();
       for (let i = row.images_done; i < row.image_count; i++) {
         const chapter = chapters[i % chapters.length];
@@ -202,82 +208,85 @@ async function runJob(ebookId: string) {
           path = image.path;
           altText = image.altText;
         }
-        db.prepare(
-          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path, alt_text, credit) VALUES (?, ?, ?, ?, ?, ?)"
-        ).run(randomUUID(), ebookId, chapter.id, path, altText, credit);
-        db.prepare("UPDATE ebooks SET images_done = images_done + 1 WHERE id = ?").run(ebookId);
+        await run(
+          "INSERT INTO chapter_images (id, ebook_id, chapter_id, path, alt_text, credit) VALUES ($1, $2, $3, $4, $5, $6)",
+          [randomUUID(), ebookId, chapter.id, path, altText, credit]
+        );
+        await run("UPDATE ebooks SET images_done = images_done + 1 WHERE id = $1", [ebookId]);
       }
-      row = getEbook(ebookId)!;
+      row = (await getEbook(ebookId))!;
     }
 
     // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
     if (row.conclusion === null) {
-      setStep(ebookId, "conclusion");
+      await setStep(ebookId, "conclusion");
       const draft = await generateConclusion(ctx, outline);
       const conclusion = await humanizeText(draft, `Conclusão do ebook "${outline.title}"`, 1200);
-      db.prepare("UPDATE ebooks SET conclusion = ? WHERE id = ?").run(conclusion, ebookId);
-      row = getEbook(ebookId)!;
+      await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
+      row = (await getEbook(ebookId))!;
     }
 
     // Etapa 5b: sobre o autor (opcional)
     if (row.include_about && row.author_name && !row.about_author) {
-      setStep(ebookId, "about");
+      await setStep(ebookId, "about");
       const about = await generateAboutAuthor(row.author_name, row.author_bio, row.language);
-      db.prepare("UPDATE ebooks SET about_author = ? WHERE id = ?").run(about, ebookId);
-      row = getEbook(ebookId)!;
+      await run("UPDATE ebooks SET about_author = $1 WHERE id = $2", [about, ebookId]);
+      row = (await getEbook(ebookId))!;
     }
 
     // Etapa 6: conteúdo pronto — para aqui para revisão, sem exportar ainda.
     // A exportação final (PDF/DOCX/EPUB) só roda quando o usuário confirma pela
     // tela de revisão (ver finalizeEbookExport, chamado por POST /:id/finalize).
-    db.prepare("UPDATE ebooks SET status = 'review', current_step = NULL WHERE id = ?").run(ebookId);
+    await run("UPDATE ebooks SET status = 'review', current_step = NULL WHERE id = $1", [ebookId]);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
-    db.prepare("UPDATE ebooks SET status = 'error', error_message = ? WHERE id = ?").run(message, ebookId);
+    await run("UPDATE ebooks SET status = 'error', error_message = $1 WHERE id = $2", [message, ebookId]);
   } finally {
     activeJobs.delete(ebookId);
-    startNextQueuedJob();
+    await startNextQueuedJob();
   }
 }
 
-function startNextQueuedJob() {
+async function startNextQueuedJob() {
   while (activeJobs.size < MAX_CONCURRENT_JOBS && queuedJobs.length > 0) {
     const nextId = queuedJobs.shift()!;
     if (activeJobs.has(nextId)) continue;
-    const row = getEbook(nextId);
+    const row = await getEbook(nextId);
     if (!row || row.status === "review" || row.status === "ready") continue;
     activeJobs.add(nextId);
     void runJob(nextId);
   }
 }
 
-export function ensureGenerationRunning(ebookId: string) {
+export async function ensureGenerationRunning(ebookId: string) {
   if (activeJobs.has(ebookId) || queuedJobs.includes(ebookId)) return;
-  const row = getEbook(ebookId);
+  const row = await getEbook(ebookId);
   if (!row || row.status === "review" || row.status === "ready") return;
   queuedJobs.push(ebookId);
-  startNextQueuedJob();
+  await startNextQueuedJob();
 }
 
 export async function finalizeEbookExport(ebookId: string): Promise<void> {
-  const row = getEbook(ebookId);
+  const row = await getEbook(ebookId);
   if (!row) throw new Error("Ebook não encontrado.");
-  const chapters = db
-    .prepare("SELECT * FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-    .all(ebookId) as { id: string; title: string; content: string }[];
+  const chapters = await all<{ id: string; title: string; content: string }>(
+    "SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [ebookId]
+  );
 
   const pdfPath = await renderEbookPdf(row, chapters);
   const docxPath = await renderEbookDocx(row, chapters);
   const epubPath = await renderEbookEpub(row, chapters);
 
-  db.prepare(
-    "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?"
-  ).run(pdfPath, docxPath, epubPath, ebookId);
+  await run(
+    "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = $1, docx_path = $2, epub_path = $3 WHERE id = $4",
+    [pdfPath, docxPath, epubPath, ebookId]
+  );
 
   // Quando o usuário marcou o audiobook já na criação, a narração dispara sozinha
   // aqui — só depois do texto finalizado, que é quando há capítulos para narrar.
   // Sem isso a marcação na tela de criação ficaria guardada e nunca usada.
   if (row.audio_requested && row.audio_status !== "ready" && row.audio_status !== "generating") {
-    startAudiobookGeneration(ebookId);
+    await startAudiobookGeneration(ebookId);
   }
 }

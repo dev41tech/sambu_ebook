@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
-import { db, type EbookRow } from "./db";
+import { all, type EbookRow } from "./db";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
 
@@ -72,10 +72,11 @@ function imageToDataUri(filePath: string): string | null {
   }
 }
 
-function chapterImages(chapterId: string): { uri: string; alt: string; credit: string }[] {
-  const rows = db
-    .prepare("SELECT path, alt_text, credit FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { path: string; alt_text: string; credit: string }[];
+async function chapterImages(chapterId: string): Promise<{ uri: string; alt: string; credit: string }[]> {
+  const rows = await all<{ path: string; alt_text: string; credit: string }>(
+    "SELECT path, alt_text, credit FROM chapter_images WHERE chapter_id = $1 ORDER BY created_at ASC",
+    [chapterId]
+  );
   return rows
     .map((r) => ({ uri: imageToDataUri(r.path), alt: r.alt_text, credit: r.credit }))
     .filter((r): r is { uri: string; alt: string; credit: string } => !!r.uri);
@@ -108,10 +109,10 @@ function decorationHtml(decoration: string): string {
   }
 }
 
-export function buildHtml(
+export async function buildHtml(
   ebook: EbookRow,
   chapters: { id: string; title: string; content: string }[]
-): string {
+): Promise<string> {
   const t = BOOK_TEMPLATE;
   const year = new Date().getFullYear();
   const isProfessional = isPlainInformative(ebook);
@@ -169,9 +170,17 @@ export function buildHtml(
   const imageCredits: string[] = [];
   if (ebook.cover_credit) imageCredits.push(`Capa: ${escapeHtml(ebook.cover_credit)}.`);
 
+  // As imagens sao lidas antes da montagem do HTML, e nao dentro do .map: assim
+  // o corpo da renderizacao segue sincrono e os creditos continuam empilhados na
+  // ordem dos capitulos (um Promise.all aqui embaralharia essa ordem).
+  const imagesByChapter = new Map<string, { uri: string; alt: string; credit: string }[]>();
+  for (const c of chapters) {
+    imagesByChapter.set(c.id, await chapterImages(c.id));
+  }
+
   const chapterPages = chapters
     .map((c, i) => {
-      const images = chapterImages(c.id);
+      const images = imagesByChapter.get(c.id) ?? [];
       const imagesHtml = images
         .map((img) => {
           if (img.credit) imageCredits.push(`Capítulo ${i + 1} — ${escapeHtml(c.title)}: ${escapeHtml(img.credit)}.`);
@@ -368,7 +377,7 @@ async function renderPdfFile(
   chapters: { id: string; title: string; content: string }[],
   detectClipping: boolean
 ): Promise<{ path: string; clippingIssues: number }> {
-  const html = buildHtml(ebook, chapters);
+  const html = await buildHtml(ebook, chapters);
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
     headless: true,
@@ -526,7 +535,7 @@ export async function renderPageThumbnails(
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
 
-  const html = buildHtml(ebook, chapters);
+  const html = await buildHtml(ebook, chapters);
   const browser = await puppeteer.launch({ executablePath: findChrome(), headless: true, args: CHROME_LAUNCH_ARGS });
   try {
     const page = await browser.newPage();

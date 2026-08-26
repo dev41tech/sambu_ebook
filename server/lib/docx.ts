@@ -12,7 +12,7 @@ import {
   PageBreak,
   BorderStyle,
 } from "docx";
-import { db, type EbookRow } from "./db";
+import { all, type EbookRow } from "./db";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { parseBlocks, parseInlineSegments } from "./markdown";
 
@@ -48,19 +48,21 @@ function imageParagraph(filePath: string, width: number, height: number): Paragr
   }
 }
 
-function chapterImageParagraphs(chapterId: string): Paragraph[] {
-  const rows = db
-    .prepare("SELECT path FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { path: string }[];
+async function chapterImageParagraphs(chapterId: string): Promise<Paragraph[]> {
+  const rows = await all<{ path: string }>(
+    "SELECT path FROM chapter_images WHERE chapter_id = $1 ORDER BY created_at ASC",
+    [chapterId]
+  );
   return rows
     .map((r) => imageParagraph(r.path, 420, 280))
     .filter((p): p is Paragraph => !!p);
 }
 
-function chapterImageCredits(chapterId: string): string[] {
-  const rows = db
-    .prepare("SELECT credit FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { credit: string }[];
+async function chapterImageCredits(chapterId: string): Promise<string[]> {
+  const rows = await all<{ credit: string }>(
+    "SELECT credit FROM chapter_images WHERE chapter_id = $1 ORDER BY created_at ASC",
+    [chapterId]
+  );
   return rows.map((r) => r.credit).filter(Boolean);
 }
 
@@ -215,8 +217,10 @@ export async function renderEbookDocx(
     );
   }
 
-  chapters.forEach((c, i) => {
-    for (const credit of chapterImageCredits(c.id)) {
+  // for...of no lugar de forEach: o callback do forEach nao espera promise,
+  // entao o await das imagens seria silenciosamente ignorado.
+  for (const [i, c] of chapters.entries()) {
+    for (const credit of await chapterImageCredits(c.id)) {
       imageCredits.push(`Capítulo ${i + 1} — ${c.title}: ${credit}.`);
     }
     children.push(
@@ -231,11 +235,11 @@ export async function renderEbookDocx(
         spacing: { after: 300 },
         children: [new TextRun({ text: c.title, color: heading, bold: true })],
       }),
-      ...chapterImageParagraphs(c.id),
+      ...(await chapterImageParagraphs(c.id)),
       ...bodyParagraphs(c.content, text, heading, accent),
       new Paragraph({ children: [new PageBreak()] })
     );
-  });
+  }
 
   if (ebook.conclusion) {
     children.push(

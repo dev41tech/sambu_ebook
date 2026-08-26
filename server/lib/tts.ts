@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import ffmpeg from "fluent-ffmpeg";
-import { db, type EbookRow } from "./db";
+import { all, one, run, type EbookRow } from "./db";
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
@@ -19,21 +19,23 @@ const activeAudioJobs = new Set<string>();
 // Se o servidor reiniciar no meio de uma geração, o registro fica travado em
 // "generating" para sempre, sem erro e sem botão de tentar de novo na tela. Ao
 // subir, qualquer ebook nesse estado é órfão — marca como erro para liberar o retry.
-function recoverStaleAudioJobs() {
-  const stale = db.prepare("SELECT id FROM ebooks WHERE audio_status = 'generating'").all() as { id: string }[];
+async function recoverStaleAudioJobs() {
+  const stale = await all<{ id: string }>("SELECT id FROM ebooks WHERE audio_status = 'generating'");
   for (const { id } of stale) {
-    db.prepare("UPDATE ebooks SET audio_status = 'error', audio_error = ? WHERE id = ?").run(
+    await run("UPDATE ebooks SET audio_status = 'error', audio_error = $1 WHERE id = $2", [
       "Geração interrompida por um reinício do servidor. Clique para tentar novamente.",
-      id
-    );
+      id,
+    ]);
     const workDir = path.join(tmpRoot, id);
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
-recoverStaleAudioJobs();
+void recoverStaleAudioJobs().catch((err) => {
+  console.error("[tts] falha ao liberar audiobooks travados no boot:", err);
+});
 
-function getEbook(id: string): EbookRow | undefined {
-  return db.prepare("SELECT * FROM ebooks WHERE id = ?").get(id) as EbookRow | undefined;
+function getEbook(id: string): Promise<EbookRow | undefined> {
+  return one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
 }
 
 async function synthesize(text: string, outPath: string): Promise<void> {
@@ -106,11 +108,12 @@ async function runAudioJob(ebookId: string) {
   const workDir = path.join(tmpRoot, ebookId);
   try {
     fs.mkdirSync(workDir, { recursive: true });
-    const ebook = getEbook(ebookId);
+    const ebook = await getEbook(ebookId);
     if (!ebook) throw new Error("Ebook não encontrado.");
-    const chapters = db
-      .prepare("SELECT title, content FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(ebookId) as { title: string; content: string }[];
+    const chapters = await all<{ title: string; content: string }>(
+      "SELECT title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+      [ebookId]
+    );
 
     const segments: string[] = [];
     if (ebook.intro) segments.push(ebook.intro);
@@ -130,22 +133,22 @@ async function runAudioJob(ebookId: string) {
     const outPath = path.join(exportsDir, `${ebookId}.mp3`);
     await concatMp3(partFiles, outPath);
 
-    db.prepare("UPDATE ebooks SET audio_status = 'ready', audio_path = ?, audio_error = NULL WHERE id = ?").run(
+    await run("UPDATE ebooks SET audio_status = 'ready', audio_path = $1, audio_error = NULL WHERE id = $2", [
       outPath,
-      ebookId
-    );
+      ebookId,
+    ]);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro inesperado ao gerar o audiobook.";
-    db.prepare("UPDATE ebooks SET audio_status = 'error', audio_error = ? WHERE id = ?").run(message, ebookId);
+    await run("UPDATE ebooks SET audio_status = 'error', audio_error = $1 WHERE id = $2", [message, ebookId]);
   } finally {
     activeAudioJobs.delete(ebookId);
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
 
-export function startAudiobookGeneration(ebookId: string) {
+export async function startAudiobookGeneration(ebookId: string) {
   if (activeAudioJobs.has(ebookId)) return;
   activeAudioJobs.add(ebookId);
-  db.prepare("UPDATE ebooks SET audio_status = 'generating', audio_error = NULL WHERE id = ?").run(ebookId);
+  await run("UPDATE ebooks SET audio_status = 'generating', audio_error = NULL WHERE id = $1", [ebookId]);
   void runAudioJob(ebookId);
 }

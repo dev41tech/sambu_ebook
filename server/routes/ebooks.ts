@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, type EbookRow, type ChapterRow, type ChapterImageRow } from "../lib/db";
+import { all, one, run, type EbookRow, type ChapterRow, type ChapterImageRow } from "../lib/db";
 import { ensureGenerationRunning, finalizeEbookExport } from "../lib/generationJob";
 import { startAudiobookGeneration } from "../lib/tts";
 import { generateCoverImage, generateChapterImage, generateMarketingImage } from "../lib/images";
@@ -36,17 +36,15 @@ const CATEGORIES = new Set(["geral", "tecnico", "comportamental"]);
 
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-ebooksRouter.get("/", (_req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT id, title, theme, status, page_count, chapters_done, chapters_total, template, audio_status, category, version, created_at
+ebooksRouter.get("/", async (_req, res) => {
+  const rows = await all(
+    `SELECT id, title, theme, status, page_count, chapters_done, chapters_total, template, audio_status, category, version, created_at
        FROM ebooks ORDER BY created_at DESC`
-    )
-    .all();
+  );
   res.json(rows);
 });
 
-ebooksRouter.post("/", (req, res) => {
+ebooksRouter.post("/", async (req, res) => {
   const body = req.body ?? {};
   const theme = String(body.theme ?? "").trim();
   const audience = String(body.audience ?? "").trim();
@@ -130,7 +128,7 @@ ebooksRouter.post("/", (req, res) => {
   }
 
   const id = randomUUID();
-  db.prepare(
+  await run(
     `INSERT INTO ebooks
       (id, title, subtitle, theme, audience, tone, language, template, page_count, words_per_page,
        author_name, author_bio, include_copyright, include_about, title_mode,
@@ -138,8 +136,8 @@ ebooksRouter.post("/", (req, res) => {
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, audio_requested, audio_voice, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
-  ).run(
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, 'generating')`,
+    [
     id,
     titleMode === "manual" ? customTitle : "",
     titleMode === "manual" ? customSubtitle : "",
@@ -152,17 +150,17 @@ ebooksRouter.post("/", (req, res) => {
     wordsPerPage,
     authorName,
     authorBio,
-    includeCopyright ? 1 : 0,
-    includeAbout ? 1 : 0,
+    includeCopyright,
+    includeAbout,
     titleMode,
-    generateCover ? 1 : 0,
+    generateCover,
     generateCover ? coverSuggestion : "",
     coverSource,
     generateCover && coverSource === "stock" ? coverStockUrl : "",
     generateCover && coverSource === "stock" ? coverCredit : "",
     generateCover && coverSource === "stock" ? coverAltText : "",
     generateCover && coverSource === "local" ? coverLocalFile : "",
-    generateImages ? 1 : 0,
+    generateImages,
     generateImages ? imageCount : 0,
     generateImages ? imageSuggestion : "",
     imageSource,
@@ -171,11 +169,12 @@ ebooksRouter.post("/", (req, res) => {
     extraInstructions,
     categoryMain,
     JSON.stringify(categoriesSecondary),
-    audioRequested ? 1 : 0,
-    audioVoice
+    audioRequested,
+    audioVoice,
+    ]
   );
 
-  ensureGenerationRunning(id);
+  await ensureGenerationRunning(id);
   res.status(201).json({ id });
 });
 
@@ -282,7 +281,7 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
   const pageCount = estimatePageCount(manuscript);
 
   const id = randomUUID();
-  db.prepare(
+  await run(
     `INSERT INTO ebooks
       (id, title, subtitle, theme, audience, tone, language, template, page_count,
        author_name, author_bio, include_copyright, include_about, title_mode,
@@ -290,8 +289,8 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
        generate_cover, cover_suggestion, cover_source, cover_stock_url, cover_credit, cover_alt_text, cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generating')`
-  ).run(
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, 'generating')`,
+    [
     id,
     outline.title,
     outline.subtitle,
@@ -303,22 +302,22 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
     pageCount,
     authorName,
     authorBio,
-    includeCopyright ? 1 : 0,
-    includeAbout ? 1 : 0,
+    includeCopyright,
+    includeAbout,
     "manual",
     JSON.stringify(outline),
     manuscript.intro,
     manuscript.conclusion,
     manuscript.chapters.length,
     manuscript.chapters.length,
-    generateCover ? 1 : 0,
+    generateCover,
     generateCover ? coverSuggestion : "",
     coverSource,
     generateCover && coverSource === "stock" ? coverStockUrl : "",
     generateCover && coverSource === "stock" ? coverCredit : "",
     generateCover && coverSource === "stock" ? coverAltText : "",
     generateCover && coverSource === "local" ? coverLocalFile : "",
-    generateImages ? 1 : 0,
+    generateImages,
     generateImages ? imageCount : 0,
     generateImages ? imageSuggestion : "",
     imageSource,
@@ -326,39 +325,41 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
     "",
     "",
     importCategoryMain,
-    JSON.stringify(importCategoriesSecondary)
+    JSON.stringify(importCategoriesSecondary),
+    ]
   );
 
-  const insertChapter = db.prepare(
-    "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES (?, ?, ?, ?, ?, ?)"
-  );
-  manuscript.chapters.forEach((c, i) => {
-    insertChapter.run(randomUUID(), id, i, c.title, c.content.slice(0, 200), c.content);
-  });
+  // for...of no lugar de forEach: o callback do forEach nao espera promise.
+  for (const [i, c] of manuscript.chapters.entries()) {
+    await run(
+      "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES ($1, $2, $3, $4, $5, $6)",
+      [randomUUID(), id, i, c.title, c.content.slice(0, 200), c.content]
+    );
+  }
 
-  ensureGenerationRunning(id);
+  await ensureGenerationRunning(id);
   res.status(201).json({ id });
 });
 
-ebooksRouter.post("/:id/feedback", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.post("/:id/feedback", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const feedback = String(req.body?.feedback ?? "").trim();
   if (!feedback) {
     res.status(400).json({ error: "Escreva uma sugestão antes de enviar." });
     return;
   }
-  addLearning(feedback, row.id, row.category);
+  await addLearning(feedback, row.id, row.category);
   res.json({ ok: true });
 });
 
-ebooksRouter.post("/:id/retry", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.post("/:id/retry", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status === "error") {
-    db.prepare("UPDATE ebooks SET status = 'generating', error_message = NULL WHERE id = ?").run(row.id);
+    await run("UPDATE ebooks SET status = 'generating', error_message = NULL WHERE id = $1", [row.id]);
   }
-  ensureGenerationRunning(row.id);
+  await ensureGenerationRunning(row.id);
   res.json({ ok: true });
 });
 
@@ -368,8 +369,8 @@ interface ContentChapterUpdate {
   content?: string;
 }
 
-ebooksRouter.put("/:id/content", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.put("/:id/content", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
     res.status(409).json({ error: "Só é possível editar o conteúdo depois que a escrita terminar." });
@@ -381,24 +382,28 @@ ebooksRouter.put("/:id/content", (req, res) => {
   const values: unknown[] = [];
   for (const field of ["title", "subtitle", "intro", "conclusion", "about_author", "version"] as const) {
     if (typeof body[field] === "string") {
-      updates.push(`${field} = ?`);
+      // O placeholder e numerado pela posicao no array de valores — por isso o
+      // push do valor vem antes de montar o texto.
       values.push(body[field]);
+      updates.push(`${field} = $${values.length}`);
     }
   }
   if (updates.length > 0) {
     values.push(row.id);
-    db.prepare(`UPDATE ebooks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    await run(`UPDATE ebooks SET ${updates.join(", ")} WHERE id = $${values.length}`, values);
   }
 
   if (Array.isArray(body.chapters)) {
-    const updateChapter = db.prepare("UPDATE chapters SET title = COALESCE(?, title), content = COALESCE(?, content) WHERE id = ? AND ebook_id = ?");
     for (const c of body.chapters as ContentChapterUpdate[]) {
       if (!c || typeof c.id !== "string") continue;
-      updateChapter.run(
-        typeof c.title === "string" ? c.title : null,
-        typeof c.content === "string" ? c.content : null,
-        c.id,
-        row.id
+      await run(
+        "UPDATE chapters SET title = COALESCE($1, title), content = COALESCE($2, content) WHERE id = $3 AND ebook_id = $4",
+        [
+          typeof c.title === "string" ? c.title : null,
+          typeof c.content === "string" ? c.content : null,
+          c.id,
+          row.id,
+        ]
       );
     }
   }
@@ -407,7 +412,7 @@ ebooksRouter.put("/:id/content", (req, res) => {
 });
 
 ebooksRouter.post("/:id/finalize", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
     res.status(409).json({ error: "O ebook ainda não terminou de ser escrito." });
@@ -421,8 +426,8 @@ ebooksRouter.post("/:id/finalize", async (req, res) => {
   }
 });
 
-function loadEbookOr404(id: string, res: import("express").Response): EbookRow | null {
-  const row = db.prepare("SELECT * FROM ebooks WHERE id = ?").get(id) as EbookRow | undefined;
+async function loadEbookOr404(id: string, res: import("express").Response): Promise<EbookRow | null> {
+  const row = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
   if (!row) {
     res.status(404).json({ error: "Ebook não encontrado." });
     return null;
@@ -431,31 +436,33 @@ function loadEbookOr404(id: string, res: import("express").Response): EbookRow |
 }
 
 async function reRenderExports(ebookId: string) {
-  const row = db.prepare("SELECT * FROM ebooks WHERE id = ?").get(ebookId) as EbookRow;
-  const chapters = db
-    .prepare("SELECT id, title, content FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-    .all(ebookId) as { id: string; title: string; content: string }[];
+  const row = (await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]))!;
+  const chapters = await all<{ id: string; title: string; content: string }>(
+    "SELECT id, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [ebookId]
+  );
   const pdfPath = await renderEbookPdf(row, chapters);
   const docxPath = await renderEbookDocx(row, chapters);
   const epubPath = await renderEbookEpub(row, chapters);
-  db.prepare("UPDATE ebooks SET pdf_path = ?, docx_path = ?, epub_path = ? WHERE id = ?").run(
+  await run("UPDATE ebooks SET pdf_path = $1, docx_path = $2, epub_path = $3 WHERE id = $4", [
     pdfPath,
     docxPath,
     epubPath,
-    ebookId
-  );
+    ebookId,
+  ]);
 }
 
 ebooksRouter.post("/:id/layout-preview", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
     res.status(409).json({ error: "O ebook ainda não terminou de ser escrito." });
     return;
   }
-  const chapters = db
-    .prepare("SELECT id, title, content FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-    .all(row.id) as { id: string; title: string; content: string }[];
+  const chapters = await all<{ id: string; title: string; content: string }>(
+    "SELECT id, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [row.id]
+  );
   try {
     const preview = await renderPageThumbnails(row, chapters);
     res.json(preview);
@@ -464,8 +471,8 @@ ebooksRouter.post("/:id/layout-preview", async (req, res) => {
   }
 });
 
-ebooksRouter.get("/:id/layout-preview/:index", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/layout-preview/:index", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const index = Number(req.params.index);
   if (!Number.isInteger(index) || index < 0) {
@@ -481,34 +488,36 @@ ebooksRouter.get("/:id/layout-preview/:index", (req, res) => {
   res.sendFile(filePath);
 });
 
-ebooksRouter.get("/:id", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (row.status === "generating") ensureGenerationRunning(row.id);
-  const chapters = db
-    .prepare("SELECT id, idx, title, summary, content FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-    .all(row.id) as ChapterRow[];
-  const chapterImages = db
-    .prepare("SELECT id, chapter_id, alt_text, credit FROM chapter_images WHERE ebook_id = ? ORDER BY created_at ASC")
-    .all(row.id) as Pick<ChapterImageRow, "id" | "chapter_id" | "alt_text" | "credit">[];
+  if (row.status === "generating") await ensureGenerationRunning(row.id);
+  const chapters = await all<ChapterRow>(
+    "SELECT id, idx, title, summary, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [row.id]
+  );
+  const chapterImages = await all<Pick<ChapterImageRow, "id" | "chapter_id" | "alt_text" | "credit">>(
+    "SELECT id, chapter_id, alt_text, credit FROM chapter_images WHERE ebook_id = $1 ORDER BY created_at ASC",
+    [row.id]
+  );
   res.json({ ...row, chapters, chapter_images: chapterImages });
 });
 
-ebooksRouter.delete("/:id", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.delete("/:id", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const chapterImagePaths = (
-    db.prepare("SELECT path FROM chapter_images WHERE ebook_id = ?").all(row.id) as { path: string }[]
+    await all<{ path: string }>("SELECT path FROM chapter_images WHERE ebook_id = $1", [row.id])
   ).map((r) => r.path);
   for (const p of [row.pdf_path, row.docx_path, row.epub_path, row.audio_path, row.cover_path, ...chapterImagePaths]) {
     if (p && fs.existsSync(p)) fs.rmSync(p, { force: true });
   }
-  db.prepare("DELETE FROM ebooks WHERE id = ?").run(row.id);
+  await run("DELETE FROM ebooks WHERE id = $1", [row.id]);
   res.json({ ok: true });
 });
 
-ebooksRouter.get("/:id/cover", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/cover", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.cover_path || !fs.existsSync(row.cover_path)) {
     res.status(404).json({ error: "Capa ainda não disponível." });
@@ -519,7 +528,7 @@ ebooksRouter.get("/:id/cover", (req, res) => {
 });
 
 ebooksRouter.post("/:id/cover/regenerate", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
     res.status(409).json({ error: "Aguarde o ebook terminar de ser gerado antes de trocar a capa." });
@@ -563,9 +572,10 @@ ebooksRouter.post("/:id/cover/regenerate", async (req, res) => {
     if (row.cover_path && row.cover_path !== coverPath && fs.existsSync(row.cover_path)) {
       fs.rmSync(row.cover_path, { force: true });
     }
-    db.prepare(
-      "UPDATE ebooks SET cover_path = ?, cover_alt_text = ?, cover_source = ?, cover_stock_url = ?, cover_credit = ?, cover_local_file = ? WHERE id = ?"
-    ).run(coverPath, altText, source, stockUrl, credit, localFile, row.id);
+    await run(
+      "UPDATE ebooks SET cover_path = $1, cover_alt_text = $2, cover_source = $3, cover_stock_url = $4, cover_credit = $5, cover_local_file = $6 WHERE id = $7",
+      [coverPath, altText, source, stockUrl, credit, localFile, row.id]
+    );
     await reRenderExports(row.id);
     res.json({ ok: true });
   } catch (err) {
@@ -573,12 +583,13 @@ ebooksRouter.post("/:id/cover/regenerate", async (req, res) => {
   }
 });
 
-ebooksRouter.get("/:id/chapter-image/:imageId", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/chapter-image/:imageId", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  const img = db
-    .prepare("SELECT * FROM chapter_images WHERE id = ? AND ebook_id = ?")
-    .get(req.params.imageId, row.id) as ChapterImageRow | undefined;
+  const img = await one<ChapterImageRow>(
+    "SELECT * FROM chapter_images WHERE id = $1 AND ebook_id = $2",
+    [req.params.imageId, row.id]
+  );
   if (!img || !fs.existsSync(img.path)) {
     res.status(404).json({ error: "Imagem não encontrada." });
     return;
@@ -588,20 +599,21 @@ ebooksRouter.get("/:id/chapter-image/:imageId", (req, res) => {
 });
 
 ebooksRouter.post("/:id/images/:imageId/regenerate", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
     res.status(409).json({ error: "Aguarde o ebook terminar de ser gerado antes de trocar imagens." });
     return;
   }
-  const img = db
-    .prepare("SELECT * FROM chapter_images WHERE id = ? AND ebook_id = ?")
-    .get(req.params.imageId, row.id) as ChapterImageRow | undefined;
+  const img = await one<ChapterImageRow>(
+    "SELECT * FROM chapter_images WHERE id = $1 AND ebook_id = $2",
+    [req.params.imageId, row.id]
+  );
   if (!img) {
     res.status(404).json({ error: "Imagem não encontrada." });
     return;
   }
-  const chapter = db.prepare("SELECT * FROM chapters WHERE id = ?").get(img.chapter_id) as ChapterRow | undefined;
+  const chapter = await one<ChapterRow>("SELECT * FROM chapters WHERE id = $1", [img.chapter_id]);
   if (!chapter) {
     res.status(404).json({ error: "Capítulo não encontrado." });
     return;
@@ -640,12 +652,12 @@ ebooksRouter.post("/:id/images/:imageId/regenerate", async (req, res) => {
     if (img.path !== newPath && fs.existsSync(img.path)) {
       fs.rmSync(img.path, { force: true });
     }
-    db.prepare("UPDATE chapter_images SET path = ?, alt_text = ?, credit = ? WHERE id = ?").run(
+    await run("UPDATE chapter_images SET path = $1, alt_text = $2, credit = $3 WHERE id = $4", [
       newPath,
       altText,
       credit,
-      img.id
-    );
+      img.id,
+    ]);
     await reRenderExports(row.id);
     res.json({ ok: true });
   } catch (err) {
@@ -653,8 +665,8 @@ ebooksRouter.post("/:id/images/:imageId/regenerate", async (req, res) => {
   }
 });
 
-ebooksRouter.get("/:id/pdf", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/pdf", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.pdf_path || !fs.existsSync(row.pdf_path)) {
     res.status(409).json({ error: "PDF ainda não está pronto." });
@@ -663,8 +675,8 @@ ebooksRouter.get("/:id/pdf", (req, res) => {
   res.download(row.pdf_path, `${row.title || "ebook"}.pdf`);
 });
 
-ebooksRouter.get("/:id/docx", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/docx", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.docx_path || !fs.existsSync(row.docx_path)) {
     res.status(409).json({ error: "DOCX ainda não está pronto." });
@@ -673,8 +685,8 @@ ebooksRouter.get("/:id/docx", (req, res) => {
   res.download(row.docx_path, `${row.title || "ebook"}.docx`);
 });
 
-ebooksRouter.get("/:id/epub", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/epub", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.epub_path || !fs.existsSync(row.epub_path)) {
     res.status(409).json({ error: "EPUB ainda não está pronto." });
@@ -683,8 +695,8 @@ ebooksRouter.get("/:id/epub", (req, res) => {
   res.download(row.epub_path, `${row.title || "ebook"}.epub`);
 });
 
-ebooksRouter.post("/:id/audiobook", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.post("/:id/audiobook", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "ready") {
     res.status(409).json({ error: "Aguarde o ebook terminar de ser gerado antes de criar o audiobook." });
@@ -698,12 +710,12 @@ ebooksRouter.post("/:id/audiobook", (req, res) => {
     res.status(409).json({ error: "Este ebook já tem um audiobook pronto." });
     return;
   }
-  startAudiobookGeneration(row.id);
+  await startAudiobookGeneration(row.id);
   res.json({ ok: true });
 });
 
-ebooksRouter.get("/:id/audiobook", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/audiobook", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.audio_path || !fs.existsSync(row.audio_path)) {
     res.status(409).json({ error: "Audiobook ainda não está pronto." });
@@ -720,8 +732,8 @@ function creativeFilePath(ebookId: string, creativeId: string): string {
   return path.join(creativesDir, `${ebookId}-${safeId}.png`);
 }
 
-ebooksRouter.get("/:id/marketing/strategy", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/marketing/strategy", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.marketing_json) {
     res.status(404).json({ error: "Estratégia de marketing ainda não gerada." });
@@ -731,18 +743,19 @@ ebooksRouter.get("/:id/marketing/strategy", (req, res) => {
 });
 
 ebooksRouter.post("/:id/marketing/strategy", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "ready") {
     res.status(409).json({ error: "Aguarde o ebook terminar de ser gerado antes de criar a estratégia de marketing." });
     return;
   }
   try {
-    const chapters = db
-      .prepare("SELECT title, summary FROM chapters WHERE ebook_id = ? ORDER BY idx ASC")
-      .all(row.id) as Pick<ChapterRow, "title" | "summary">[];
+    const chapters = await all<Pick<ChapterRow, "title" | "summary">>(
+      "SELECT title, summary FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+      [row.id]
+    );
     const strategy = await generateMarketingStrategy(row, chapters);
-    db.prepare("UPDATE ebooks SET marketing_json = ? WHERE id = ?").run(JSON.stringify(strategy), row.id);
+    await run("UPDATE ebooks SET marketing_json = $1 WHERE id = $2", [JSON.stringify(strategy), row.id]);
     res.json(strategy);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao gerar estratégia de marketing." });
@@ -750,7 +763,7 @@ ebooksRouter.post("/:id/marketing/strategy", async (req, res) => {
 });
 
 ebooksRouter.post("/:id/marketing/render", async (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.marketing_json) {
     res.status(409).json({ error: "Gere a estratégia de marketing antes de renderizar um criativo." });
@@ -789,8 +802,8 @@ ebooksRouter.post("/:id/marketing/render", async (req, res) => {
   }
 });
 
-ebooksRouter.get("/:id/marketing/creative/:creativeId", (req, res) => {
-  const row = loadEbookOr404(req.params.id, res);
+ebooksRouter.get("/:id/marketing/creative/:creativeId", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const filePath = creativeFilePath(row.id, req.params.creativeId);
   if (!fs.existsSync(filePath)) {

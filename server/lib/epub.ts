@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import JSZip from "jszip";
-import { db, type EbookRow } from "./db";
+import { all, one, type EbookRow } from "./db";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
 
@@ -36,10 +36,11 @@ interface ManifestImage {
   data: Buffer;
 }
 
-function chapterImageRows(chapterId: string): { id: string; path: string; alt_text: string }[] {
-  return db
-    .prepare("SELECT id, path, alt_text FROM chapter_images WHERE chapter_id = ? ORDER BY created_at ASC")
-    .all(chapterId) as { id: string; path: string; alt_text: string }[];
+function chapterImageRows(chapterId: string): Promise<{ id: string; path: string; alt_text: string }[]> {
+  return all<{ id: string; path: string; alt_text: string }>(
+    "SELECT id, path, alt_text FROM chapter_images WHERE chapter_id = $1 ORDER BY created_at ASC",
+    [chapterId]
+  );
 }
 
 function xhtmlPage(title: string, bodyHtml: string): string {
@@ -182,8 +183,9 @@ export async function renderEbookEpub(
   }
 
   // Capítulos
-  chapters.forEach((c, i) => {
-    const rows = chapterImageRows(c.id);
+  // for...of no lugar de forEach: o callback do forEach nao espera promise.
+  for (const [i, c] of chapters.entries()) {
+    const rows = await chapterImageRows(c.id);
     let imagesHtml = "";
     for (const row of rows) {
       if (!fs.existsSync(row.path)) continue;
@@ -193,9 +195,10 @@ export async function renderEbookEpub(
       imagesHtml += `<div class="chapter-image-wrap"><img src="../images/${row.id}.${ext}" alt="${escapeAttr(
         row.alt_text
       )}" class="chapter-image" /></div>`;
-      const creditRow = db.prepare("SELECT credit FROM chapter_images WHERE id = ?").get(row.id) as
-        | { credit: string }
-        | undefined;
+      const creditRow = await one<{ credit: string }>(
+        "SELECT credit FROM chapter_images WHERE id = $1",
+        [row.id]
+      );
       if (creditRow?.credit) imageCredits.push(`Capítulo ${i + 1} — ${c.title}: ${creditRow.credit}.`);
     }
     addTextPage(
@@ -207,7 +210,7 @@ export async function renderEbookEpub(
       )}`,
       `Capítulo ${i + 1}: ${c.title}`
     );
-  });
+  }
 
   // Conclusão
   if (ebook.conclusion) {
