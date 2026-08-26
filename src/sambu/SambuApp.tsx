@@ -624,7 +624,12 @@ export default function SambuApp({ user }: { user: User }) {
             coverUrl: book.coverUrl
               ? String(book.coverUrl)
               : CURATED_COVERS[String(book.id)] || undefined,
-            tags: ["novidade", "ebook", String(book.genre || "literatura")],
+            // As tags vêm da classificação escolhida na criação (categoria
+            // principal e secundárias) — é sobre elas que a busca do catálogo
+            // procura, então é isso que faz a classificação servir para achar o livro.
+            tags: Array.isArray(book.tags)
+              ? (book.tags as unknown[]).map((t) => String(t))
+              : ["novidade", "ebook", String(book.genre || "literatura")],
             contentLoaded: false,
             chapters: [
               {

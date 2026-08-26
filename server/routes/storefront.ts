@@ -23,6 +23,33 @@ const GENRE_BY_CATEGORY: Record<string, string> = {
   geral: "Literatura",
 };
 
+// A classificação escolhida na criação ("Grupo > Subcategoria") é o que deve
+// governar a busca. O grupo vira o gênero da vitrine e a subcategoria, junto das
+// secundárias, entra como tag — é sobre as tags que a busca do catálogo procura.
+function classificacao(row: EbookRow): { genre: string; tags: string[] } {
+  const principal = (row.category_main || "").trim();
+  const tags: string[] = [];
+
+  let secundarias: string[] = [];
+  try {
+    const parsed = JSON.parse(row.categories_secondary || "[]");
+    if (Array.isArray(parsed)) secundarias = parsed.map((c) => String(c));
+  } catch {
+    secundarias = [];
+  }
+
+  for (const caminho of [principal, ...secundarias]) {
+    for (const parte of caminho.split(">")) {
+      const t = parte.trim();
+      if (t && !tags.includes(t)) tags.push(t);
+    }
+  }
+
+  const grupo = principal.includes(">") ? principal.split(">")[0].trim() : principal;
+  const genre = grupo || GENRE_BY_CATEGORY[row.category] || "Literatura";
+  return { genre, tags };
+}
+
 const PALETTE = ["#3b174d", "#173d3a", "#4f233c", "#1d2a4d", "#4a2318"];
 const ACCENTS = ["#ed008c", "#ffb51b", "#9400ff", "#3ad0c8", "#ff6b57"];
 
@@ -33,6 +60,7 @@ function toCatalogBook(row: EbookRow, index: number) {
   // Nem todo ebook tem capa gerada; sem isso a vitrine cai no gradiente próprio
   // do card em vez de pedir uma imagem que retornaria 404.
   const hasCover = !!row.cover_path && fs.existsSync(row.cover_path);
+  const classe = classificacao(row);
   return {
     coverUrl: hasCover ? `/api/catalog/cover?id=${encodeURIComponent(row.id)}` : null,
     id: row.id,
@@ -41,7 +69,8 @@ function toCatalogBook(row: EbookRow, index: number) {
     subtitle: row.subtitle || "",
     author: row.author_name || "Sambu Ebooks",
     authorId: "imported",
-    genre: row.category ? GENRE_BY_CATEGORY[row.category] || "Literatura" : "Literatura",
+    genre: classe.genre,
+    tags: classe.tags,
     language: row.language || "pt-BR",
     format: row.audio_status === "ready" ? "Ebook + Áudio" : "Ebook",
     ageRating: "14",
