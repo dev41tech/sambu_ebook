@@ -13,6 +13,7 @@ import { renderRouter } from "./routes/render";
 import { localCoversRouter } from "./routes/localCovers";
 import { storefrontRouter } from "./routes/storefront";
 import { requireAuth } from "./lib/requireAuth";
+import { sql } from "./lib/db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FileStore = FileStoreFactory(session);
@@ -57,6 +58,41 @@ if (process.env.NODE_ENV === "production") {
 }
 
 const port = Number(process.env.SERVER_PORT) || 3001;
-app.listen(port, () => {
-  console.log(`[sambu-ebooks] servidor rodando em http://localhost:${port}`);
-});
+
+// Confere o banco ANTES de abrir a porta. Sem isto o servidor subia, anunciava
+// que estava no ar e morria logo depois com um stack trace de rejeição não
+// tratada — o postgres.js emite a falha de conexão por fora da promessa da
+// query, então o .catch() de quem chamou não a segura. Para quem usa, o sintoma
+// era um erro genérico no login, sem nenhuma pista da causa.
+async function iniciar() {
+  try {
+    await sql`SELECT 1`;
+  } catch (err) {
+    const e = err as { code?: string };
+    const dica =
+      e.code === "28P01"
+        ? "Usuário ou senha do banco incorretos. Se a senha tiver caractere especial, codifique (@ vira %40)."
+        : e.code === "3D000"
+          ? "O banco indicado na DATABASE_URL não existe."
+          : e.code === "ECONNREFUSED"
+            ? "Nada atende nesse host/porta. Da sua máquina, use o endereço externo."
+            : "Verifique a DATABASE_URL no .env.";
+    console.error(
+      [
+        "",
+        `  Não consegui conectar no Postgres (${e.code ?? "erro"}).`,
+        `  ${dica}`,
+        "",
+        "  O servidor não sobe sem banco — o login responderia erro genérico.",
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+
+  app.listen(port, () => {
+    console.log(`[sambu-ebooks] servidor rodando em http://localhost:${port}`);
+  });
+}
+
+iniciar();
