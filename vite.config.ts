@@ -16,9 +16,15 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Sem isto o Vite escuta so em [::1] (IPv6). Navegador que resolve
+    // "localhost" para 127.0.0.1 primeiro nao conecta em nada.
+    host: true,
     proxy: {
+      // O alvo precisa ser 127.0.0.1, e nao "localhost": no Node 18+ o
+      // localhost pode resolver para ::1 e o proxy erra a pilha do servidor
+      // da API, que escuta em IPv4.
       "/api": {
-        target: "http://localhost:3001",
+        target: "http://127.0.0.1:3001",
         changeOrigin: true,
       },
     },
