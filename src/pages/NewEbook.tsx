@@ -5,6 +5,7 @@ import PexelsPicker from "../components/PexelsPicker";
 import LocalCoverPicker from "../components/LocalCoverPicker";
 import ImportIcon from "../components/ImportIcon";
 import ClassificacaoPicker from "../components/ClassificacaoPicker";
+import CustoEstimado from "../components/CustoEstimado";
 
 const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
 
@@ -353,6 +354,12 @@ export default function NewEbook() {
             dezenas de MB de áudio. Deixe desmarcado se não precisar do audiobook agora.
           </p>
         </div>
+
+        <CustoEstimado
+          pageCount={pageCount}
+          wordsPerPage={wordsPerPage}
+          generateCover={generateCover && coverSource === "ai"}
+        />
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
