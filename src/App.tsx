@@ -10,6 +10,7 @@ import Generating from "./pages/Generating";
 import EbookDetail from "./pages/EbookDetail";
 import Ideias from "./pages/Ideias";
 import KindleReading from "./pages/KindleReading";
+import Conta from "./pages/Conta";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
@@ -48,6 +49,9 @@ function Shell({ children }: { children: React.ReactNode }) {
             <a href="/loja.html" className="font-medium text-amber-700 hover:text-amber-800">
               Vitrine
             </a>
+            <Link to="/conta" className="text-neutral-600 hover:text-neutral-900">
+              Conta
+            </Link>
             <button onClick={handleLogout} className="text-neutral-500 hover:text-neutral-900">
               Sair
             </button>
@@ -159,6 +163,14 @@ export default function App() {
         element={
           <RequireAuth>
             <KindleReading />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/conta"
+        element={
+          <RequireAuth>
+            <Conta />
           </RequireAuth>
         }
       />

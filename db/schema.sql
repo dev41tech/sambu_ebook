@@ -176,4 +176,16 @@ CREATE TABLE analytics_events (
   created_at text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );
 
+-- Credenciais de acesso ao app. Ficam no banco, e nao num arquivo em data/,
+-- porque data/ vive dentro do container sem volume montado: uma senha trocada
+-- ali se perderia no primeiro redeploy. A linha e unica (CHECK id = 1), o app
+-- e de usuario unico. Enquanto a tabela estiver vazia valem APP_USERNAME e
+-- APP_PASSWORD do .env, que sao o estado inicial.
+CREATE TABLE app_credentials (
+  id            integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  username      text NOT NULL,
+  password_hash text NOT NULL,
+  updated_at    text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+);
+
 COMMIT;

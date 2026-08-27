@@ -156,7 +156,16 @@ export interface NewEbookPayload {
 }
 
 export const api = {
-  me: () => request<{ authenticated: boolean }>("/auth/me"),
+  me: () => request<{ authenticated: boolean; username?: string }>("/auth/me"),
+  changePassword: (payload: {
+    current_password: string;
+    username: string;
+    new_password: string;
+  }) =>
+    request<{ ok: true }>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   login: (username: string, password: string) =>
     request<{ ok: true }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
