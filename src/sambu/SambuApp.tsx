@@ -1,8 +1,12 @@
-// Portado do projeto Sambu Online (Next.js/Cloudflare) para a stack deste app
-// (React + Vite + Express + SQLite). O componente foi mantido praticamente
-// intacto: o backend Express expõe os mesmos contratos de API (/api/catalog,
-// /api/progress, /api/favorites, /api/subscription, /api/profile...), então a
-// vitrine funciona aqui sem reescrever a camada de dados.
+"use client";
+
+// Vitrine portada do Sambu Online para a stack deste app (React + Vite +
+// Express + SQLite). O backend Express expoe os mesmos contratos de API
+// (/api/catalog, /api/progress, /api/favorites, /api/profile...), entao o
+// componente roda aqui praticamente intacto.
+//
+// Mantido em sincronia com sambu-online/app/sambu-app.tsx: ao mexer la, trazer
+// a mudanca para ca tambem.
 import { useEffect, useMemo, useState } from "react";
 import "./base.css";
 import "./review.css";
@@ -63,9 +67,32 @@ const MOOD_FILTERS = [
 ] as const;
 
 const CURATED_COVERS: Record<string, string> = {
+  "mar-de-dentro": "/covers/o-mar-de-dentro.webp",
+  "arquivo-das-estrelas": "/covers/o-arquivo-das-estrelas.webp",
+  "sete-minutos": "/covers/sete-minutos.webp",
+  "cafeteria-domingo": "/covers/a-cafeteria-de-domingo.webp",
+  "codigo-aurora": "/covers/codigo-aurora.webp",
+  "depois-da-chuva": "/covers/depois-da-chuva.webp",
+  "cartas-para-mim": "/covers/cartas-para-mim.webp",
+  "jardim-inverno": "/covers/jardim-de-inverno.webp",
+  "entre-linhas": "/covers/entre-linhas.webp",
+  "domingo-em-paris": "/covers/domingo-em-paris.webp",
   "abd7c45b-3bce-49a5-9721-472aaf7a1a9a":
     "/covers/alcoolismo-marcos-dias.png",
 };
+
+const EDITORIAL_COVER_IDS = new Set([
+  "mar-de-dentro",
+  "arquivo-das-estrelas",
+  "sete-minutos",
+  "cafeteria-domingo",
+  "codigo-aurora",
+  "depois-da-chuva",
+  "cartas-para-mim",
+  "jardim-inverno",
+  "entre-linhas",
+  "domingo-em-paris",
+]);
 
 function coverUrlFor(bookId: string) {
   return (
@@ -492,20 +519,25 @@ function Icon({ name }: { name: string }) {
 }
 
 function Cover({ book, large = false }: { book: Book; large?: boolean }) {
+  const resolvedCoverUrl = book.coverUrl || CURATED_COVERS[book.id];
   return (
     <div
-      className={`cover ${large ? "cover-large" : ""}`}
+      className={`cover ${large ? "cover-large" : ""} ${EDITORIAL_COVER_IDS.has(book.id) ? "cover-art-overlay" : ""}`}
       style={{
         background: `radial-gradient(circle at 70% 25%,${book.accent}45,transparent 32%),linear-gradient(145deg,${book.color},#101114)`,
       }}
     >
-      {book.coverUrl && (
-        <img
-          className="cover-image"
-          src={book.coverUrl}
-          alt={`Capa de ${book.title}`}
-          loading={large ? "eager" : "lazy"}
-        />
+      {resolvedCoverUrl && (
+        <>
+          {/* Dynamic catalog images come from the protected cover endpoint. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            className="cover-image"
+            src={resolvedCoverUrl}
+            alt={`Capa de ${book.title}`}
+            loading={large ? "eager" : "lazy"}
+          />
+        </>
       )}
       <span className="cover-mark">S</span>
       <div>
@@ -546,14 +578,20 @@ function Field({
 }
 
 export default function SambuApp({ user }: { user: User }) {
-  // A renovação de token do Supabase do projeto original não se aplica aqui: a
-  // sessão é o cookie do Express, com validade de 30 dias.
-
-  const [view, setView] = useState<View>("home"),
+  const [view, setView] = useState<View>(() => {
+      if (typeof window === "undefined") return "home";
+      return new URLSearchParams(window.location.search).get("view") ===
+        "catalog"
+        ? "catalog"
+        : "home";
+    }),
     [catalogBooks, setCatalogBooks] = useState<Book[]>(BOOKS),
     [selected, setSelected] = useState(BOOKS[0]),
     [chapter, setChapter] = useState(0),
-    [query, setQuery] = useState(""),
+    [query, setQuery] = useState(() => {
+      if (typeof window === "undefined") return "";
+      return new URLSearchParams(window.location.search).get("search") || "";
+    }),
     [genre, setGenre] = useState("Todos"),
     [discoveryMood, setDiscoveryMood] = useState(""),
     [theme, setTheme] = useState<"light" | "sepia" | "dark">("sepia"),
@@ -577,9 +615,6 @@ export default function SambuApp({ user }: { user: User }) {
     [catalogBooks, query, genre],
   );
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("view") === "catalog") setView("catalog");
-    if (params.get("search")) setQuery(params.get("search") || "");
     fetch("/api/progress")
       .then((r) => (r.ok ? r.json() : {}))
       .then((d: { progress?: Record<string, number> }) => {
@@ -619,14 +654,14 @@ export default function SambuApp({ user }: { user: User }) {
             price: Number(book.priceCents || 0) / 100,
             subscribersOnly: Boolean(book.subscribersOnly),
             freeChapters: Number(book.freeChapters || 1),
-            // O backend só devolve coverUrl quando a capa existe de fato; sem ela
-            // o card usa o próprio gradiente em vez de uma imagem quebrada.
+            // O backend so devolve coverUrl quando a capa existe de fato; sem ela
+            // o card usa o proprio gradiente em vez de uma imagem quebrada.
             coverUrl: book.coverUrl
               ? String(book.coverUrl)
               : CURATED_COVERS[String(book.id)] || undefined,
-            // As tags vêm da classificação escolhida na criação (categoria
-            // principal e secundárias) — é sobre elas que a busca do catálogo
-            // procura, então é isso que faz a classificação servir para achar o livro.
+            // As tags vem da classificacao escolhida na criacao (categoria
+            // principal e secundarias) - e sobre elas que a busca do catalogo
+            // procura, entao e isso que faz a classificacao servir para achar o livro.
             tags: Array.isArray(book.tags)
               ? (book.tags as unknown[]).map((t) => String(t))
               : ["novidade", "ebook", String(book.genre || "literatura")],
@@ -758,6 +793,7 @@ export default function SambuApp({ user }: { user: User }) {
               onClick={() => go("home")}
               aria-label="Ir para a página inicial da Sambu"
             >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/sambu-logo.png" alt="Sambu" />
             </button>
             <nav>
@@ -778,15 +814,9 @@ export default function SambuApp({ user }: { user: User }) {
               <button className="icon-btn">
                 <Icon name="bell" />
               </button>
-              {user ? (
-                <button className="avatar" onClick={() => go("profile")}>
-                  {user.name.charAt(0).toUpperCase()}
-                </button>
-              ) : (
-                <a className="sign-in" href="/login">
-                  Entrar
-                </a>
-              )}
+              <button className="avatar" onClick={() => go("profile")}>
+                {user?.name?.charAt(0).toUpperCase() || "M"}
+              </button>
             </div>
           </header>
           <div className="mobile-tabs">
@@ -817,12 +847,12 @@ export default function SambuApp({ user }: { user: User }) {
       )}
       {view === "home" && (
         <Home
+          books={catalogBooks}
           openBook={openBook}
           go={go}
           saved={saved}
           onDiscover={discoverByMood}
           discoveryMood={discoveryMood}
-          books={catalogBooks}
         />
       )}{" "}
       {view === "catalog" && (
@@ -881,25 +911,26 @@ export default function SambuApp({ user }: { user: User }) {
 }
 
 function Home({
+  books,
   openBook,
   go,
   saved,
   onDiscover,
   discoveryMood,
-  books,
 }: {
+  books: Book[];
   openBook: (b: Book) => void;
   go: (v: View) => void;
   saved: Record<string, number>;
   onDiscover: (mood: (typeof MOOD_FILTERS)[number]) => void;
   discoveryMood: string;
-  books: Book[];
 }) {
-  // A home mostra o acervo real (ebooks publicados por este app) à frente dos
-  // títulos de demonstração — mesmo comportamento do Sambu Online publicado.
-  // catalogBooks já vem como [publicados…, demonstração…]; o merge abaixo é só
-  // uma garantia de que as vitrines com posição fixa (shelf[0..3]) nunca quebrem.
-  const shelf = books.length >= 4 ? books : [...books, ...BOOKS];
+  const featuredBooks = [...books, ...BOOKS].filter(
+    (book, index, collection) =>
+      collection.findIndex((candidate) => candidate.id === book.id) === index,
+  );
+  const heroBooks = featuredBooks.slice(0, 3);
+
   return (
     <main className="home">
       <div className="discovery-bar">
@@ -958,13 +989,13 @@ function Home({
         </div>
         <div className="hero-stage">
           <div className="cover-fan back-one">
-            <Cover book={shelf[1]} />
+            <Cover book={heroBooks[1]} />
           </div>
           <div className="cover-fan main-cover">
-            <Cover book={shelf[0]} large />
+            <Cover book={heroBooks[0]} large />
           </div>
           <div className="cover-fan back-two">
-            <Cover book={shelf[3]} />
+            <Cover book={heroBooks[2]} />
           </div>
           <div className="float-card audio">
             <span className="pulse">
@@ -976,9 +1007,9 @@ function Home({
             </span>
           </div>
           <div className="float-card pick">
-            MAIS LIDO
+            NOVO NO
             <br />
-            <b>DA SEMANA</b>
+            <b>ACERVO</b>
           </div>
         </div>
       </section>
@@ -989,7 +1020,7 @@ function Home({
           action={() => go("library")}
         />
         <div className="continue-strip">
-          {shelf.filter((b) => saved[b.id]).map((b) => (
+          {featuredBooks.filter((b) => saved[b.id]).map((b) => (
             <article key={b.id} onClick={() => openBook(b)}>
               <Cover book={b} />
               <div>
@@ -1012,7 +1043,7 @@ function Home({
           <button onClick={() => go("catalog")}>Ver catálogo completo →</button>
         </div>
         <div className="story-rail">
-          {shelf.map((b, i) => (
+          {featuredBooks.slice(0, 10).map((b, i) => (
             <div className="ranked-book" key={b.id}>
               <span className="rank">0{i + 1}</span>
               <BookCard book={b} open={openBook} />
@@ -1040,7 +1071,7 @@ function Home({
               capítulo.
             </p>
           </div>
-          <button className="ivory" onClick={() => openBook(shelf[2])}>
+          <button className="ivory" onClick={() => openBook(featuredBooks[0])}>
             <Icon name="headphones" /> Ouvir uma amostra
           </button>
         </section>
@@ -1052,7 +1083,7 @@ function Home({
           <button onClick={() => go("catalog")}>Ver todos →</button>
         </div>
         <div className="quick-picks">
-          {shelf.slice(0, 3).map((b, i) => (
+          {featuredBooks.slice(0, 3).map((b, i) => (
             <article key={b.id} onClick={() => openBook(b)}>
               <Cover book={b} />
               <div>
@@ -1511,9 +1542,6 @@ function Reader({
         <button onClick={() => go("detail")}>←</button>
         <div>
           <b>{book.title}</b>
-          <span>
-            Capítulo {chapter + 1} de {book.chapters.length}
-          </span>
         </div>
         <div className="reader-controls">
           <button onClick={() => setTocOpen((open) => !open)}>☰</button>
@@ -1592,14 +1620,10 @@ function Reader({
         </section>
       ) : (
         <article style={{ fontSize }}>
-          <p className="chapter-no">CAPÍTULO {chapter + 1}</p>
-          <h1>{c?.title}</h1>
           {c?.body.map((p, i) => (
             <p key={i}>{p}</p>
           ))}
           <div className="reader-end">
-            <span>•</span>
-            <p>Fim do capítulo</p>
             {chapter < book.chapters.length - 1 ? (
               <button
                 className="primary"
@@ -1611,7 +1635,7 @@ function Reader({
                   window.scrollTo(0, 0);
                 }}
               >
-                Próximo capítulo →
+                Continuar leitura →
               </button>
             ) : (
               <button
@@ -1775,8 +1799,8 @@ function Profile({
   type ProfileTab = "personal" | "reading" | "subscription" | "notifications" | "privacy";
   const [activeTab, setActiveTab] = useState<ProfileTab>("personal");
   const [saving, setSaving] = useState(false);
-  const [profileName, setProfileName] = useState(user?.name || "");
-  const [displayName, setDisplayName] = useState(user?.name || "");
+  const [profileName, setProfileName] = useState(user?.name || "Marcos Dias");
+  const [displayName, setDisplayName] = useState(user?.name || "Marcos");
   const tabs: { id: ProfileTab; label: string; icon: string }[] = [
     { id: "personal", label: "Dados pessoais", icon: "♙" },
     { id: "reading", label: "Preferências de leitura", icon: "Aa" },
@@ -1810,11 +1834,11 @@ function Profile({
       <aside>
         <div className="profile-summary">
           <div className="profile-avatar">
-            {(profileName || user?.email || "?").charAt(0).toUpperCase()}
+            {profileName?.charAt(0).toUpperCase() || "M"}
           </div>
           <div>
-            <h3>{profileName || user?.email || "Visitante"}</h3>
-            <p>{user?.email || "Você não está autenticado"}</p>
+            <h3>{profileName}</h3>
+            <p>{user?.email || "marcos@sambu.online"}</p>
           </div>
         </div>
         <nav className="profile-menu" aria-label="Configurações da conta">
@@ -1830,25 +1854,6 @@ function Profile({
             </button>
           ))}
         </nav>
-        {user ? (
-          <button
-            className="session-link"
-            onClick={async () => {
-              await fetch("/api/auth", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ action: "logout" }),
-              });
-              window.location.href = "/";
-            }}
-          >
-            Sair da conta
-          </button>
-        ) : (
-          <a className="session-link" href="/login">
-            Entrar na conta
-          </a>
-        )}
         <button className="admin-link" onClick={() => go("admin")}>
           Painel administrativo <span>↗</span>
         </button>
@@ -2151,7 +2156,7 @@ function StudioForm({ tab }: { tab: string }) {
         text={titles[tab][2]}
       />
       <div className="form-grid">
-        {common[tab].map((s, i) => {
+        {common[tab].map((s) => {
           const [label, name] = s.split("|");
           const isLong =
             /description|content_json|summary|warnings|mood|events|notes/.test(
@@ -2228,6 +2233,8 @@ function PanelTitle({
   );
 }
 
+// Preserved as the historical R1 dashboard while AdminV2 serves the current UI.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Admin({ go }: { go: (v: View) => void }) {
   return (
     <main className="admin">
@@ -2673,19 +2680,42 @@ function AdminV2({ go }: { go: (v: View) => void }) {
   );
 }
 
+type AdminBookRow = {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  author: string;
+  genre: string;
+  language?: string | null;
+  isbn?: string | null;
+  collection?: string | null;
+  format?: string | null;
+  ageRating?: string | null;
+  description: string;
+  priceCents?: number | null;
+  freeChapters?: number | null;
+  subscribersOnly?: boolean | null;
+  featured?: boolean | null;
+  status: string;
+};
+
 function AdminBooks({ full = false }: { full?: boolean }) {
-  const [rows, setRows] = useState<Record<string, any>[]>([]);
-  const [editing, setEditing] = useState<Record<string, any> | null>(null);
+  const [rows, setRows] = useState<AdminBookRow[]>([]);
+  const [editing, setEditing] = useState<AdminBookRow | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actionMessage, setActionMessage] = useState("");
   async function loadBooks() {
     const response = await fetch("/api/admin/books");
     if (response.ok) {
-      const data = await response.json();
+      const data = (await response.json()) as { books?: AdminBookRow[] };
       setRows(full ? data.books || [] : (data.books || []).slice(0, 5));
     }
   }
   useEffect(() => {
+    // The request resolves asynchronously before it updates local UI state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadBooks().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [full]);
 
   async function saveBook(event: React.FormEvent<HTMLFormElement>) {
@@ -2733,8 +2763,67 @@ function AdminBooks({ full = false }: { full?: boolean }) {
     setBusy(false);
   }
 
+  async function unpublishBook() {
+    if (!editing) return;
+    if (!window.confirm(`Despublicar “${editing.title}” do acervo público?`))
+      return;
+    setBusy(true);
+    const response = await fetch("/api/admin/books", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: editing.id, status: "archived" }),
+    });
+    if (response.ok) {
+      setActionMessage(`“${editing.title}” foi despublicado e preservado.`);
+      setEditing(null);
+      await loadBooks();
+    } else {
+      setActionMessage("Não foi possível despublicar o ebook.");
+    }
+    setBusy(false);
+  }
+
+  async function deleteBook() {
+    if (!editing) return;
+    const confirmationTitle = window.prompt(
+      `Esta ação apaga o cadastro, o arquivo e a capa. Digite exatamente o título para confirmar:\n\n${editing.title}`,
+    );
+    if (confirmationTitle === null) return;
+    if (confirmationTitle !== editing.title) {
+      setActionMessage("Exclusão cancelada: o título informado não confere.");
+      return;
+    }
+    setBusy(true);
+    const response = await fetch("/api/admin/books", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: editing.id, confirmationTitle }),
+    });
+    if (response.ok) {
+      setActionMessage(`“${editing.title}” foi excluído definitivamente.`);
+      setEditing(null);
+      await loadBooks();
+    } else {
+      const data = await response.json().catch(() => ({}));
+      setActionMessage(
+        data.error === "confirmation_mismatch"
+          ? "Exclusão cancelada: o título informado não confere."
+          : "Não foi possível excluir o ebook.",
+      );
+    }
+    setBusy(false);
+  }
+
   return (
     <div className="admin-table-wrap catalog-manager">
+      {actionMessage && (
+        <div className="catalog-action-message" role="status">
+          <span>{actionMessage}</span>
+          <button onClick={() => setActionMessage("")} aria-label="Fechar aviso">
+            ×
+          </button>
+        </div>
+      )}
       <table>
         <thead>
           <tr>
@@ -2750,6 +2839,8 @@ function AdminBooks({ full = false }: { full?: boolean }) {
           {rows.map((b) => (
             <tr key={b.id}>
               <td>
+                {/* Dynamic catalog images come from the protected cover endpoint. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   className="mini-cover"
                   src={coverUrlFor(b.id)}
@@ -2911,7 +3002,7 @@ function AdminBooks({ full = false }: { full?: boolean }) {
                 <input
                   type="checkbox"
                   name="subscribersOnly"
-                  defaultChecked={editing.subscribersOnly}
+                  defaultChecked={editing.subscribersOnly ?? false}
                 />{" "}
                 Exclusivo para assinantes
               </label>
@@ -2919,7 +3010,7 @@ function AdminBooks({ full = false }: { full?: boolean }) {
                 <input
                   type="checkbox"
                   name="featured"
-                  defaultChecked={editing.featured}
+                  defaultChecked={editing.featured ?? false}
                 />{" "}
                 Destacar como lançamento
               </label>
@@ -2935,6 +3026,37 @@ function AdminBooks({ full = false }: { full?: boolean }) {
                   {busy ? "Salvando…" : "Salvar alterações"}
                 </button>
               </div>
+              <section className="full catalog-danger-zone">
+                <div>
+                  <p className="eyebrow coral">ÁREA DE SEGURANÇA</p>
+                  <h3>Retirar este ebook do acervo</h3>
+                  <p>
+                    Despublicar remove a obra do catálogo público e preserva o
+                    cadastro e os arquivos. Excluir definitivamente apaga o
+                    livro, a capa e os dados associados.
+                  </p>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    className="outline"
+                    onClick={unpublishBook}
+                    disabled={busy || editing.status === "archived"}
+                  >
+                    {editing.status === "archived"
+                      ? "Já despublicado"
+                      : "Despublicar"}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-button"
+                    onClick={deleteBook}
+                    disabled={busy}
+                  >
+                    Excluir definitivamente
+                  </button>
+                </div>
+              </section>
             </form>
           </section>
         </div>
@@ -2981,6 +3103,7 @@ function ImportCenter({ notify }: { notify: (message: string) => void }) {
   const [mode, setMode] = useState<"individual" | "batch">("individual");
   const [folderPath, setFolderPath] = useState("");
   const [selected, setSelected] = useState<StagedBook | null>(null);
+  const [uploadStage, setUploadStage] = useState("");
 
   async function load() {
     const response = await fetch("/api/admin/imports");
@@ -2990,19 +3113,96 @@ function ImportCenter({ notify }: { notify: (message: string) => void }) {
     setItems(data.items || []);
   }
   useEffect(() => {
+    // The request resolves asynchronously before it updates local UI state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load().catch(() => undefined);
   }, []);
+
+  async function uploadIndividual(file: File) {
+    const initResponse = await fetch("/api/admin/uploads?v=3", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "init",
+        fileName: file.name,
+        contentType: file.type,
+        size: file.size,
+      }),
+    });
+    const initialized = await initResponse.json().catch(() => ({}));
+    if (!initResponse.ok)
+      throw new Error(initialized.error || `init_${initResponse.status}`);
+
+    function base64(buffer: ArrayBuffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let start = 0; start < bytes.length; start += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+      return btoa(binary);
+    }
+
+    const chunkSize = Number(initialized.chunkSize);
+    const totalParts = Math.ceil(file.size / chunkSize);
+    for (let part = 0; part < totalParts; part++) {
+      setUploadStage(`Enviando parte ${part + 1} de ${totalParts}…`);
+      const chunk = file.slice(part * chunkSize, (part + 1) * chunkSize);
+      const response = await fetch("/api/admin/uploads?v=3", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "part",
+          uploadId: initialized.uploadId,
+          part,
+          data: base64(await chunk.arrayBuffer()),
+        }),
+      });
+      const detail = await response.json().catch(() => ({}));
+      if (!response.ok)
+        throw new Error(detail.error || `part_${part + 1}_${response.status}`);
+    }
+
+    setUploadStage("Finalizando o ebook…");
+    const completeResponse = await fetch("/api/admin/uploads?v=3", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "complete",
+        uploadId: initialized.uploadId,
+        fileName: file.name,
+        contentType: file.type,
+        size: file.size,
+        totalParts,
+      }),
+    });
+    const completed = await completeResponse.json().catch(() => ({}));
+    if (!completeResponse.ok)
+      throw new Error(completed.error || `complete_${completeResponse.status}`);
+    return completed;
+  }
 
   async function importBatch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     const form = event.currentTarget;
-    const response = await fetch("/api/admin/imports", {
-      method: "POST",
-      body: new FormData(form),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (response.ok) {
+    setUploadStage(mode === "individual" ? "Preparando o ebook…" : "Processando lote…");
+    try {
+      const requestForm = new FormData(form);
+      if (mode === "individual") {
+        const file = requestForm.get("singleFile");
+        if (!(file instanceof File) || !file.size)
+          throw new Error("book_file_required");
+        const uploaded = await uploadIndividual(file);
+        requestForm.delete("singleFile");
+        requestForm.set("uploadedFiles", JSON.stringify([uploaded]));
+      }
+      setUploadStage("Registrando na fila de revisão…");
+      const response = await fetch("/api/admin/imports?v=3", {
+        method: "POST",
+        body: requestForm,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok)
+        throw new Error(data.error || `import_${response.status}`);
       notify(
         mode === "individual"
           ? `Livro recebido: ${data.batch.validItems} válido e ${data.batch.errorItems} para revisar.`
@@ -3011,14 +3211,19 @@ function ImportCenter({ notify }: { notify: (message: string) => void }) {
       form.reset();
       setFolderPath("");
       await load();
-    } else {
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "unknown_error";
       notify(
-        response.status === 401
-          ? "Entre na conta administrativa para importar."
-          : "Não foi possível importar. Confira o modelo e os limites.",
+        code === "sign_in_required"
+          ? "Sua sessão expirou. Entre novamente para importar."
+          : code === "book_file_required"
+            ? "Selecione o arquivo EPUB antes de importar."
+            : `Falha na importação (${code}).`,
       );
+    } finally {
+      setUploadStage("");
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   async function seed() {
@@ -3317,7 +3522,7 @@ function ImportCenter({ notify }: { notify: (message: string) => void }) {
           )}
           <button className="primary import-submit" disabled={busy}>
             {busy
-              ? "Processando…"
+              ? uploadStage || "Processando…"
               : mode === "individual"
                 ? "Validar e importar livro"
                 : "Validar e importar pasta"}
