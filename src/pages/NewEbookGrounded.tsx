@@ -133,35 +133,16 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           onSecundarias={setSecundarias}
         />
 
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-neutral-700">Tom de voz</label>
-            <select
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-              value={tone}
-              onChange={(e) => setTone(e.target.value)}
-            >
-              {TONES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-neutral-700">Idioma</label>
-            <select
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-            >
-              {LANGUAGES.map((l) => (
-                <option key={l} value={l}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-neutral-700">Público-alvo</label>
+          <textarea
+            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+            value={audience}
+            onChange={(e) => setAudience(e.target.value)}
+            placeholder="ex: gerentes de projeto iniciantes"
+            rows={2}
+            required
+          />
         </div>
 
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">
@@ -342,16 +323,35 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           )}
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-neutral-700">Público-alvo</label>
-          <textarea
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
-            value={audience}
-            onChange={(e) => setAudience(e.target.value)}
-            placeholder="ex: gerentes de projeto iniciantes"
-            rows={2}
-            required
-          />
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-neutral-700">Tom de voz</label>
+            <select
+              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              value={tone}
+              onChange={(e) => setTone(e.target.value)}
+            >
+              {TONES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-neutral-700">Idioma</label>
+            <select
+              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="space-y-2 rounded-md border border-neutral-200 p-4">
