@@ -149,3 +149,44 @@ gerar, finalizar (`POST /api/ebooks/:id/finalize`) e reabrir a lista depois de u
 
 Há um bug conhecido de Chromium no `/finalize` (corrigido no commit `a6641e0`, pode ainda não ter
 sido redeployado) — se ele aparecer, é anterior a esta migração, não regressão dela.
+
+---
+
+## Migrar os dados que já existiam
+
+A troca de driver não move o conteúdo. Quem já tinha ebooks gerados ficou com eles
+presos no `data/app.db`, que o app não lê mais — o `better-sqlite3` saiu das
+dependências.
+
+Para transferir:
+
+```bash
+# 1. criar as tabelas no destino (uma vez)
+npm run db:schema
+
+# 2. conferir o que seria migrado, sem gravar nada
+node scripts/migrar-sqlite-para-postgres.mjs --dry-run
+
+# 3. migrar
+node --env-file=.env scripts/migrar-sqlite-para-postgres.mjs
+```
+
+O script lê o SQLite com o módulo nativo `node:sqlite`, então não é preciso
+reinstalar o `better-sqlite3`. Converte as colunas que viraram `boolean`
+(`include_copyright`, `include_about`, `generate_cover`, `generate_images`,
+`audio_requested`, `cancel_at_period_end`) e respeita a ordem das dependências
+(`ebooks` antes de `chapters`, que vem antes de `chapter_images`).
+
+É idempotente: linha cujo id já exista no destino é pulada, então pode rodar de
+novo se cair no meio.
+
+> **Guarde o `data/app.db` até conferir o resultado.** Ele é a única cópia desses
+> dados.
+
+## Ainda em aberto: os arquivos
+
+Este documento já observa que trocar o banco tira o **banco** do container, mas
+**os arquivos continuam lá**. Os EPUBs, PDFs, capas e áudios em `data/exports`
+seguem dentro do container sem volume montado — ou seja, continuam sendo perdidos
+a cada redeploy, pelo mesmo motivo que causou a perda de 2026-08-26. Migrar o
+banco resolve metade do problema.
