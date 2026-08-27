@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -17,6 +18,33 @@ function run(name, scriptPath, args) {
     process.exit(code ?? 0);
   });
   return child;
+}
+
+// O servidor da API lanca no import se faltar DATABASE_URL, e morre antes de
+// abrir a porta. Sem este aviso o sintoma que chega ao usuario e um "Erro 500"
+// no login, que nao diz nada sobre a causa.
+const temEnv = fs.existsSync(path.join(root, ".env"));
+const temUrl =
+  process.env.DATABASE_URL ||
+  (temEnv && /^DATABASE_URL=.+/m.test(fs.readFileSync(path.join(root, ".env"), "utf-8")));
+
+if (!temUrl) {
+  console.error(
+    [
+      "",
+      "  DATABASE_URL nao esta definida.",
+      "",
+      "  Desde a migracao para Postgres, o servidor da API nao sobe sem banco —",
+      "  e o login responde 500 porque o proxy nao encontra ninguem na porta 3001.",
+      "",
+      "  Acrescente ao .env, com a string EXTERNA do Postgres:",
+      "    DATABASE_URL=postgres://usuario:senha@vps.41tech.cloud:3308/ebooks",
+      "",
+      "  Senha com caractere especial precisa ser codificada: @ vira %40.",
+      "",
+    ].join("\n"),
+  );
+  process.exit(1);
 }
 
 const tsxCli = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");

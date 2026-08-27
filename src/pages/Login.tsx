@@ -17,7 +17,15 @@ export default function Login() {
       await api.login(username, password);
       navigate("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao entrar.");
+      const msg = err instanceof Error ? err.message : "";
+      // 500/502 aqui quase nunca e senha errada (isso da 401): e o servidor da
+      // API fora do ar, e o proxy do Vite devolvendo erro generico. Dizer isso
+      // evita procurar problema na senha.
+      setError(
+        /^Erro (5\d\d|000)$/.test(msg) || /Failed to fetch|NetworkError/i.test(msg)
+          ? "O servidor da API não respondeu. Ele não sobe sem DATABASE_URL no .env — veja o terminal onde o app foi iniciado."
+          : msg || "Erro ao entrar.",
+      );
     } finally {
       setLoading(false);
     }
