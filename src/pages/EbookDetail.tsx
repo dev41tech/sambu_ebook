@@ -16,6 +16,7 @@ export default function EbookDetail() {
   const [ebook, setEbook] = useState<EbookDetailType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [audioBusy, setAudioBusy] = useState(false);
+  const [copiedSinopse, setCopiedSinopse] = useState(false);
   const [coverPanelOpen, setCoverPanelOpen] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [coverError, setCoverError] = useState<string | null>(null);
@@ -506,6 +507,38 @@ export default function EbookDetail() {
                   <span className="font-medium text-neutral-900">Ângulo principal:</span> {marketing.angulo_principal}
                 </p>
               </div>
+
+              {marketing.sinopse && (
+                <div className="rounded-md border border-neutral-200 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-neutral-900">Sinopse</h3>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        É o texto que o leitor vê na Vitrine, antes de abrir o livro.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(marketing.sinopse);
+                        setCopiedSinopse(true);
+                        window.setTimeout(() => setCopiedSinopse(false), 2000);
+                      }}
+                      className="shrink-0 rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium hover:bg-neutral-50"
+                    >
+                      {copiedSinopse ? "Copiada" : "Copiar"}
+                    </button>
+                  </div>
+                  <div className="mt-3 space-y-2 text-sm leading-relaxed text-neutral-700">
+                    {splitBlocks(marketing.sinopse).map((block, i) => (
+                      <p key={i}>{block}</p>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-neutral-400">
+                    {marketing.sinopse.length} caracteres
+                  </p>
+                </div>
+              )}
 
               <div className="flex flex-wrap gap-3">
                 {marketing.criativos.map((creative) => (

@@ -97,6 +97,8 @@ export interface MarketingStrategy {
   publico_principal: string;
   publico_secundario: string;
   angulo_principal: string;
+  /** Texto de vitrine: o que o leitor le antes de decidir abrir o livro. */
+  sinopse: string;
   dores: string[];
   desejos: string[];
   objecoes: string[];

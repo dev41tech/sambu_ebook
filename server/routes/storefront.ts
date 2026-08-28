@@ -50,6 +50,20 @@ function classificacao(row: EbookRow): { genre: string; tags: string[] } {
   return { genre, tags };
 }
 
+// A sinopse gerada na area de marketing e o texto de vitrine: e o que o leitor le
+// antes de decidir abrir o livro. Sem ela, cai no subtitulo, que e curto demais
+// para essa funcao.
+function sinopseDe(row: EbookRow): string {
+  try {
+    const m = JSON.parse(row.marketing_json || "{}");
+    const s = String(m.sinopse || "").trim();
+    if (s) return s;
+  } catch {
+    // marketing_json ausente ou invalido: segue para o fallback.
+  }
+  return row.subtitle || row.theme || "Publicado pelo Sambu Ebooks.";
+}
+
 const PALETTE = ["#3b174d", "#173d3a", "#4f233c", "#1d2a4d", "#4a2318"];
 const ACCENTS = ["#ed008c", "#ffb51b", "#9400ff", "#3ad0c8", "#ff6b57"];
 
@@ -75,7 +89,7 @@ async function toCatalogBook(row: EbookRow, index: number) {
     language: row.language || "pt-BR",
     format: row.audio_status === "ready" ? "Ebook + Áudio" : "Ebook",
     ageRating: "14",
-    description: row.subtitle || row.theme || "Publicado pelo Sambu Ebooks.",
+    description: sinopseDe(row),
     priceCents: 0,
     subscribersOnly: false,
     freeChapters: Math.max(1, Math.ceil(chapterCount / 4)),

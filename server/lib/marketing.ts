@@ -38,6 +38,8 @@ export interface MarketingStrategy {
   publico_principal: string;
   publico_secundario: string;
   angulo_principal: string;
+  /** Texto de vitrine: e o que o leitor le antes de decidir abrir o livro. */
+  sinopse: string;
   dores: string[];
   desejos: string[];
   objecoes: string[];
@@ -54,6 +56,7 @@ Regras obrigatórias:
 - Se o tema envolver saúde, emagrecimento, finanças, direito ou estética, seja responsável: fale de possibilidade e prática, não de garantia.
 - Headlines curtas (até ~10 palavras), pensadas pra parar o scroll de alguém que não está procurando o livro.
 - CTA sempre um verbo de ação direto (ex.: "Baixe agora", "Comece hoje", "Conheça o método").
+- "sinopse": o texto que aparece na vitrine, antes da leitura. De 2 a 3 paragrafos curtos (entre 400 e 700 caracteres no total), escritos para quem ainda nao conhece o livro. Apresente o problema, o que a leitura oferece e para quem serve — sem revelar as conclusoes do livro e sem tom de anuncio. E texto de orelha de livro, nao headline de anuncio.
 - Gere exatamente 4 criativos: 1 variação de capa, 1 post para rede social (formato quadrado), 1 story (formato vertical), 1 banner (formato paisagem para site/anúncio).
 - "descricao_visual" deve descrever a cena/composição da imagem-base (sem mencionar texto/headline — o texto é aplicado depois por cima), coerente com o tema e público do livro, evitando clichê de banco de imagens.
 
@@ -62,6 +65,7 @@ Responda SOMENTE com um JSON válido, sem texto antes ou depois, exatamente nest
   "publico_principal": "",
   "publico_secundario": "",
   "angulo_principal": "",
+  "sinopse": "",
   "dores": ["", ""],
   "desejos": ["", ""],
   "objecoes": ["", ""],
