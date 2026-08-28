@@ -41,6 +41,14 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   const learnings = (await getRecentLearnings(12)).map((l) => l.content);
   return {
     theme: row.theme,
+    secondaryCategories: (() => {
+      try {
+        const v = JSON.parse(row.categories_secondary || "[]");
+        return Array.isArray(v) ? v.map(String) : [];
+      } catch {
+        return [];
+      }
+    })(),
     audience: row.audience,
     tone: row.tone,
     language: row.language,

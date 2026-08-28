@@ -18,7 +18,10 @@ function getClient(): OpenAI {
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
 
 export interface EbookContext {
+  /** Caminho da categoria principal, ex.: "Romance > Romance historico". */
   theme: string;
+  /** Caminhos das categorias secundarias escolhidas na criacao. */
+  secondaryCategories?: string[];
   audience: string;
   tone: string;
   language: string;
@@ -239,8 +242,14 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
         }`
       : "Crie um título forte e um subtítulo curto e complementar. Evite títulos genéricos de autoajuda (nada de \"O Poder de...\", \"Desperte...\", \"Transforme sua vida...\").";
 
+  // A classificacao vem como caminho hierarquico ("Grupo > Subcategoria"). Sem
+  // explicar isso, o modelo lia o caminho como texto livre e inventava angulo --
+  // foi assim que um livro sobre produtividade virou "Eficiencia Relacional".
+  const secundarias = (ctx.secondaryCategories ?? []).filter(Boolean);
+
   const prompt = `Planeje a estrutura de um ebook com estas informações:
-- Tema/nicho: ${ctx.theme}
+- Classificação principal: ${ctx.theme}  (formato "Área > Subcategoria" — o livro deve ficar dentro dela)
+${secundarias.length > 0 ? `- Classificações secundárias, para tangenciar sem desviar do foco: ${secundarias.join("; ")}` : ""}
 - Público-alvo: ${ctx.audience}
 - Tom de voz: ${ctx.tone}
 - Idioma do ebook: ${ctx.language}
@@ -249,6 +258,8 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
 ${ctx.authorContext ? `- Contexto/voz do autor fornecido: ${ctx.authorContext}` : ""}
 ${groundingBlock(ctx)}
 ${titleInstruction}
+
+O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
 Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.
 
