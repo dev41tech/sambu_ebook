@@ -57,7 +57,13 @@ export default function KindleReader({ ebook }: { ebook: EbookDetail }) {
                 </h2>
               </>
             )}
-            <div className="space-y-3 font-serif text-[0.86rem] leading-relaxed text-neutral-800">
+            {/* Justificado com hifenização, como no PDF, no EPUB e na Vitrine — a
+                coluna do Kindle é estreita, e sem hifenizar a justificação abriria
+                buracos entre as palavras. */}
+            <div
+              lang="pt-BR"
+              className="space-y-3 text-justify font-serif text-[0.86rem] leading-relaxed text-neutral-800 [hyphens:auto]"
+            >
               {page.paragraphs && page.paragraphs.length > 0 ? (
                 page.paragraphs.map((p, i) => <MarkdownBlock key={i} block={p} />)
               ) : (

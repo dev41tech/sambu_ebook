@@ -109,6 +109,9 @@ function bodyParagraphs(raw: string, textColor: string, headingColor: string, ac
     } else {
       paragraphs.push(
         new Paragraph({
+          // Justificado para o corpo do texto, como já acontece no PDF e no EPUB.
+          // Títulos e listas mantêm o alinhamento próprio.
+          alignment: AlignmentType.JUSTIFIED,
           spacing: { after: 200 },
           children: block.lines.flatMap((line, idx) => {
             const runs = segmentsToRuns(line, textColor);

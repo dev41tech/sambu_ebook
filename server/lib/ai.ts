@@ -115,9 +115,15 @@ export interface Outline {
   chapters: OutlineChapter[];
 }
 
+// Teto de capitulos por ebook. Era 12 fixo, o que fazia qualquer pedido acima de
+// 48 paginas render o mesmo livro -- pedir 250 paginas entregava ~45. Virou
+// configuravel para podermos medir onde estao os limites reais (tempo, custo,
+// coerencia entre capitulos, renderizacao do PDF) antes de fixar um numero.
+const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || 12;
+
 function chapterCountFor(pageCount: number): number {
   const raw = Math.round(pageCount / 4);
-  return Math.min(12, Math.max(3, raw));
+  return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
 
 async function askOpenAI(
@@ -272,7 +278,11 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   ]
 }`;
 
-  const raw = await askOpenAI(SYSTEM_PROMPT, prompt, 2000, true);
+  // O JSON do sumario cresce com o numero de capitulos. Com o teto fixo em 12,
+  // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
+  // JSON viria invalido -- falha silenciosa e dificil de diagnosticar.
+  const tokensSumario = Math.max(2000, 400 + chapterCount * 40);
+  const raw = await askOpenAI(SYSTEM_PROMPT, prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
   if (!parsed.chapters || parsed.chapters.length === 0) {
