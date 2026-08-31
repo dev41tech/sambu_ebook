@@ -723,7 +723,7 @@ export default function EbookDetail() {
           {ebook.intro && (
             <section>
               <h2 className="text-lg font-semibold">Introdução</h2>
-              <div className="mt-2 space-y-3 text-sm leading-relaxed text-neutral-700">
+              <div lang="pt-BR" className="mt-2 space-y-3 text-justify text-sm leading-relaxed text-neutral-700 [hyphens:auto]">
                 {splitBlocks(ebook.intro).map((block, i) => (
                   <MarkdownBlock key={i} block={block} />
                 ))}
@@ -735,7 +735,7 @@ export default function EbookDetail() {
             <section key={c.id}>
               <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Capítulo {c.idx + 1}</p>
               <h2 className="mt-1 text-lg font-semibold">{c.title}</h2>
-              <div className="mt-2 space-y-3 text-sm leading-relaxed text-neutral-700">
+              <div lang="pt-BR" className="mt-2 space-y-3 text-justify text-sm leading-relaxed text-neutral-700 [hyphens:auto]">
                 {splitBlocks(c.content).map((block, i) => (
                   <MarkdownBlock key={i} block={block} />
                 ))}
@@ -746,7 +746,7 @@ export default function EbookDetail() {
           {ebook.conclusion && (
             <section>
               <h2 className="text-lg font-semibold">Conclusão</h2>
-              <div className="mt-2 space-y-3 text-sm leading-relaxed text-neutral-700">
+              <div lang="pt-BR" className="mt-2 space-y-3 text-justify text-sm leading-relaxed text-neutral-700 [hyphens:auto]">
                 {splitBlocks(ebook.conclusion).map((block, i) => (
                   <MarkdownBlock key={i} block={block} />
                 ))}
@@ -757,7 +757,7 @@ export default function EbookDetail() {
           {ebook.about_author && (
             <section>
               <h2 className="text-lg font-semibold">Sobre o Autor</h2>
-              <div className="mt-2 space-y-3 text-sm leading-relaxed text-neutral-700">
+              <div lang="pt-BR" className="mt-2 space-y-3 text-justify text-sm leading-relaxed text-neutral-700 [hyphens:auto]">
                 {splitBlocks(ebook.about_author).map((block, i) => (
                   <MarkdownBlock key={i} block={block} />
                 ))}
