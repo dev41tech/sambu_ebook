@@ -12,6 +12,7 @@ node scripts/aplicar-migration.mjs db/migrations/0003_custom_categories.sql
 node scripts/aplicar-migration.mjs db/migrations/0004_learnings_por_genero.sql
 node scripts/aplicar-migration.mjs db/migrations/0005_achados_continuidade.sql
 node scripts/aplicar-migration.mjs db/migrations/0006_meta_palavras.sql
+node scripts/aplicar-migration.mjs db/migrations/0007_aprovacao_sumario.sql
 ```
 
 O script lê `DATABASE_URL` do ambiente. Com `psql` disponível, o equivalente é
@@ -27,10 +28,18 @@ quebra.
 | 0004 | Coluna `learnings.grupo` | A consulta de aprendizados quebra e derruba toda geração |
 | 0005 | Coluna `ebooks.continuity_json` | A verificação de continuidade falha ao gravar (é capturada, mas nunca registra nada) |
 | 0006 | Colunas `ebooks.extension_mode` e `ebooks.word_goal` | A criação de ebook quebra: o INSERT cita colunas que não existem |
+| 0007 | Colunas `ebooks.outline_approval` e `ebooks.outline_approved_at` | A criação de ebook quebra pelo mesmo motivo |
 
 A 0006 também preenche `word_goal` dos ebooks existentes com
 `page_count * words_per_page`, para que os dois modos contem a mesma história
-desde o começo.
+desde o começo. A 0007 nasce com `outline_approval = 'auto'`, que é como todos
+os ebooks atuais se comportam — nada muda para eles.
+
+### Teste rápido depois de aplicar
+
+Criar um ebook pela tela é o caminho mais curto para confirmar que as cinco
+migrations pegaram: o `INSERT` cita colunas de 0006 e 0007, e a tela de
+categorias depende da tabela de 0003.
 
 ## 2. Variáveis de ambiente
 
@@ -82,7 +91,7 @@ Confirmação em duas etapas, porque a operação apaga capítulos e custa dinhe
 
 ### Engenharia editorial
 
-Cinco defeitos, todos reproduzidos no código antes da correção:
+Defeitos reais, todos reproduzidos no código antes da correção:
 
 **Recusa do modelo salva como capítulo.** A OpenAI devolve "Desculpe, não posso
 ajudar com esse pedido." em HTTP 200, e o código só testava `if (!text)`. Os
@@ -117,6 +126,49 @@ Entrou ainda uma **verificação determinística de continuidade**
 (`server/lib/continuidade.ts`), sem custo de IA, rodando ao fim de toda geração.
 Compara os nomes de cada parte do livro contra o elenco e grava os achados.
 
+### Aprovação do sumário
+
+Um ebook longo era escrito inteiro a partir de um único comando. Marcando a
+opção na criação, a geração agora para no estado **`outline_review`** com o
+sumário e o elenco prontos, antes de qualquer capítulo ser escrito, e espera as
+rotas `POST /api/ebooks/:id/outline/approve` ou `.../reject`.
+
+O padrão continua sendo escrever direto (`outline_approval = 'auto'`). O fluxo
+do n8n e os ebooks curtos não devem passar a esperar por um clique que ninguém
+vai dar.
+
+**`outline_review` é um estado novo.** Qualquer integração que liste ebooks por
+status precisa saber que ele existe — um ebook nesse estado não está gerando nem
+pronto, está esperando uma pessoa.
+
+### Quality Gate
+
+Até esta versão o verificador gravava `blocker` e o botão de finalizar
+funcionava igual. Achado sem consequência é relatório, não controle. Agora
+`POST /api/ebooks/:id/finalize` recusa com **409** quando há bloqueador, e
+`GET /api/ebooks/:id/quality` devolve a avaliação sem exportar.
+
+Bloqueiam a exportação: capítulo com recusa do modelo ou vazio, índice
+duplicado, livro sem capítulos, vazamento de infraestrutura no texto (nome de
+variável, credencial, stack trace, string de conexão) e inconsistência de
+personagem central.
+
+**O gate vale para os livros antigos também.** Rodando no acervo atual, ele
+reprova **4 dos 55** ebooks publicáveis — todos por trocarem de casal ao longo
+do livro, defeito anterior a estas verificações. Conferi os quatro um a um e
+nenhum é falso positivo; "Paredes Finas, Limites Perigosos" tem um casal
+diferente em cada capítulo.
+
+Por isso existe um escape: a caixa **"Publicar mesmo assim"** na tela, que envia
+`ignorar_bloqueios: true`. Sem ela, esses quatro livros ficariam impossíveis de
+reexportar — pior do que o defeito que se quer evitar.
+
+### Testes
+
+O projeto não tinha nenhum. Agora `npm test` roda 12 casos cobrindo as
+regressões reais do acervo. Não precisam de banco: `avaliarQualidade` é pura e o
+envelope que lê do Postgres vive na rota.
+
 ---
 
 ## Verificação feita
@@ -128,7 +180,7 @@ Dois ebooks gerados de ponta a ponta neste branch:
 | "Amor em Jogo" (3 capítulos) | Elenco fixado, 0 achados |
 | "Sob o Sol do Mistério" (40 capítulos, 12 min, US$ 1,27) | Elenco manteve-se nos 40 capítulos; 1 warning legítimo |
 
-`tsc` sem erros, `vite build` passando.
+`tsc` sem erros, `vite build` passando, 12 de 12 testes passando.
 
 ## Limitações conhecidas
 
@@ -140,4 +192,10 @@ Dois ebooks gerados de ponta a ponta neste branch:
   "Descontraído" e "Formal" foram pensados para não ficção.
 - **`page_count` grava o default do formulário** quando o modo é palavras.
 - **Capítulos já gravados com recusa não são limpos** por esta mudança; ela só
-  impede novos casos.
+  impede novos casos. (Os dois de "Vingança Perigosa" foram corrigidos à mão e o
+  acervo está limpo, mas o mecanismo não faz isso sozinho.)
+- **O detector de nomes ignora quem só aparece abrindo frase.** É o preço do
+  critério que separa nome próprio de verbo capitalizado ("Era", "Foi"). Está
+  registrado como teste em `qualityGate.test.ts` para não virar surpresa.
+- **Nome composto conta como duas pessoas.** "Bezerra de Menezes" vira
+  "Bezerra" e "Menezes" na extração.
