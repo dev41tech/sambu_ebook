@@ -7,6 +7,7 @@ import FileStoreFactory from "session-file-store";
 import { authRouter } from "./routes/auth";
 import { ebooksRouter } from "./routes/ebooks";
 import { ideiasRouter } from "./routes/ideias";
+import { categoriasRouter } from "./routes/categorias";
 import { pexelsRouter } from "./routes/pexels";
 import { referenceRouter } from "./routes/reference";
 import { renderRouter } from "./routes/render";
@@ -41,6 +42,7 @@ app.use(
 app.use("/api/auth", authRouter);
 app.use("/api/ebooks", requireAuth, ebooksRouter);
 app.use("/api/ideias", requireAuth, ideiasRouter);
+app.use("/api/categorias", requireAuth, categoriasRouter);
 app.use("/api/pexels", requireAuth, pexelsRouter);
 app.use("/api/reference", requireAuth, referenceRouter);
 app.use("/api/render", requireAuth, renderRouter);
