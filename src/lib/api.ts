@@ -133,6 +133,23 @@ export interface PexelsPhoto {
   alt: string;
 }
 
+export type GravidadeAchado = "info" | "warning" | "major" | "blocker";
+
+export interface AchadoEditorial {
+  categoria: string;
+  gravidade: GravidadeAchado;
+  local: string;
+  evidencia: string;
+  sugestao: string;
+}
+
+export interface ResultadoQualidade {
+  liberado: boolean;
+  achados: AchadoEditorial[];
+  bloqueadores: AchadoEditorial[];
+  contagem: Record<GravidadeAchado, number>;
+}
+
 export interface NewEbookPayload {
   theme: string;
   audience: string;
@@ -143,6 +160,8 @@ export interface NewEbookPayload {
   /** "pages" (padrão) ou "words" — como a extensão foi pedida. */
   extension_mode?: "pages" | "words";
   word_goal?: number;
+  /** Parar em outline_review para o autor conferir sumario e elenco. */
+  review_outline?: boolean;
   author_name?: string;
   author_bio?: string;
   include_copyright?: boolean;
@@ -221,7 +240,18 @@ export const api = {
       chapters?: { id: string; title?: string; content?: string }[];
     }
   ) => request<{ ok: true }>(`/ebooks/${id}/content`, { method: "PUT", body: JSON.stringify(payload) }),
-  finalizeEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/finalize`, { method: "POST" }),
+  // `ignorarBloqueios` existe porque o gate se aplica tambem aos livros antigos:
+  // sem escape, quatro ebooks ja publicados ficariam impossiveis de reexportar.
+  finalizeEbook: (id: string, ignorarBloqueios = false) =>
+    request<{ ok: true; achados?: AchadoEditorial[] }>(`/ebooks/${id}/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ ignorar_bloqueios: ignorarBloqueios }),
+    }),
+  qualidadeEbook: (id: string) => request<ResultadoQualidade>(`/ebooks/${id}/quality`),
+  aprovarSumario: (id: string) =>
+    request<{ ok: true }>(`/ebooks/${id}/outline/approve`, { method: "POST" }),
+  rejeitarSumario: (id: string) =>
+    request<{ ok: true }>(`/ebooks/${id}/outline/reject`, { method: "POST" }),
   generateLayoutPreview: (id: string) =>
     request<{ pageCount: number; clippingIssues: number; overflowIssues: number }>(`/ebooks/${id}/layout-preview`, {
       method: "POST",

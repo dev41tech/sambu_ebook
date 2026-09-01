@@ -9,6 +9,7 @@ import {
 import ChangeImagePanel from "../components/ChangeImagePanel";
 import MarketingCreativeCard from "../components/MarketingCreativeCard";
 import BriefingEbook from "../components/BriefingEbook";
+import PainelQualidade from "../components/PainelQualidade";
 import { MarkdownBlock, splitBlocks } from "../lib/markdownBlock";
 
 export default function EbookDetail() {
@@ -43,6 +44,7 @@ export default function EbookDetail() {
   const [contentError, setContentError] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const [ignorarBloqueios, setIgnorarBloqueios] = useState(false);
   const [layoutPreview, setLayoutPreview] = useState<{ pageCount: number; clippingIssues: number; overflowIssues: number } | null>(
     null
   );
@@ -220,7 +222,7 @@ export default function EbookDetail() {
     setFinalizeError(null);
     try {
       await api.updateEbookContent(id, currentEditPayload());
-      await api.finalizeEbook(id);
+      await api.finalizeEbook(id, ignorarBloqueios);
       setEditMode(false);
       await load();
     } catch (err) {
@@ -689,6 +691,16 @@ export default function EbookDetail() {
               />
             </div>
           )}
+
+          {/* O gate roda de qualquer jeito no servidor. Mostrar aqui evita que o
+              usuario descubra o bloqueio so depois de clicar em finalizar. */}
+          <div className="border-t border-neutral-100 pt-5">
+            <PainelQualidade
+              ebookId={ebook.id}
+              ignorarBloqueios={ignorarBloqueios}
+              onIgnorarBloqueios={setIgnorarBloqueios}
+            />
+          </div>
 
           {contentError && <p className="text-sm text-red-600">{contentError}</p>}
           {finalizeError && <p className="text-sm text-red-600">{finalizeError}</p>}
