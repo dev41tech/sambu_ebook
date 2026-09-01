@@ -8,6 +8,7 @@ import {
 } from "../lib/api";
 import ChangeImagePanel from "../components/ChangeImagePanel";
 import MarketingCreativeCard from "../components/MarketingCreativeCard";
+import BriefingEbook from "../components/BriefingEbook";
 import { MarkdownBlock, splitBlocks } from "../lib/markdownBlock";
 
 export default function EbookDetail() {
@@ -549,6 +550,8 @@ export default function EbookDetail() {
           )}
         </div>
       )}
+
+      {showEditForm && <BriefingEbook ebook={ebook} />}
 
       {showEditForm && (
         <div className="space-y-4 rounded-xl border border-neutral-200 bg-white p-6">
