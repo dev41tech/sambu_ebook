@@ -1,4 +1,10 @@
-import { estimarCusto, formatarUsd, type EntradaCusto } from "../lib/custo";
+import {
+  estimarCusto,
+  formatarUsd,
+  MAX_CAPITULOS,
+  PALAVRAS_POR_CAPITULO,
+  type EntradaCusto,
+} from "../lib/custo";
 
 // Mostrado antes de gerar. Serve a duas perguntas que so apareciam depois:
 // quanto isso vai custar, e quantas paginas o sistema realmente entrega.
@@ -29,7 +35,8 @@ export default function CustoEstimado(props: EntradaCusto) {
 
       {e.abaixoDoPedido && (
         <p className="mt-3 border-t border-neutral-200 pt-2 text-xs text-amber-700">
-          O sistema gera no máximo 12 capítulos, e cada um sai com cerca de 830 palavras.
+          O sistema gera no máximo {MAX_CAPITULOS} capítulos, e cada um sai com cerca de{" "}
+          {PALAVRAS_POR_CAPITULO} palavras.
           Este pedido deve resultar em <strong>~{e.paginasEstimadas} páginas</strong>, não
           nas {props.pageCount} solicitadas.
         </p>

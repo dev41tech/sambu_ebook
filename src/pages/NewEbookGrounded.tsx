@@ -37,6 +37,8 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
   const [language, setLanguage] = useState(LANGUAGES[0]);
   const [pageCount, setPageCount] = useState(20);
   const [wordsPerPage, setWordsPerPage] = useState(250);
+  const [extensionMode, setExtensionMode] = useState<"pages" | "words">("pages");
+  const [wordGoal, setWordGoal] = useState(25000);
   const [titleMode, setTitleMode] = useState<"ai" | "manual">("ai");
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
@@ -64,8 +66,9 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
     referenceMaterial.trim().length > 0 &&
     theme.trim().length > 0 &&
     audience.trim().length > 0 &&
-    pageCount >= 1 &&
-    pageCount <= 1000 &&
+    (extensionMode === "pages"
+      ? pageCount >= 1 && pageCount <= 400
+      : wordGoal >= 1000 && wordGoal <= 200000) &&
     wordsPerPage >= 150 &&
     wordsPerPage <= 500 &&
     (titleMode === "ai" || customTitle.trim().length > 0) &&
@@ -90,6 +93,8 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         language,
         page_count: pageCount,
         words_per_page: wordsPerPage,
+        extension_mode: extensionMode,
+        word_goal: wordGoal,
         author_name: authorName.trim(),
         author_bio: authorBio.trim(),
         include_copyright: includeCopyright,
@@ -195,16 +200,55 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium text-neutral-700">Número de páginas</label>
-            <input
-              type="number"
-              min={1}
-              max={1000}
-              className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
-              value={pageCount}
-              onChange={(e) => setPageCount(Number(e.target.value))}
-            />
-            <p className="text-xs text-neutral-500">Mínimo 1, máximo 1000 páginas.</p>
+            {/* Paginas ou palavras. Paginas e como se pensa um livro, mas quem
+                decide a paginacao e a diagramacao -- pedir 400 paginas entregou
+                257. Palavras e a unidade que a geracao realmente controla. */}
+            <div className="flex gap-3 text-sm">
+              {(["pages", "words"] as const).map((modo) => (
+                <label key={modo} className="flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    checked={extensionMode === modo}
+                    onChange={() => setExtensionMode(modo)}
+                  />
+                  <span className="font-medium text-neutral-700">
+                    {modo === "pages" ? "Por páginas" : "Por palavras"}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {extensionMode === "pages" ? (
+              <>
+                <input
+                  type="number"
+                  min={1}
+                  max={400}
+                  className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                  value={pageCount}
+                  onChange={(e) => setPageCount(Number(e.target.value))}
+                />
+                <p className="text-xs text-neutral-500">
+                  Mínimo 1, máximo 400 páginas — vira uma meta de{" "}
+                  {(pageCount * wordsPerPage).toLocaleString("pt-BR")} palavras.
+                </p>
+              </>
+            ) : (
+              <>
+                <input
+                  type="number"
+                  min={1000}
+                  max={200000}
+                  step={1000}
+                  className="w-32 rounded-md border border-neutral-300 px-3 py-2 text-sm"
+                  value={wordGoal}
+                  onChange={(e) => setWordGoal(Number(e.target.value))}
+                />
+                <p className="text-xs text-neutral-500">
+                  Mínimo 1.000, máximo 200.000 palavras — cerca de{" "}
+                  {Math.round(wordGoal / Math.max(1, wordsPerPage))} páginas depois de diagramado.
+                </p>
+              </>
+            )}
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium text-neutral-700">Palavras por página</label>
@@ -378,6 +422,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         <CustoEstimado
           pageCount={pageCount}
           wordsPerPage={wordsPerPage}
+        wordGoal={extensionMode === "words" ? wordGoal : 0}
           referenceChars={referenceMaterial.length}
           generateCover={generateCover && coverSource === "ai"}
         />

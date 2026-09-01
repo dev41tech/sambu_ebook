@@ -16,12 +16,24 @@ const CHARS_POR_TOKEN = 4;
 
 // Teto observado: mesmo pedindo 4.000 palavras, os capítulos voltam com ~830.
 // É esta a razão de pedir 250 páginas não produzir 250 páginas.
-const PALAVRAS_POR_CAPITULO_NA_PRATICA = 830;
-const MAX_CAPITULOS = 12; // espelha chapterCountFor() em server/lib/ai.ts
+/** Media medida no acervo: o que um capitulo realmente rende. */
+export const PALAVRAS_POR_CAPITULO = 841;
+const PALAVRAS_POR_CAPITULO_NA_PRATICA = PALAVRAS_POR_CAPITULO;
+/**
+ * Teto de capitulos por ebook. Exportado porque o servidor (server/lib/ai.ts)
+ * importa daqui: manter os dois numeros em arquivos separados ja produziu
+ * estimativa mentindo sobre o que a geracao entrega.
+ */
+export const MAX_CAPITULOS = 100;
 
 export interface EntradaCusto {
   pageCount: number;
   wordsPerPage: number;
+  /**
+   * Meta de palavras. Quando informada manda no calculo e pageCount vira apenas
+   * a estimativa exibida -- paginas dependem da diagramacao, palavras nao.
+   */
+  wordGoal?: number;
   referenceChars?: number;
   generateCover?: boolean;
   imageCount?: number;
@@ -42,11 +54,23 @@ export function capitulosPara(pageCount: number): number {
   return Math.min(MAX_CAPITULOS, Math.max(3, Math.round(pageCount / 4)));
 }
 
+/** Mesma proporcao de capitulosPara(), a partir da meta de palavras. */
+export function capitulosParaPalavras(wordGoal: number, wordsPerPage: number): number {
+  const paginas = wordGoal / Math.max(1, wordsPerPage);
+  return capitulosPara(paginas);
+}
+
 export function estimarCusto(e: EntradaCusto): Estimativa {
-  const capitulos = capitulosPara(e.pageCount);
+  // A meta de palavras, quando existe, e a verdade do pedido; paginas viram uma
+  // leitura dela. Sem meta, o pedido continua sendo paginas x palavras/pagina.
+  const palavrasPedidas = e.wordGoal && e.wordGoal > 0 ? e.wordGoal : e.pageCount * e.wordsPerPage;
+  const capitulos =
+    e.wordGoal && e.wordGoal > 0
+      ? capitulosParaPalavras(e.wordGoal, e.wordsPerPage)
+      : capitulosPara(e.pageCount);
   const refTokens = Math.round((e.referenceChars ?? 0) / CHARS_POR_TOKEN);
 
-  const pedidoPorCapitulo = (e.pageCount * e.wordsPerPage) / capitulos;
+  const pedidoPorCapitulo = palavrasPedidas / capitulos;
   const palavrasPorCapitulo = Math.min(pedidoPorCapitulo, PALAVRAS_POR_CAPITULO_NA_PRATICA);
   const palavrasEstimadas = Math.round(palavrasPorCapitulo * capitulos + 900); // +intro e conclusão
 
@@ -68,7 +92,10 @@ export function estimarCusto(e: EntradaCusto): Estimativa {
     usdTexto,
     usdImagens,
     usdTotal: usdTexto + usdImagens,
-    abaixoDoPedido: pedidoPorCapitulo > PALAVRAS_POR_CAPITULO_NA_PRATICA,
+    // Comparar palavras por capitulo disparava o aviso ate quando a entrega
+    // estava em dia -- um pedido de 20 paginas rende 20 paginas e ainda assim
+    // acusava. O que importa ao usuario e quantas paginas ele recebe.
+    abaixoDoPedido: palavrasEstimadas / palavrasPedidas < 0.85,
   };
 }
 
