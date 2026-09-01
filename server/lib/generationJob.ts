@@ -88,7 +88,7 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
 async function runJob(ebookId: string) {
   try {
     let row = await getEbook(ebookId);
-    if (!row || row.status === "review" || row.status === "ready") return;
+    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") return;
 
     // Etapa 0: pesquisa na internet (opcional — só roda se TAVILY_API_KEY estiver
     // configurada, e uma única vez por ebook, reaproveitado em todos os capítulos).
@@ -140,6 +140,18 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     } else {
       outline = JSON.parse(row.outline_json);
+    }
+
+    // Etapa 1b: portao de aprovacao do sumario.
+    //
+    // Um ebook longo era escrito inteiro a partir de um unico comando. "Alem das
+    // Quatro Linhas" gastou US$ 1,33 e 33 minutos para entregar um livro com 36
+    // dos 84 capitulos protagonizados por outro casal -- so da para ver isso
+    // depois de pronto. Aqui a geracao para com o sumario e o elenco na mao do
+    // autor, antes de qualquer capitulo ser escrito.
+    if (row.outline_approval === "required") {
+      await run("UPDATE ebooks SET status = 'outline_review', current_step = NULL WHERE id = $1", [ebookId]);
+      return;
     }
 
     // Etapa 2: capa (opcional)
@@ -309,7 +321,7 @@ async function startNextQueuedJob() {
     const nextId = queuedJobs.shift()!;
     if (activeJobs.has(nextId)) continue;
     const row = await getEbook(nextId);
-    if (!row || row.status === "review" || row.status === "ready") continue;
+    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") continue;
     activeJobs.add(nextId);
     void runJob(nextId);
   }
@@ -327,7 +339,7 @@ export async function ensureGenerationRunning(ebookId: string) {
   reservados.add(ebookId);
   try {
     const row = await getEbook(ebookId);
-    if (!row || row.status === "review" || row.status === "ready") return;
+    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") return;
     queuedJobs.push(ebookId);
   } finally {
     reservados.delete(ebookId);

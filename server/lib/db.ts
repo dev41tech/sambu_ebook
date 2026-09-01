@@ -58,7 +58,17 @@ export interface LearningRow {
   created_at: string;
 }
 
-export type EbookStatus = "draft" | "generating" | "review" | "ready" | "error";
+/**
+ * `outline_review` e o unico estado novo: a geracao para com o sumario e o
+ * elenco prontos, esperando o autor conferir antes de escrever os capitulos.
+ */
+export type EbookStatus =
+  | "draft"
+  | "generating"
+  | "outline_review"
+  | "review"
+  | "ready"
+  | "error";
 export type AudioStatus = "none" | "generating" | "ready" | "error";
 export type EbookCategory = "geral" | "tecnico" | "comportamental";
 
@@ -74,6 +84,8 @@ export interface EbookRow {
   page_count: number;
   words_per_page: number;
   extension_mode: string;
+  outline_approval: string;
+  outline_approved_at: string | null;
   word_goal: number;
   continuity_json: string | null;
   author_name: string;

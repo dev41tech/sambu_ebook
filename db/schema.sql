@@ -37,6 +37,10 @@ CREATE TABLE ebooks (
   status                text    NOT NULL DEFAULT 'draft',
   error_message         text,
   outline_json          text,
+  -- Portao de aprovacao do sumario: 'auto' escreve direto (historico),
+  -- 'required' para em outline_review, 'approved' libera a escrita.
+  outline_approval      text    NOT NULL DEFAULT 'auto',
+  outline_approved_at   text,
   intro                 text,
   conclusion            text,
   about_author          text,

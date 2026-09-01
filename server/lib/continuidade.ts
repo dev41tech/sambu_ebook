@@ -234,6 +234,41 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
     }
   }
 
+  // Capitulos orfaos: nenhuma das duas figuras dominantes do livro aparece.
+  //
+  // Esta e a unica checagem que nao depende do elenco declarado, e por isso a
+  // unica capaz de pegar livros escritos antes de existir elenco. "Alem das
+  // Quatro Linhas" tem Ana (333 mencoes) e Lucas (284), e mesmo assim 36 dos 84
+  // capitulos nao citam nenhum dos dois -- cada um inventou o proprio casal.
+  // Sem esta regra aquele livro passava no Quality Gate sem um unico achado
+  // grave, que e exatamente o pior caso possivel.
+  if (e.capitulos.length >= 8) {
+    const dominantes = [...corpo.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([nome]) => normalizar(nome));
+
+    if (dominantes.length === 2) {
+      const orfaos = e.capitulos.filter((c) => {
+        const nomes = [...extrairNomes(c.content || "").keys()].map(normalizar);
+        return !dominantes.some((d) => nomes.includes(d));
+      });
+      const proporcao = orfaos.length / e.capitulos.length;
+      if (proporcao > 0.15) {
+        const lista = orfaos.slice(0, 8).map((c) => c.idx + 1).join(", ");
+        achados.push({
+          categoria: "capitulos-orfaos",
+          // Acima de 30% o livro nao e mais uma obra so; abaixo disso pode ser
+          // uma subtrama legitima e fica como aviso forte para o revisor.
+          gravidade: proporcao > 0.3 ? "blocker" : "major",
+          local: "capítulos",
+          evidencia: `${orfaos.length} de ${e.capitulos.length} capítulos (${Math.round(proporcao * 100)}%) não citam nenhuma das figuras centrais do livro. Capítulos: ${lista}${orfaos.length > 8 ? "…" : ""}.`,
+          sugestao: "Rever esses capítulos: provavelmente trocaram os protagonistas por outros nomes.",
+        });
+      }
+    }
+  }
+
   return achados;
 }
 

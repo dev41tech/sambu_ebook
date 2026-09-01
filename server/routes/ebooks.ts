@@ -25,8 +25,21 @@ import {
 } from "../lib/importContent";
 import { isCategoriaValida } from "../../src/lib/categorias";
 import { isCategoriaPersonalizada } from "./categorias";
+import { avaliarQualidade } from "../lib/qualityGate";
 
 export const ebooksRouter = Router();
+
+// avaliarQualidade() e pura para poder ser testada sem banco. Este envelope faz
+// a leitura e fica aqui, onde o acesso ao banco ja e a regra.
+async function avaliarEbook(ebookId: string) {
+  const ebook = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]);
+  if (!ebook) return null;
+  const capitulos = await all<{ idx: number; title: string; content: string }>(
+    "SELECT idx, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [ebookId]
+  );
+  return avaliarQualidade({ ebook, capitulos });
+}
 
 // Não há mais seleção de template visual — todo ebook usa o layout único de livro
 // (ver server/templates/index.ts). Esse valor fixo só existe para preencher a coluna
@@ -98,6 +111,9 @@ ebooksRouter.post("/", async (req, res) => {
     : [];
   // Dois modos de pedir extensao. 'pages' e o historico e segue sendo o padrao;
   // 'words' e a unidade que a geracao de fato controla.
+  // Padrao 'auto' de proposito: o fluxo automatizado (n8n) e os ebooks curtos
+  // nao devem passar a esperar por um clique que ninguem vai dar.
+  const outlineApproval = body.review_outline ? "required" : "auto";
   const extensionMode = body.extension_mode === "words" ? "words" : "pages";
   const wordGoal =
     extensionMode === "words" ? Number(body.word_goal) : Math.round(pageCount * wordsPerPage);
@@ -163,8 +179,8 @@ ebooksRouter.post("/", async (req, res) => {
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, audio_requested, audio_voice,
-       extension_mode, word_goal, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, 'generating')`,
+       extension_mode, word_goal, outline_approval, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, 'generating')`,
     [
     id,
     titleMode === "manual" ? customTitle : "",
@@ -201,6 +217,7 @@ ebooksRouter.post("/", async (req, res) => {
     audioVoice,
     extensionMode,
     wordGoal,
+    outlineApproval,
     ]
   );
 
@@ -383,6 +400,55 @@ ebooksRouter.post("/:id/feedback", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Libera a escrita depois que o autor conferiu sumario e elenco.
+ebooksRouter.post("/:id/outline/approve", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  if (row.status !== "outline_review") {
+    res.status(409).json({ error: "Este ebook não está aguardando aprovação do sumário." });
+    return;
+  }
+  await run(
+    `UPDATE ebooks SET outline_approval = 'approved', status = 'generating',
+       outline_approved_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+     WHERE id = $1`,
+    [row.id]
+  );
+  await ensureGenerationRunning(row.id);
+  res.json({ ok: true });
+});
+
+// Recusa o planejamento: apaga o sumario para que a proxima tentativa reescreva
+// do zero. O portao vem antes da escrita, entao normalmente nao ha texto a
+// perder -- mas conferimos, porque um ebook pode chegar aqui por outro caminho.
+ebooksRouter.post("/:id/outline/reject", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  if (row.status !== "outline_review") {
+    res.status(409).json({ error: "Este ebook não está aguardando aprovação do sumário." });
+    return;
+  }
+  const escritos = await one<{ n: number }>(
+    "SELECT count(*)::int AS n FROM chapters WHERE ebook_id = $1 AND length(trim(content)) > 0",
+    [row.id]
+  );
+  if ((escritos?.n ?? 0) > 0) {
+    res.status(409).json({ error: "Há capítulos já escritos. Use a caixa de instruções para regerar." });
+    return;
+  }
+  await sql.begin(async (tx) => {
+    await run("DELETE FROM chapters WHERE ebook_id = $1", [row.id], tx);
+    await run(
+      `UPDATE ebooks SET outline_json = NULL, chapters_total = 0, chapters_done = 0,
+         status = 'generating', current_step = NULL WHERE id = $1`,
+      [row.id],
+      tx
+    );
+  });
+  await ensureGenerationRunning(row.id);
+  res.json({ ok: true });
+});
+
 ebooksRouter.post("/:id/retry", async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
@@ -526,12 +592,37 @@ ebooksRouter.post("/:id/finalize", async (req, res) => {
     res.status(409).json({ error: "O ebook ainda não terminou de ser escrito." });
     return;
   }
+  // Quality Gate. Ate aqui o verificador ja gravava `blocker` e o botao de
+  // finalizar funcionava igual -- achado sem consequencia e relatorio, nao
+  // controle. Agora um bloqueador impede a exportacao, e a resposta diz qual.
+  const gate = await avaliarEbook(row.id);
+  if (gate) {
+    await run("UPDATE ebooks SET continuity_json = $1 WHERE id = $2", [JSON.stringify(gate.achados), row.id]);
+    if (!gate.liberado && !req.body?.ignorar_bloqueios) {
+      res.status(409).json({
+        error: "O ebook tem problemas que impedem a publicação.",
+        bloqueadores: gate.bloqueadores,
+        contagem: gate.contagem,
+      });
+      return;
+    }
+  }
+
   try {
     await finalizeEbookExport(row.id);
-    res.json({ ok: true });
+    res.json({ ok: true, achados: gate?.achados ?? [] });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao exportar o ebook." });
   }
+});
+
+// Avalia sem exportar, para a tela mostrar o que trava a publicacao antes de o
+// usuario clicar em finalizar e receber um erro.
+ebooksRouter.get("/:id/quality", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  const gate = await avaliarEbook(row.id);
+  res.json(gate ?? { liberado: true, achados: [], bloqueadores: [], contagem: {} });
 });
 
 async function loadEbookOr404(id: string, res: import("express").Response): Promise<EbookRow | null> {
