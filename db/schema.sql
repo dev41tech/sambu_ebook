@@ -24,6 +24,11 @@ CREATE TABLE ebooks (
   template              text    NOT NULL,
   page_count            integer NOT NULL,
   words_per_page        integer NOT NULL DEFAULT 250,
+  -- Como a extensao foi pedida: 'pages' (page_count x words_per_page) ou 'words'
+  -- (word_goal direto). Paginas nunca foi entrada honesta -- a paginacao depende
+  -- da diagramacao -- mas segue disponivel porque e como se pensa um livro.
+  extension_mode        text    NOT NULL DEFAULT 'pages',
+  word_goal             integer NOT NULL DEFAULT 0,
   author_name           text    NOT NULL DEFAULT '',
   author_bio            text    NOT NULL DEFAULT '',
   include_copyright     boolean NOT NULL DEFAULT false,
@@ -72,6 +77,9 @@ CREATE TABLE ebooks (
   extra_instructions    text    NOT NULL DEFAULT '',
   web_research          text    NOT NULL DEFAULT '',
   marketing_json        text,
+  -- Achados da verificacao de continuidade (nomes de personagens). NULL = nunca
+  -- verificado; '[]' = verificado e sem achados.
+  continuity_json       text,
   version               text    NOT NULL DEFAULT 'v1.0',
   created_at            text    NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );
@@ -104,6 +112,9 @@ CREATE TABLE learnings (
   id         text PRIMARY KEY,
   ebook_id   text REFERENCES ebooks(id) ON DELETE SET NULL,
   category   text NOT NULL DEFAULT 'geral',
+  -- Grupo da taxonomia ("Romance", "Negocios e financas"). Segundo eixo de
+  -- isolamento: sem ele, conselho dado a um livro tecnico entrava em romance.
+  grupo      text NOT NULL DEFAULT '',
   content    text NOT NULL,
   created_at text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );
@@ -186,6 +197,21 @@ CREATE TABLE app_credentials (
   username      text NOT NULL,
   password_hash text NOT NULL,
   updated_at    text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+);
+
+-- Categorias criadas a mao pelo usuario, alem da TAXONOMIA fixa de
+-- src/lib/categorias.ts. Precisam de tabela porque o servidor recusa categoria
+-- principal fora da lista (400 "Categoria principal invalida"): guardar so no
+-- navegador faria o formulario aceitar e a criacao falhar.
+-- O caminho e sempre "Grupo > Item"; nome_normalizado existe para o UNIQUE
+-- ignorar caixa e acento na hora de decidir se a categoria "ja esta na lista".
+CREATE TABLE custom_categories (
+  id          text PRIMARY KEY,
+  grupo       text NOT NULL,
+  item        text NOT NULL,
+  caminho     text NOT NULL,
+  normalizado text NOT NULL UNIQUE,
+  created_at  text NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );
 
 COMMIT;

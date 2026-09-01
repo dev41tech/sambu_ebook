@@ -141,3 +141,52 @@ const VALIDAS = new Set(CATEGORIAS);
 export function isCategoriaValida(valor: string): boolean {
   return VALIDAS.has(valor);
 }
+
+/** Grupo onde caem as categorias criadas a mao pelo usuario. */
+export const GRUPO_PERSONALIZADO = "Minhas categorias";
+
+/**
+ * Chave de comparacao usada para decidir se uma categoria "ja esta na lista".
+ * Sem tirar acento e caixa, "Ficcao Gotica" entraria como nova ao lado de
+ * "Ficção gótica" e a lista encheria de duplicatas que parecem iguais na tela.
+ */
+export function normalizarCategoria(valor: string): string {
+  return valor
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Limpa o que o usuario digitou no campo de nova categoria. O ">" e removido
+ * porque e o separador do caminho: deixa-lo passar produziria "Minhas
+ * categorias > Romance > X", um caminho de tres niveis que nada sabe ler.
+ */
+export function limparNomeCategoria(bruto: string): string {
+  return bruto.replace(/>/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+}
+
+/**
+ * Grupos narrativos. Ficção precisa de elenco fixo entre capitulos; nao ficcao
+ * nao tem personagens e o mesmo bloco so gastaria tokens.
+ */
+const GRUPOS_FICCAO = new Set([
+  "Romance",
+  "Ficção",
+  "Fantasia",
+  "Terror",
+  "Suspense e mistério",
+  "Ficção científica",
+]);
+
+/** Reconhece ficcao pelo grupo do caminho "Grupo > Item". */
+export function ehFiccao(caminho: string): boolean {
+  const grupo = (caminho || "").split(SEPARADOR)[0].trim();
+  if (GRUPOS_FICCAO.has(grupo)) return true;
+  // Categoria criada a mao ("Minhas categorias > Romance esportivo") nao tem
+  // grupo da taxonomia -- caimos no nome do item.
+  const item = (caminho || "").split(SEPARADOR).pop() ?? "";
+  return /romance|ficç|ficc|fantasia|terror|suspense|conto|novela|thriller/i.test(item);
+}

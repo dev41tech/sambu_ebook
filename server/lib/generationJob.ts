@@ -18,14 +18,21 @@ import { searchPhotos, downloadPhoto } from "./pexels";
 import { useLocalCover } from "./localCovers";
 import { getKnowledgeContext } from "./knowledge";
 import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
-import { getRecentLearnings } from "./memory";
+import { getRecentLearnings, grupoDaCategoria } from "./memory";
 import { startAudiobookGeneration } from "./tts";
+import { mensagemDeErroParaUsuario } from "./sanitizar";
+import { verificarContinuidade, contarPorGravidade } from "./continuidade";
+import { ehFiccao } from "../../src/lib/categorias";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
 // uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
 // simultâneo sem controle. O excedente fica na fila e começa assim que uma vaga libera.
 const MAX_CONCURRENT_JOBS = 2;
 const activeJobs = new Set<string>();
+// Ids entre a checagem e a entrada na fila. Sem este conjunto, o `await` de
+// getEbook() abria uma janela em que duas chamadas concorrentes enfileiravam o
+// mesmo ebook e dois jobs escreviam os mesmos capitulos.
+const reservados = new Set<string>();
 const queuedJobs: string[] = [];
 
 function getEbook(id: string): Promise<EbookRow | undefined> {
@@ -36,9 +43,23 @@ async function setStep(id: string, step: string) {
   await run("UPDATE ebooks SET current_step = $1 WHERE id = $2", [step, id]);
 }
 
+// A humanizacao e uma segunda passada sobre um texto que ja esta pronto. Se ela
+// recusar ou devolver lixo, perder o rascunho bom -- ou derrubar o livro inteiro
+// no capitulo 60 -- e pior do que publicar o rascunho sem essa passada.
+async function humanizarOuManter(draft: string, rotulo: string, maxTokens: number): Promise<string> {
+  try {
+    return await humanizeText(draft, rotulo, maxTokens);
+  } catch (err) {
+    console.warn(`[geracao] humanizacao ignorada em ${rotulo}: ${err instanceof Error ? err.message : err}`);
+    return draft;
+  }
+}
+
 async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   const knowledgeContext = await getKnowledgeContext();
-  const learnings = (await getRecentLearnings(12)).map((l) => l.content);
+  const learnings = (await getRecentLearnings(12, row.category, grupoDaCategoria(row.category_main || row.theme))).map(
+    (l) => l.content
+  );
   return {
     theme: row.theme,
     secondaryCategories: (() => {
@@ -54,6 +75,7 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
     language: row.language,
     pageCount: row.page_count,
     wordsPerPage: row.words_per_page,
+    wordGoal: row.extension_mode === "words" ? row.word_goal : 0,
     titleMode: row.title_mode as "ai" | "manual",
     referenceMaterial: row.reference_material || null,
     extraInstructions: row.extra_instructions || null,
@@ -153,7 +175,7 @@ async function runJob(ebookId: string) {
     if (row.intro === null) {
       await setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline);
-      const intro = await humanizeText(draft, `Introdução do ebook "${outline.title}"`, 1500);
+      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500);
       await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
       row = (await getEbook(ebookId))!;
     }
@@ -169,7 +191,7 @@ async function runJob(ebookId: string) {
       await setStep(ebookId, "chapter");
       const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
       const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
-      const content = await humanizeText(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
+      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
     }
@@ -229,7 +251,7 @@ async function runJob(ebookId: string) {
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
       const draft = await generateConclusion(ctx, outline);
-      const conclusion = await humanizeText(draft, `Conclusão do ebook "${outline.title}"`, 1200);
+      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200);
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;
     }
@@ -242,13 +264,40 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
+    // Etapa 5c: verificacao de continuidade. Deterministica, sem chamada de IA,
+    // entao roda sempre e nao pesa no custo. So compara nomes -- nao aprova nem
+    // reprova o livro, apenas registra onde o revisor precisa olhar.
+    try {
+      const capitulosFinais = await all<{ idx: number; title: string; content: string }>(
+        "SELECT idx, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+        [ebookId]
+      );
+      const achados = verificarContinuidade({
+        outline,
+        intro: row.intro,
+        conclusao: row.conclusion,
+        capitulos: capitulosFinais,
+        ficcao: ehFiccao(row.category_main || row.theme),
+      });
+      await run("UPDATE ebooks SET continuity_json = $1 WHERE id = $2", [JSON.stringify(achados), ebookId]);
+      if (achados.length > 0) {
+        console.warn(`[continuidade] ${ebookId}: ${achados.length} achado(s)`, contarPorGravidade(achados));
+      }
+    } catch (err) {
+      // A verificacao e um extra. Falhar aqui nao pode perder um livro inteiro
+      // que acabou de custar dinheiro para ser escrito.
+      console.warn(`[continuidade] falhou para ${ebookId}:`, err);
+    }
+
     // Etapa 6: conteúdo pronto — para aqui para revisão, sem exportar ainda.
     // A exportação final (PDF/DOCX/EPUB) só roda quando o usuário confirma pela
     // tela de revisão (ver finalizeEbookExport, chamado por POST /:id/finalize).
     await run("UPDATE ebooks SET status = 'review', current_step = NULL WHERE id = $1", [ebookId]);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
-    await run("UPDATE ebooks SET status = 'error', error_message = $1 WHERE id = $2", [message, ebookId]);
+    const bruta = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
+    // A mensagem real fica no log do servidor; a tela recebe a versão sanitizada.
+    console.error(`[geracao] ${ebookId}: ${bruta}`);
+    await run("UPDATE ebooks SET status = 'error', error_message = $1 WHERE id = $2", [mensagemDeErroParaUsuario(bruta), ebookId]);
   } finally {
     activeJobs.delete(ebookId);
     await startNextQueuedJob();
@@ -267,10 +316,22 @@ async function startNextQueuedJob() {
 }
 
 export async function ensureGenerationRunning(ebookId: string) {
-  if (activeJobs.has(ebookId) || queuedJobs.includes(ebookId)) return;
-  const row = await getEbook(ebookId);
-  if (!row || row.status === "review" || row.status === "ready") return;
-  queuedJobs.push(ebookId);
+  if (activeJobs.has(ebookId) || queuedJobs.includes(ebookId) || reservados.has(ebookId)) return;
+
+  // A reserva precisa acontecer ANTES do await. Com a checagem e a inclusao na
+  // fila separadas por uma ida ao banco, duas chamadas simultaneas -- a tela de
+  // "gerando" faz polling na rota de detalhe, que chama esta funcao -- passavam
+  // as duas pelo `if` antes de qualquer uma reservar. O resultado eram dois jobs
+  // do mesmo ebook escrevendo os mesmos capitulos: em "Sob o Sol do Misterio"
+  // deu 47 capitulos gerados para um livro de 40, com a OpenAI cobrando os 7.
+  reservados.add(ebookId);
+  try {
+    const row = await getEbook(ebookId);
+    if (!row || row.status === "review" || row.status === "ready") return;
+    queuedJobs.push(ebookId);
+  } finally {
+    reservados.delete(ebookId);
+  }
   await startNextQueuedJob();
 }
 

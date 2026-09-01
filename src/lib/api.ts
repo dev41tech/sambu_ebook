@@ -58,6 +58,15 @@ export interface EbookDetail extends EbookSummary {
   author_name: string;
   reference_material: string;
   extra_instructions: string;
+  // Instrucoes originais de criacao, editaveis na area de diagramacao para regerar.
+  audience: string;
+  tone: string;
+  language: string;
+  words_per_page: number;
+  title_mode: "ai" | "manual";
+  category_main: string;
+  /** JSON de string[] -- a coluna guarda texto, nao array. */
+  categories_secondary: string;
   chapters: Chapter[];
   chapter_images: ChapterImageSummary[];
 }
@@ -131,6 +140,9 @@ export interface NewEbookPayload {
   language: string;
   page_count: number;
   words_per_page?: number;
+  /** "pages" (padrão) ou "words" — como a extensão foi pedida. */
+  extension_mode?: "pages" | "words";
+  word_goal?: number;
   author_name?: string;
   author_bio?: string;
   include_copyright?: boolean;
@@ -247,3 +259,40 @@ export const api = {
     return res.json() as Promise<{ title: string; text: string }>;
   },
 };
+
+export interface ListaCategorias {
+  fixas: string[];
+  personalizadas: string[];
+}
+
+export function listarCategorias(): Promise<ListaCategorias> {
+  return request<ListaCategorias>("/categorias");
+}
+
+/** Cria a categoria se ela ainda nao existir; devolve o caminho a selecionar. */
+export function criarCategoria(item: string): Promise<{ caminho: string; criada: boolean }> {
+  return request<{ caminho: string; criada: boolean }>("/categorias", {
+    method: "POST",
+    body: JSON.stringify({ item }),
+  });
+}
+
+export interface BriefingEbook {
+  theme: string;
+  category_main: string;
+  categories_secondary: string[];
+  audience: string;
+  tone: string;
+  language: string;
+  page_count: number;
+  words_per_page: number;
+  extra_instructions: string;
+}
+
+/** Apaga o texto gerado e reescreve o ebook com as instrucoes editadas. */
+export function regerarEbook(id: string, briefing: BriefingEbook): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/ebooks/${id}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify(briefing),
+  });
+}

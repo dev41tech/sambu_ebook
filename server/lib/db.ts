@@ -73,6 +73,9 @@ export interface EbookRow {
   template: string;
   page_count: number;
   words_per_page: number;
+  extension_mode: string;
+  word_goal: number;
+  continuity_json: string | null;
   author_name: string;
   author_bio: string;
   include_copyright: boolean;

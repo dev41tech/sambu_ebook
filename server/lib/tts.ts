@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import ffmpeg from "fluent-ffmpeg";
 import { all, one, run, type EbookRow } from "./db";
+import { mensagemDeErroParaUsuario } from "./sanitizar";
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
@@ -138,7 +139,11 @@ async function runAudioJob(ebookId: string) {
       ebookId,
     ]);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Erro inesperado ao gerar o audiobook.";
+    const bruta = err instanceof Error ? err.message : "Erro inesperado ao gerar o audiobook.";
+    // O texto vai direto para a area editorial. Cru, ele exibia o nome das
+    // variaveis de ambiente da narracao para quem so queria publicar um livro.
+    console.error(`[audiobook] ${ebookId}: ${bruta}`);
+    const message = mensagemDeErroParaUsuario(bruta);
     await run("UPDATE ebooks SET audio_status = 'error', audio_error = $1 WHERE id = $2", [message, ebookId]);
   } finally {
     activeAudioJobs.delete(ebookId);

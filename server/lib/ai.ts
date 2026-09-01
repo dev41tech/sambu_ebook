@@ -1,5 +1,8 @@
 import OpenAI from "openai";
 import { withRetry } from "./retry";
+import { detectarRecusa } from "./sanitizar";
+import { MAX_CAPITULOS } from "../../src/lib/custo";
+import { ehFiccao } from "../../src/lib/categorias";
 
 let client: OpenAI | null = null;
 
@@ -27,6 +30,8 @@ export interface EbookContext {
   language: string;
   pageCount: number;
   wordsPerPage: number;
+  /** Meta de palavras; quando > 0 manda no lugar de pageCount. */
+  wordGoal?: number;
   titleMode: "ai" | "manual";
   customTitle?: string | null;
   customSubtitle?: string | null;
@@ -109,17 +114,31 @@ export interface OutlineChapter {
   summary: string;
 }
 
+/**
+ * Elenco fixado no sumario. Existe porque introducao, capitulos e conclusao eram
+ * tres chamadas independentes, cada uma inventando os proprios nomes: em "Alem
+ * das Quatro Linhas" a introducao apresentou Luisa e Guilherme enquanto os 84
+ * capitulos falavam de Ana e Lucas.
+ */
+export interface Personagem {
+  nome: string;
+  papel: string;
+  descricao: string;
+}
+
 export interface Outline {
   title: string;
   subtitle: string;
   chapters: OutlineChapter[];
+  /** So em ficcao. Nao ficcao nao tem elenco e o bloco nao e pedido. */
+  personagens?: Personagem[];
 }
 
 // Teto de capitulos por ebook. Era 12 fixo, o que fazia qualquer pedido acima de
 // 48 paginas render o mesmo livro -- pedir 250 paginas entregava ~45. Virou
 // configuravel para podermos medir onde estao os limites reais (tempo, custo,
 // coerencia entre capitulos, renderizacao do PDF) antes de fixar um numero.
-const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || 12;
+const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || MAX_CAPITULOS;
 
 function chapterCountFor(pageCount: number): number {
   const raw = Math.round(pageCount / 4);
@@ -130,7 +149,8 @@ async function askOpenAI(
   system: string,
   prompt: string,
   maxTokens: number,
-  jsonMode = false
+  jsonMode = false,
+  minChars = 200
 ): Promise<string> {
   const openai = getClient();
   const response = await withRetry(() =>
@@ -147,6 +167,14 @@ async function askOpenAI(
   const text = response.choices[0]?.message?.content;
   if (!text) {
     throw new Error("Resposta vazia da IA.");
+  }
+  // Uma recusa chega em HTTP 200, com texto. Sem esta checagem ela era salva
+  // como se fosse o capitulo -- foi o que aconteceu nos capitulos 4 e 10 de
+  // "Vinganca Perigosa". O minChars nao se aplica ao JSON do sumario, que e
+  // validado por parse logo adiante.
+  const recusa = detectarRecusa(text, jsonMode ? 0 : minChars);
+  if (recusa) {
+    throw new Error(`IA nao entregou conteudo: ${recusa.motivo}.`);
   }
   return text.trim();
 }
@@ -240,7 +268,9 @@ ${BANNED_PHRASES.map((p) => `"${p}"`).join(", ")}.
 Evite também: excesso de travessões, sequências de frases muito curtas, excesso de metáforas, excesso de perguntas retóricas seguidas, conclusões que apenas repetem a introdução com outras palavras, e fechamentos motivacionais genéricos.`;
 
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
-  const chapterCount = chapterCountFor(ctx.pageCount);
+  // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
+  const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
+  const chapterCount = chapterCountFor(Math.round(palavrasAlvo / Math.max(1, ctx.wordsPerPage)));
   const titleInstruction =
     ctx.titleMode === "manual" && ctx.customTitle
       ? `Use exatamente este título: "${ctx.customTitle}". ${
@@ -253,13 +283,28 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // foi assim que um livro sobre produtividade virou "Eficiencia Relacional".
   const secundarias = (ctx.secondaryCategories ?? []).filter(Boolean);
 
+  // Em ficcao o elenco e definido aqui, uma vez, e repassado a todas as etapas de
+  // escrita. Em nao ficcao o bloco nao e pedido: nao ha personagens e o schema
+  // extra so gastaria tokens.
+  const ficcao = ehFiccao(ctx.theme);
+  const blocoElencoSchema = ficcao
+    ? `
+  "personagens": [
+    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
+  ],`
+    : "";
+  const instrucaoElenco = ficcao
+    ? `
+Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.`
+    : "";
+
   const prompt = `Planeje a estrutura de um ebook com estas informações:
 - Classificação principal: ${ctx.theme}  (formato "Área > Subcategoria" — o livro deve ficar dentro dela)
-${secundarias.length > 0 ? `- Classificações secundárias, para tangenciar sem desviar do foco: ${secundarias.join("; ")}` : ""}
+${secundarias.length > 0 ? `- Temas secundários indicados pelo autor, para tangenciar sem desviar da classificação principal: ${secundarias.join("; ")}` : ""}
 - Público-alvo: ${ctx.audience}
 - Tom de voz: ${ctx.tone}
 - Idioma do ebook: ${ctx.language}
-- Extensão alvo: ~${ctx.pageCount} páginas (aproximadamente ${ctx.pageCount * ctx.wordsPerPage} palavras no total)
+- Extensão alvo: ${palavrasAlvo.toLocaleString("pt-BR")} palavras no total (cerca de ${Math.round(palavrasAlvo / Math.max(1, ctx.wordsPerPage))} páginas depois de diagramado)
 - Número de capítulos: exatamente ${chapterCount}
 ${ctx.authorContext ? `- Contexto/voz do autor fornecido: ${ctx.authorContext}` : ""}
 ${groundingBlock(ctx)}
@@ -267,12 +312,12 @@ ${titleInstruction}
 
 O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
-Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.
+Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}
 
 Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
 {
   "title": "...",
-  "subtitle": "...",
+  "subtitle": "...",${blocoElencoSchema}
   "chapters": [
     { "title": "...", "summary": "uma frase descrevendo o ângulo específico deste capítulo" }
   ]
@@ -281,7 +326,7 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // O JSON do sumario cresce com o numero de capitulos. Com o teto fixo em 12,
   // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
   // JSON viria invalido -- falha silenciosa e dificil de diagnosticar.
-  const tokensSumario = Math.max(2000, 400 + chapterCount * 40);
+  const tokensSumario = Math.max(2000, 400 + chapterCount * 40) + (ficcao ? 600 : 0);
   const raw = await askOpenAI(SYSTEM_PROMPT, prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
@@ -291,11 +336,25 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   return parsed;
 }
 
+/**
+ * Repassa o elenco do sumario a todas as etapas de escrita. Sem ele, cada chamada
+ * ao modelo cria personagens do zero e o livro troca de protagonista no meio.
+ */
+function elencoBlock(outline: Outline): string {
+  const elenco = outline.personagens ?? [];
+  if (elenco.length === 0) return "";
+  const linhas = elenco.map((p) => `- ${p.nome} (${p.papel}): ${p.descricao}`).join("\n");
+  return `
+ELENCO FIXO deste livro — use exatamente estes nomes, sem trocar, encurtar, apelidar nem inventar outro protagonista. Personagens secundarios novos sao permitidos, desde que nao assumam o papel central:
+${linhas}
+`;
+}
+
 export async function generateIntro(ctx: EbookContext, outline: Outline): Promise<string> {
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${groundingBlock(ctx)}
+${elencoBlock(outline)}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -311,7 +370,8 @@ export async function generateChapter(
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
-  const wordsPerChapter = Math.round((ctx.pageCount * ctx.wordsPerPage) / outline.chapters.length);
+  const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
+  const wordsPerChapter = Math.round(alvoTotal / outline.chapters.length);
   const opening = CHAPTER_OPENINGS[chapterIndex % CHAPTER_OPENINGS.length];
   const closingPool = isLastChapter ? CHAPTER_CLOSINGS_LAST : CHAPTER_CLOSINGS;
   const closing = closingPool[chapterIndex % closingPool.length];
@@ -320,7 +380,7 @@ Título do capítulo: "${chapter.title}"
 O que este capítulo deve cobrir: ${chapter.summary}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo ou os mesmos exemplos deles.` : "Este é o primeiro capítulo."}
+${elencoBlock(outline)}${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo ou os mesmos exemplos deles.` : "Este é o primeiro capítulo."}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
 ${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
@@ -335,7 +395,7 @@ export async function generateConclusion(ctx: EbookContext, outline: Outline): P
 ${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${groundingBlock(ctx)}
+${elencoBlock(outline)}${groundingBlock(ctx)}
 Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
   return askOpenAI(SYSTEM_PROMPT, prompt, 1200);

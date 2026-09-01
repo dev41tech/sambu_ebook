@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { all, one, run, type EbookRow, type ChapterRow, type ChapterImageRow } from "../lib/db";
+import { all, one, run, sql, type EbookRow, type ChapterRow, type ChapterImageRow } from "../lib/db";
 import { ensureGenerationRunning, finalizeEbookExport } from "../lib/generationJob";
 import { startAudiobookGeneration } from "../lib/tts";
 import { generateCoverImage, generateChapterImage, generateMarketingImage } from "../lib/images";
@@ -13,7 +13,7 @@ import { useLocalCover } from "../lib/localCovers";
 import { renderEbookPdf, renderPageThumbnails, layoutPreviewPagePath } from "../lib/pdf";
 import { renderEbookDocx } from "../lib/docx";
 import { renderEbookEpub } from "../lib/epub";
-import { addLearning } from "../lib/memory";
+import { addLearning, grupoDaCategoria } from "../lib/memory";
 import { generateMarketingStrategy, type MarketingCreative, type MarketingStrategy } from "../lib/marketing";
 import { renderCreative } from "../lib/creatives";
 import {
@@ -24,6 +24,7 @@ import {
   prettifyFilenameTitle,
 } from "../lib/importContent";
 import { isCategoriaValida } from "../../src/lib/categorias";
+import { isCategoriaPersonalizada } from "./categorias";
 
 export const ebooksRouter = Router();
 
@@ -43,6 +44,22 @@ ebooksRouter.get("/", async (_req, res) => {
   );
   res.json(rows);
 });
+
+// Secundarias sao texto livre digitado pelo usuario, nao caminhos da taxonomia.
+// Antes isto passava por isCategoriaValida(), que descartava em silencio tudo que
+// nao fosse um caminho conhecido -- o campo aceitaria digitacao e nao gravaria nada.
+function limparSecundarias(bruto: unknown[], principal: string): string[] {
+  const vistos = new Set<string>();
+  return bruto
+    .map((c) => String(c).trim().slice(0, 60))
+    .filter((c) => {
+      const chave = c.toLowerCase();
+      if (!c || c === principal || vistos.has(chave)) return false;
+      vistos.add(chave);
+      return true;
+    })
+    .slice(0, 8);
+}
 
 ebooksRouter.post("/", async (req, res) => {
   const body = req.body ?? {};
@@ -77,15 +94,19 @@ ebooksRouter.post("/", async (req, res) => {
   // (é ele que alimenta o prompt da IA); as secundárias só classificam.
   const categoryMain = String(body.category_main ?? theme).trim();
   const categoriesSecondary = Array.isArray(body.categories_secondary)
-    ? (body.categories_secondary as unknown[])
-        .map((c) => String(c).trim())
-        .filter((c) => isCategoriaValida(c) && c !== categoryMain)
-        .slice(0, 8)
+    ? limparSecundarias(body.categories_secondary as unknown[], categoryMain)
     : [];
+  // Dois modos de pedir extensao. 'pages' e o historico e segue sendo o padrao;
+  // 'words' e a unidade que a geracao de fato controla.
+  const extensionMode = body.extension_mode === "words" ? "words" : "pages";
+  const wordGoal =
+    extensionMode === "words" ? Number(body.word_goal) : Math.round(pageCount * wordsPerPage);
   const audioRequested = !!body.audio_requested;
   const audioVoice = String(body.audio_voice ?? "").trim().slice(0, 80);
 
-  if (categoryMain && !isCategoriaValida(categoryMain)) {
+  // Categoria criada a mao pelo usuario tambem vale. Sem esta segunda checagem
+  // o proprio app cadastraria a categoria e depois recusaria o ebook com ela.
+  if (categoryMain && !isCategoriaValida(categoryMain) && !(await isCategoriaPersonalizada(categoryMain))) {
     res.status(400).json({ error: "Categoria principal inválida." });
     return;
   }
@@ -94,12 +115,18 @@ ebooksRouter.post("/", async (req, res) => {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
     return;
   }
-  if (!Number.isFinite(pageCount) || pageCount < 1 || pageCount > 1000) {
-    res.status(400).json({ error: "Número de páginas deve estar entre 1 e 1000." });
+  if (!Number.isFinite(pageCount) || pageCount < 1 || pageCount > 400) {
+    res.status(400).json({ error: "Número de páginas deve estar entre 1 e 400." });
     return;
   }
   if (!Number.isFinite(wordsPerPage) || wordsPerPage < 150 || wordsPerPage > 500) {
     res.status(400).json({ error: "Palavras por página deve estar entre 150 e 500." });
+    return;
+  }
+  // O teto de palavras acompanha o de paginas: 400 x 500 = 200.000 e o maximo que
+  // o pedido por paginas ja permitia, entao os dois modos param no mesmo lugar.
+  if (extensionMode === "words" && (!Number.isFinite(wordGoal) || wordGoal < 1000 || wordGoal > 200000)) {
+    res.status(400).json({ error: "Meta de palavras deve estar entre 1.000 e 200.000." });
     return;
   }
   if (!TONES.has(tone)) {
@@ -135,8 +162,9 @@ ebooksRouter.post("/", async (req, res) => {
        generate_cover, cover_suggestion, cover_source, cover_stock_url, cover_credit, cover_alt_text,
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
-       extra_instructions, category_main, categories_secondary, audio_requested, audio_voice, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, 'generating')`,
+       extra_instructions, category_main, categories_secondary, audio_requested, audio_voice,
+       extension_mode, word_goal, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, 'generating')`,
     [
     id,
     titleMode === "manual" ? customTitle : "",
@@ -171,6 +199,8 @@ ebooksRouter.post("/", async (req, res) => {
     JSON.stringify(categoriesSecondary),
     audioRequested,
     audioVoice,
+    extensionMode,
+    wordGoal,
     ]
   );
 
@@ -260,15 +290,15 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
   // Classificação é opcional na importação: um manuscrito pronto pode entrar sem
   // categoria e ser classificado depois, na revisão.
   const rawCategoryMain = String(body.category_main ?? "").trim();
-  const importCategoryMain = isCategoriaValida(rawCategoryMain) ? rawCategoryMain : "";
+  const importCategoryMain =
+    isCategoriaValida(rawCategoryMain) || (await isCategoriaPersonalizada(rawCategoryMain))
+      ? rawCategoryMain
+      : "";
   let importCategoriesSecondary: string[] = [];
   try {
     const parsed = JSON.parse(String(body.categories_secondary ?? "[]"));
     if (Array.isArray(parsed)) {
-      importCategoriesSecondary = parsed
-        .map((c) => String(c).trim())
-        .filter((c) => isCategoriaValida(c) && c !== importCategoryMain)
-        .slice(0, 8);
+      importCategoriesSecondary = limparSecundarias(parsed, importCategoryMain);
     }
   } catch {
     importCategoriesSecondary = [];
@@ -349,7 +379,7 @@ ebooksRouter.post("/:id/feedback", async (req, res) => {
     res.status(400).json({ error: "Escreva uma sugestão antes de enviar." });
     return;
   }
-  await addLearning(feedback, row.id, row.category);
+  await addLearning(feedback, row.id, row.category, grupoDaCategoria(row.category_main || row.theme));
   res.json({ ok: true });
 });
 
@@ -359,6 +389,84 @@ ebooksRouter.post("/:id/retry", async (req, res) => {
   if (row.status === "error") {
     await run("UPDATE ebooks SET status = 'generating', error_message = NULL WHERE id = $1", [row.id]);
   }
+  await ensureGenerationRunning(row.id);
+  res.json({ ok: true });
+});
+
+// Regera o ebook inteiro a partir das instrucoes editadas na tela de detalhe.
+//
+// Nao e o /retry: aquele RETOMA de onde parou, pulando o outline e os capitulos
+// que ja tem conteudo. Aqui as instrucoes mudaram, entao tudo que foi escrito
+// com as instrucoes antigas precisa sair -- senao o job encontraria o outline
+// velho e devolveria o mesmo livro com um briefing novo.
+ebooksRouter.post("/:id/regenerate", async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  if (row.status === "generating") {
+    res.status(409).json({ error: "Este ebook já está sendo gerado." });
+    return;
+  }
+
+  const body = req.body ?? {};
+  const theme = String(body.theme ?? "").trim();
+  const audience = String(body.audience ?? "").trim();
+  const tone = String(body.tone ?? row.tone).trim();
+  const language = String(body.language ?? row.language).trim();
+  const pageCount = Number(body.page_count);
+  const wordsPerPage = Number(body.words_per_page);
+  const extraInstructions = String(body.extra_instructions ?? "").trim().slice(0, 5000);
+  const categoryMain = String(body.category_main ?? theme).trim();
+  const categoriesSecondary = Array.isArray(body.categories_secondary)
+    ? limparSecundarias(body.categories_secondary as unknown[], categoryMain)
+    : [];
+
+  if (!theme || !audience) {
+    res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
+    return;
+  }
+  if (categoryMain && !isCategoriaValida(categoryMain) && !(await isCategoriaPersonalizada(categoryMain))) {
+    res.status(400).json({ error: "Categoria principal inválida." });
+    return;
+  }
+  if (!Number.isFinite(pageCount) || pageCount < 1 || pageCount > 400) {
+    res.status(400).json({ error: "Número de páginas deve estar entre 1 e 400." });
+    return;
+  }
+  if (!Number.isFinite(wordsPerPage) || wordsPerPage < 150 || wordsPerPage > 500) {
+    res.status(400).json({ error: "Palavras por página deve estar entre 150 e 500." });
+    return;
+  }
+
+  // Arquivos exportados e imagens de capitulo descrevem o texto antigo. Ficariam
+  // servindo o PDF do livro anterior enquanto o novo e escrito.
+  const imagensAntigas = (
+    await all<{ path: string }>("SELECT path FROM chapter_images WHERE ebook_id = $1", [row.id])
+  ).map((r) => r.path);
+  for (const caminho of [row.pdf_path, row.docx_path, row.epub_path, ...imagensAntigas]) {
+    if (caminho && fs.existsSync(caminho)) fs.rmSync(caminho, { force: true });
+  }
+
+  await sql.begin(async (tx) => {
+    await run("DELETE FROM chapter_images WHERE ebook_id = $1", [row.id], tx);
+    await run("DELETE FROM chapters WHERE ebook_id = $1", [row.id], tx);
+    await run(
+      `UPDATE ebooks SET
+         theme = $1, category_main = $2, categories_secondary = $3, audience = $4,
+         tone = $5, language = $6, page_count = $7, words_per_page = $8,
+         extra_instructions = $9,
+         outline_json = NULL, intro = NULL, conclusion = NULL, about_author = NULL,
+         marketing_json = NULL, pdf_path = NULL, docx_path = NULL, epub_path = NULL,
+         chapters_total = 0, chapters_done = 0, images_done = 0,
+         current_step = NULL, error_message = NULL, status = 'generating'
+       WHERE id = $10`,
+      [
+        theme, categoryMain, JSON.stringify(categoriesSecondary), audience,
+        tone, language, pageCount, wordsPerPage, extraInstructions, row.id,
+      ],
+      tx
+    );
+  });
+
   await ensureGenerationRunning(row.id);
   res.json({ ok: true });
 });
