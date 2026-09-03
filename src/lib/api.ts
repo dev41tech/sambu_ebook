@@ -143,11 +143,23 @@ export interface AchadoEditorial {
   sugestao: string;
 }
 
+export interface Metricas {
+  palavras: number;
+  capitulos: number;
+  dialogoPorMil: number;
+  abstracaoPorMil: number;
+  repeticaoEntreCapitulos: number;
+  personagensSemFuncao: string[];
+  exemplosRepetidos: number;
+}
+
 export interface ResultadoQualidade {
   liberado: boolean;
   achados: AchadoEditorial[];
   bloqueadores: AchadoEditorial[];
   contagem: Record<GravidadeAchado, number>;
+  /** Placar objetivo — nunca bloqueia, é o número pra comparar antes/depois. */
+  metricas: Metricas | null;
 }
 
 export interface NewEbookPayload {

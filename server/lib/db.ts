@@ -88,6 +88,7 @@ export interface EbookRow {
   outline_approved_at: string | null;
   word_goal: number;
   continuity_json: string | null;
+  metrics_json: string | null;
   author_name: string;
   author_bio: string;
   include_copyright: boolean;

@@ -27,6 +27,7 @@ import { isCategoriaValida } from "../../src/lib/categorias";
 import { TODOS_OS_TONS } from "../../src/lib/modos";
 import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
+import { medirComResumos, type Metricas } from "../lib/metricas";
 
 export const ebooksRouter = Router();
 
@@ -40,6 +41,34 @@ async function avaliarEbook(ebookId: string) {
     [ebookId]
   );
   return avaliarQualidade({ ebook, capitulos });
+}
+
+/**
+ * Placar objetivo (server/lib/metricas.ts), calculado no mesmo ponto que o
+ * Quality Gate. Nunca bloqueia nada -- é o número que diz se uma mudança de
+ * prompt ajudou ou atrapalhou, sem depender de reler o livro.
+ */
+async function medirEbook(ebookId: string): Promise<Metricas | null> {
+  const ebook = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]);
+  if (!ebook) return null;
+  const capitulos = await all<{ idx: number; content: string; resumo_fatos: string | null }>(
+    "SELECT idx, content, resumo_fatos FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+    [ebookId]
+  );
+  let elenco: string[] | undefined;
+  if (ebook.outline_json) {
+    try {
+      const outline = JSON.parse(ebook.outline_json) as { personagens?: Array<{ nome: string }> };
+      elenco = (outline.personagens ?? []).map((p) => p.nome);
+    } catch {
+      elenco = undefined;
+    }
+  }
+  return medirComResumos(
+    ebook.category_main || ebook.theme,
+    capitulos.map((c) => ({ idx: c.idx, content: c.content, resumoFatos: c.resumo_fatos })),
+    elenco
+  );
 }
 
 // Não há mais seleção de template visual — todo ebook usa o layout único de livro
@@ -614,6 +643,15 @@ ebooksRouter.post("/:id/finalize", async (req, res) => {
     }
   }
 
+  // Métricas não bloqueiam publicação -- diferente do gate, uma falha aqui não
+  // pode impedir o autor de exportar o próprio livro.
+  try {
+    const metricas = await medirEbook(row.id);
+    if (metricas) await run("UPDATE ebooks SET metrics_json = $1 WHERE id = $2", [JSON.stringify(metricas), row.id]);
+  } catch (err) {
+    console.warn(`[metricas] falhou para ${row.id}:`, err instanceof Error ? err.message : err);
+  }
+
   try {
     await finalizeEbookExport(row.id);
     res.json({ ok: true, achados: gate?.achados ?? [] });
@@ -628,7 +666,10 @@ ebooksRouter.get("/:id/quality", async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const gate = await avaliarEbook(row.id);
-  res.json(gate ?? { liberado: true, achados: [], bloqueadores: [], contagem: {} });
+  // Métricas calculadas na hora, não lidas do banco: o autor pode estar
+  // conferindo antes de qualquer finalização, quando metrics_json ainda é nulo.
+  const metricas = await medirEbook(row.id).catch(() => null);
+  res.json({ ...(gate ?? { liberado: true, achados: [], bloqueadores: [], contagem: {} }), metricas });
 });
 
 async function loadEbookOr404(id: string, res: import("express").Response): Promise<EbookRow | null> {
