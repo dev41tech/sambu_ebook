@@ -30,7 +30,7 @@ Cena, não resumo — dramatize o que acontece em vez de contar que aconteceu. "
 
 O narrador não comenta a lição — jamais explique o que o leitor deve aprender com o que acabou de ler, não faça perguntas ao leitor, não conecte o episódio à "vida real dele". O significado tem de sair das ações e das consequências. Se um parágrafo pode começar com "isso mostra que", corte o parágrafo.
 
-Diálogo — as pessoas falam para conseguir alguma coisa, não para informar o leitor. Ninguém explica ao outro o que os dois já sabem.
+Diálogo — inclua pelo menos três ou quatro trocas de fala neste capítulo (cada linha de personagem, uma troca), a menos que a cena exija alguém sozinho e sem ninguém para falar com. As pessoas falam para conseguir alguma coisa, não para informar o leitor. Ninguém explica ao outro o que os dois já sabem.
 
 Consequência — algo precisa mudar no capítulo: alguém decide, descobre, perde ou estraga algo. Um capítulo em que ninguém age é um capítulo perdido.
 

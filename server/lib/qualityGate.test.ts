@@ -203,3 +203,47 @@ test("subtrama pequena vira aviso, nao bloqueio", () => {
   });
   assert.equal(r.liberado, true, JSON.stringify(r.achados));
 });
+
+test("fato numerico inconsistente e propagado do outline ate o gate e bloqueia", () => {
+  // Regressao do caso real: "Móveis de Memórias" dizia "quinze anos" no
+  // capítulo 1 e "vinte anos" no capítulo 14. Este teste confere que a fiacao
+  // completa -- outline.fatosFixos -> avaliarQualidade -> gate -- funciona, nao
+  // so o modulo isolado (ja coberto em fatosNumericos.test.ts).
+  const ebook = ebookFake({
+    outline_json: JSON.stringify({
+      title: "Livro de Teste",
+      subtitle: "Subtítulo",
+      chapters: [{ title: "Capítulo 1", summary: "" }],
+      personagens: ELENCO,
+      fatosFixos: ["A irmã de Ana desapareceu há quinze anos."],
+    }),
+  });
+  const capitulos = [
+    capitulo(0, corpo("Ana olhou para Lucas. ") + "Fazia quinze anos desde o desaparecimento."),
+    capitulo(1, corpo("Lucas respondeu a Ana. ") + "Ela já tinha vinte anos para lidar com a ausência da irmã."),
+  ];
+  const r = avaliarQualidade({ ebook, capitulos });
+  assert.equal(r.liberado, false);
+  assert.ok(r.bloqueadores.some((b) => b.categoria === "fato-numerico-inconsistente"), JSON.stringify(r.achados));
+});
+
+test("elenco com papel 'ausente' nao e mais acusado de personagem-nao-autorizado", () => {
+  // Antes desta mudanca, um personagem central que so e mencionado (a irma
+  // desaparecida) nunca entrava no elenco, e por isso disparava
+  // "personagem-nao-autorizado" so por ser citado muitas vezes.
+  const elencoComAusente = [...ELENCO, { nome: "Clara", papel: "ausente", descricao: "irmã desaparecida de Ana" }];
+  const ebook = ebookFake({
+    outline_json: JSON.stringify({
+      title: "Livro de Teste",
+      subtitle: "Subtítulo",
+      chapters: [{ title: "Capítulo 1", summary: "" }],
+      personagens: elencoComAusente,
+    }),
+  });
+  const capitulos = [
+    capitulo(0, corpo("Ana olhou para Lucas e pensou em Clara. ")),
+    capitulo(1, corpo("Lucas mencionou Clara outra vez para Ana. ")),
+  ];
+  const r = avaliarQualidade({ ebook, capitulos });
+  assert.ok(!r.achados.some((a) => a.categoria === "personagem-nao-autorizado"), JSON.stringify(r.achados));
+});

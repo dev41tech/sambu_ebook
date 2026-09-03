@@ -114,6 +114,15 @@ function groundingBlock(ctx: EbookContext): string {
 export interface OutlineChapter {
   title: string;
   summary: string;
+  /**
+   * So em ficcao. Sem isto o capitulo 10 podia reabrir uma decisao que o
+   * capitulo 3 ja tinha fechado -- "Moveis de Memorias" decide vender a oficina
+   * no capitulo 3 e volta a "ponderar" a mesma venda no capitulo 6, porque nada
+   * dizia que aquilo já tinha sido resolvido.
+   */
+  funcao?: "apresentacao" | "complicacao" | "virada" | "crise" | "climax" | "desfecho";
+  /** O que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois. */
+  resultado?: string;
 }
 
 /**
@@ -121,6 +130,12 @@ export interface OutlineChapter {
  * tres chamadas independentes, cada uma inventando os proprios nomes: em "Alem
  * das Quatro Linhas" a introducao apresentou Luisa e Guilherme enquanto os 84
  * capitulos falavam de Ana e Lucas.
+ *
+ * "papel" aceita "ausente" para quem e citado o livro inteiro mas nunca aparece
+ * em cena -- a irma desaparecida, o socio morto. Sem essa opcao o modelo so
+ * pensava em quem "esta na cena" e deixava a figura mais citada do livro de
+ * fora do elenco: em "Moveis de Memorias" a irma desaparecida foi citada 59
+ * vezes e nunca entrou no elenco, porque nada pedia isso.
  */
 export interface Personagem {
   nome: string;
@@ -134,6 +149,14 @@ export interface Outline {
   chapters: OutlineChapter[];
   /** So em ficcao. Nao ficcao nao tem elenco e o bloco nao e pedido. */
   personagens?: Personagem[];
+  /**
+   * Fatos que nao podem mudar ao longo do livro: numeros, datas, relacoes,
+   * quem esta ausente. Sem isto, nada garante que "ha quinze anos" dito no
+   * capitulo 1 continue valendo no capitulo 14 -- em "Moveis de Memorias"
+   * virou "vinte anos" no climax, e nada no sistema tinha esse fato fixado em
+   * lugar nenhum para contradizer.
+   */
+  fatosFixos?: string[];
 }
 
 // Teto de capitulos por ebook. Era 12 fixo, o que fazia qualquer pedido acima de
@@ -306,12 +329,25 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   const blocoElencoSchema = ficcao
     ? `
   "personagens": [
-    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
+    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista | ausente", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
   ],`
     : "";
   const instrucaoElenco = ficcao
     ? `
-Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.`
+Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.
+Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.`
+    : "";
+
+  // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
+  // reabrir uma decisao que o capitulo 3 ja tinha fechado: em "Moveis de
+  // Memorias" a protagonista "decide vender a oficina" no capitulo 3 e volta a
+  // "ponderar" a mesma venda no capitulo 6.
+  const blocoFuncaoSchema = ficcao
+    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois"`
+    : "";
+  const instrucaoFuncao = ficcao
+    ? `
+Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada. Exatamente um capitulo deve ter funcao "climax" e ele precisa vir perto do fim; o ultimo capitulo deve ter funcao "desfecho" e seu resultado precisa responder a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta.`
     : "";
 
   const prompt = `Planeje a estrutura de um ebook com estas informações:
@@ -328,21 +364,25 @@ ${titleInstruction}
 
 O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
-Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}
+Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}
+
+Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui.
 
 Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
 {
   "title": "...",
   "subtitle": "...",${blocoElencoSchema}
+  "fatosFixos": ["..."],
   "chapters": [
-    { "title": "...", "summary": "uma frase descrevendo o ângulo específico deste capítulo" }
+    { "title": "...", "summary": "uma frase descrevendo o ângulo específico deste capítulo"${blocoFuncaoSchema} }
   ]
 }`;
 
   // O JSON do sumario cresce com o numero de capitulos. Com o teto fixo em 12,
   // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
-  // JSON viria invalido -- falha silenciosa e dificil de diagnosticar.
-  const tokensSumario = Math.max(2000, 400 + chapterCount * 40) + (ficcao ? 600 : 0);
+  // JSON viria invalido -- falha silenciosa e dificil de diagnosticar. fatosFixos
+  // e funcao/resultado por capitulo tambem consomem uma fatia da resposta.
+  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 90 : 50)) + (ficcao ? 600 : 0);
   const raw = await askOpenAI(promptDoModo(ctx), prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
@@ -366,11 +406,26 @@ ${linhas}
 `;
 }
 
+/**
+ * Fatos que valem para o livro inteiro, repetidos em toda chamada de escrita
+ * pelo mesmo motivo do elencoBlock: sem repassar, cada chamada so tem o que
+ * esta no proprio prompt, e um numero dito no capitulo 1 nao sobrevive ate o
+ * capitulo 14 se ninguem o repetir a cada vez.
+ */
+function fatosFixosBlock(outline: Outline): string {
+  const fatos = outline.fatosFixos ?? [];
+  if (fatos.length === 0) return "";
+  return `
+FATOS FIXOS deste livro — nao contradiga nenhum destes, mesmo que pareça natural variar o número ou a data ao longo do texto:
+${fatos.map((f) => `- ${f}`).join("\n")}
+`;
+}
+
 export async function generateIntro(ctx: EbookContext, outline: Outline): Promise<string> {
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -435,14 +490,29 @@ export async function generateChapter(
     ? voz.fechamentos.filter((c) => !c.includes("próximo capítulo"))
     : voz.fechamentos;
   const closing = fechamentos[chapterIndex % fechamentos.length];
+
+  // Funcao e resultado do capitulo, quando o sumario os declarou. O ultimo
+  // capitulo e o marcado como climax pedem dramatizacao explicita da resposta
+  // -- sem isto o desfecho de "Moveis de Memorias" resumiu a revelacao central
+  // como "a gravacao narrava uma historia de ciume e chantagem" e o leitor
+  // nunca soube, de fato, o que tinha acontecido.
+  const funcaoLinha = chapter.funcao
+    ? `Função deste capítulo na estrutura: ${chapter.funcao}.${chapter.resultado ? ` Ao final dele, isto precisa estar resolvido de forma irreversível: ${chapter.resultado}` : ""}`
+    : "";
+  const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
+  const instrucaoClimax = ehClimaxOuDesfecho
+    ? `\nEste capítulo revela ou resolve a questão central do livro. Dramatize a revelação em cena — o que aconteceu, dito ou mostrado diretamente — em vez de resumir o conteúdo de uma gravação, carta, diário ou confissão alheia. O leitor precisa saber, no texto, exatamente o que se passou; "ela contou tudo" ou "a gravação revelava a verdade" não é uma resposta, é a ausência de uma.\n`
+    : "";
+
   const prompt = `Escreva o conteúdo completo do capítulo ${chapterIndex + 1} do ebook "${outline.title}".
 Título do capítulo: "${chapter.title}"
 O que este capítulo deve cobrir: ${chapter.summary}
+${funcaoLinha}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${memoriaBlock(anteriores)}
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-${groundingBlock(ctx)}
+${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
@@ -494,7 +564,7 @@ export async function generateConclusion(ctx: EbookContext, outline: Outline): P
 ${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
 Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
   return askOpenAI(promptDoModo(ctx), prompt, 1200);
