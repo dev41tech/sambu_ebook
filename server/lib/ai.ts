@@ -377,11 +377,51 @@ Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do
   return askOpenAI(promptDoModo(ctx), prompt, 1500);
 }
 
+/** O que ja foi escrito antes deste capitulo. */
+export interface CapituloAnterior {
+  idx: number;
+  title: string;
+  /** O que de fato aconteceu ali. Nulo em capitulos anteriores a esta memoria. */
+  resumo: string | null;
+}
+
+/**
+ * Quantos capitulos anteriores entram no prompt com o resumo inteiro. Os mais
+ * antigos entram so como titulo: num livro de 84 capitulos, mandar 83 resumos
+ * custaria mais em contexto do que o capitulo que se quer escrever.
+ */
+const JANELA_DE_MEMORIA = 8;
+
+export function memoriaBlock(anteriores: CapituloAnterior[]): string {
+  if (anteriores.length === 0) return "Este é o primeiro capítulo do livro.\n";
+
+  const recentes = anteriores.slice(-JANELA_DE_MEMORIA);
+  const antigos = anteriores.slice(0, -JANELA_DE_MEMORIA);
+
+  const linhas = recentes.map((c) =>
+    c.resumo
+      ? `- Capítulo ${c.idx + 1} — "${c.title}": ${c.resumo}`
+      : `- Capítulo ${c.idx + 1} — "${c.title}" (sem resumo registrado)`,
+  );
+
+  const antigosLinha =
+    antigos.length > 0
+      ? `
+Capítulos anteriores a esses, apenas pelos títulos: ${antigos.map((c) => `"${c.title}"`).join(", ")}.
+`
+      : "";
+
+  return `O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
+${linhas.join("\n")}${antigosLinha}
+Não repita fatos, exemplos, cenas ou conclusões que já apareceram acima. Se algo ficou em aberto, este capítulo pode retomar; o que já foi resolvido não volta a ser problema.
+`;
+}
+
 export async function generateChapter(
   ctx: EbookContext,
   outline: Outline,
   chapterIndex: number,
-  previousChapterTitles: string[]
+  anteriores: CapituloAnterior[]
 ): Promise<string> {
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
@@ -400,7 +440,7 @@ Título do capítulo: "${chapter.title}"
 O que este capítulo deve cobrir: ${chapter.summary}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo ou os mesmos exemplos deles.` : "Este é o primeiro capítulo."}
+${elencoBlock(outline)}${memoriaBlock(anteriores)}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
 ${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
@@ -408,6 +448,45 @@ Encerre o capítulo com ${closing}.
 
 Escreva aproximadamente ${wordsPerChapter} palavras, com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
   return askOpenAI(promptDoModo(ctx), prompt, 4000);
+}
+
+/**
+ * Resumo factual de um capitulo recem-escrito, para alimentar os proximos.
+ *
+ * Curto e barato de proposito: sao ~150 tokens de saida por capitulo. Mandar o
+ * texto inteiro do capitulo anterior adiante seria mais fiel e custaria varias
+ * vezes mais em contexto a cada capitulo seguinte.
+ *
+ * O que se pede muda com o modo. Em ficcao interessa o que aconteceu e o que
+ * ficou em aberto; em nao ficcao, o que foi ensinado e que exemplo foi gasto --
+ * e o exemplo repetido que faz dois capitulos parecerem o mesmo.
+ */
+export async function resumirCapitulo(
+  ctx: EbookContext,
+  tituloCapitulo: string,
+  conteudo: string
+): Promise<string> {
+  const narrativo = modoDe(ctx.theme) === "narrativo";
+  const pedido = narrativo
+    ? `- o que aconteceu, na ordem
+- quem estava presente e o que cada um decidiu ou descobriu
+- o que mudou na situacao dos personagens
+- o que ficou em aberto para os proximos capitulos`
+    : `- os pontos efetivamente ensinados
+- os exemplos, casos e numeros usados (para nao serem repetidos adiante)
+- as afirmacoes que ficaram pendentes de desenvolvimento`;
+
+  const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:
+${pedido}
+
+Nao interprete, nao elogie, nao tire licao. Escreva em frases corridas, sem lista. Responda apenas com o resumo.
+
+CAPITULO "${tituloCapitulo}":
+${conteudo.slice(0, 12000)}`;
+
+  // minChars baixo: um resumo de 80 palavras tem ~450 caracteres, e o piso
+  // padrao de 200 e pensado para capitulo, nao para resumo.
+  return askOpenAI(SYSTEM_BASE, prompt, 300, false, 60);
 }
 
 export async function generateConclusion(ctx: EbookContext, outline: Outline): Promise<string> {

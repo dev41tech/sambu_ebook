@@ -95,6 +95,10 @@ CREATE TABLE chapters (
   title      text    NOT NULL,
   summary    text    NOT NULL DEFAULT '',
   content    text    NOT NULL DEFAULT '',
+  -- O que de fato aconteceu neste capitulo, gerado logo apos escreve-lo. Alimenta
+  -- os capitulos seguintes: antes so os TITULOS anteriores passavam adiante, e o
+  -- modelo repetia ideias e contradizia o que ele mesmo tinha escrito.
+  resumo_fatos text,
   audio_path text
 );
 

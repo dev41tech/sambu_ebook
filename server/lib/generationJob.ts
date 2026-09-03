@@ -7,6 +7,7 @@ import {
   generateConclusion,
   generateAboutAuthor,
   humanizeText,
+  resumirCapitulo,
   type EbookContext,
   type Outline,
 } from "./ai";
@@ -198,19 +199,42 @@ async function runJob(ebookId: string) {
     }
 
     // Etapa 4: capítulos, um de cada vez
-    const chapters = await all<{ id: string; idx: number; title: string; summary: string; content: string }>(
-      "SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
-      [ebookId]
-    );
+    const chapters = await all<{
+      id: string;
+      idx: number;
+      title: string;
+      summary: string;
+      content: string;
+      resumo_fatos: string | null;
+    }>("SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC", [ebookId]);
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
       await setStep(ebookId, "chapter");
-      const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
-      const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
+
+      // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
+      // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
+      // mundo dentro da jangada, no mar.
+      const anteriores = chapters
+        .filter((c) => c.idx < chapter.idx)
+        .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+
+      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores);
       const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+
+      // Resumo factual para os proximos capitulos. Falhar aqui nao pode derrubar
+      // o livro: sem resumo o capitulo seguinte volta a receber so o titulo,
+      // que e o comportamento antigo -- pior, mas nao fatal.
+      try {
+        const resumo = await resumirCapitulo(ctx, chapter.title, content);
+        await run("UPDATE chapters SET resumo_fatos = $1 WHERE id = $2", [resumo, chapter.id]);
+        // O array em memoria alimenta o proximo capitulo desta mesma execucao.
+        chapter.resumo_fatos = resumo;
+      } catch (err) {
+        console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
     }
 
     row = (await getEbook(ebookId))!;
