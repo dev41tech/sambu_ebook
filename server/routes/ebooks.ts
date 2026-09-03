@@ -24,6 +24,7 @@ import {
   prettifyFilenameTitle,
 } from "../lib/importContent";
 import { isCategoriaValida } from "../../src/lib/categorias";
+import { TODOS_OS_TONS } from "../../src/lib/modos";
 import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
 
@@ -45,7 +46,12 @@ async function avaliarEbook(ebookId: string) {
 // (ver server/templates/index.ts). Esse valor fixo só existe para preencher a coluna
 // `template` (NOT NULL) do banco sem precisar de uma migração de schema.
 const FIXED_TEMPLATE = "livro";
-const TONES = new Set(["Motivador", "Técnico e direto", "Descontraído", "Formal"]);
+// Os tons agora vem dos modos editoriais. A lista antiga tinha quatro opcoes
+// escritas para livro pratico, e 40 dos 57 ebooks do acervo sairam com
+// "Motivador" -- inclusive os 14 de ficcao. Os quatro antigos continuam aceitos
+// para nao invalidar ebook ja criado nem o fluxo do n8n.
+const TONS_LEGADOS = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
+const TONES = new Set([...TODOS_OS_TONS, ...TONS_LEGADOS]);
 const CATEGORIES = new Set(["geral", "tecnico", "comportamental"]);
 
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });

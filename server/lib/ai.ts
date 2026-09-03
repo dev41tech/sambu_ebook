@@ -3,6 +3,8 @@ import { withRetry } from "./retry";
 import { detectarRecusa } from "./sanitizar";
 import { MAX_CAPITULOS } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
+import { modoDe } from "../../src/lib/modos";
+import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
 
@@ -242,7 +244,7 @@ const CHAPTER_CLOSINGS = [
 
 const CHAPTER_CLOSINGS_LAST = CHAPTER_CLOSINGS.filter((c) => !c.includes("próximo capítulo"));
 
-const SYSTEM_PROMPT = `Você é um ghostwriter e editor profissional especializado em livros e ebooks humanizados.
+const SYSTEM_BASE = `Você é um ghostwriter e editor profissional especializado em livros e ebooks humanizados.
 
 PRINCÍPIO CENTRAL: escreva como um autor humano experiente escreveria — não como uma IA tentando soar humana. O texto deve ter presença, personalidade, clareza, profundidade e respeito pelo leitor. Nunca deve parecer genérico, mecânico, repetitivo ou artificialmente motivacional. Nunca mencione ser uma IA no texto do livro.
 
@@ -266,6 +268,20 @@ FRASES E ABERTURAS PROIBIDAS — nunca use estas expressões nem variações mui
 ${BANNED_PHRASES.map((p) => `"${p}"`).join(", ")}.
 
 Evite também: excesso de travessões, sequências de frases muito curtas, excesso de metáforas, excesso de perguntas retóricas seguidas, conclusões que apenas repetem a introdução com outras palavras, e fechamentos motivacionais genéricos.`;
+
+/**
+ * Prompt de sistema montado por modo editorial.
+ *
+ * A base acima vale para qualquer livro -- honestidade, frases proibidas,
+ * naturalidade. O que vem depois muda: as regras de "Profundidade" que mandavam
+ * explicar erros comuns e adaptar recomendacoes so fazem sentido em livro
+ * pratico, e eram aplicadas tambem a romance. Agora cada modo traz as suas.
+ */
+function promptDoModo(ctx: EbookContext): string {
+  return `${SYSTEM_BASE}
+
+${vozDe(modoDe(ctx.theme)).regras}`;
+}
 
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
@@ -327,7 +343,7 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
   // JSON viria invalido -- falha silenciosa e dificil de diagnosticar.
   const tokensSumario = Math.max(2000, 400 + chapterCount * 40) + (ficcao ? 600 : 0);
-  const raw = await askOpenAI(SYSTEM_PROMPT, prompt, tokensSumario, true);
+  const raw = await askOpenAI(promptDoModo(ctx), prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
   if (!parsed.chapters || parsed.chapters.length === 0) {
@@ -358,7 +374,7 @@ ${elencoBlock(outline)}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 1500);
+  return askOpenAI(promptDoModo(ctx), prompt, 1500);
 }
 
 export async function generateChapter(
@@ -372,9 +388,13 @@ export async function generateChapter(
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
   const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
   const wordsPerChapter = Math.round(alvoTotal / outline.chapters.length);
-  const opening = CHAPTER_OPENINGS[chapterIndex % CHAPTER_OPENINGS.length];
-  const closingPool = isLastChapter ? CHAPTER_CLOSINGS_LAST : CHAPTER_CLOSINGS;
-  const closing = closingPool[chapterIndex % closingPool.length];
+  // Aberturas e fechamentos do modo, nao mais uma lista unica de nao ficcao.
+  const voz = vozDe(modoDe(ctx.theme));
+  const opening = voz.aberturas[chapterIndex % voz.aberturas.length];
+  const fechamentos = isLastChapter
+    ? voz.fechamentos.filter((c) => !c.includes("próximo capítulo"))
+    : voz.fechamentos;
+  const closing = fechamentos[chapterIndex % fechamentos.length];
   const prompt = `Escreva o conteúdo completo do capítulo ${chapterIndex + 1} do ebook "${outline.title}".
 Título do capítulo: "${chapter.title}"
 O que este capítulo deve cobrir: ${chapter.summary}
@@ -387,7 +407,7 @@ Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar ante
 Encerre o capítulo com ${closing}.
 
 Escreva aproximadamente ${wordsPerChapter} palavras, com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 4000);
+  return askOpenAI(promptDoModo(ctx), prompt, 4000);
 }
 
 export async function generateConclusion(ctx: EbookContext, outline: Outline): Promise<string> {
@@ -398,7 +418,7 @@ ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${elencoBlock(outline)}${groundingBlock(ctx)}
 Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 1200);
+  return askOpenAI(promptDoModo(ctx), prompt, 1200);
 }
 
 export async function generateAboutAuthor(
@@ -409,14 +429,24 @@ export async function generateAboutAuthor(
   const prompt = `Escreva uma seção "Sobre o Autor" para um ebook, em ${language}, para o autor "${authorName}".
 ${authorBio ? `Use como base esta informação fornecida pelo autor, sem inventar credenciais além dela: "${authorBio}"` : "O autor não forneceu bio — escreva algo genérico e breve, sem inventar credenciais específicas (formação, prêmios, cargos)."}
 Escreva de 60 a 120 palavras, em terceira pessoa, num tom natural, sem clichês de contracapa de livro. Responda apenas com o texto final.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 500);
+  // Bio do autor nao pertence a modo nenhum -- nao e conteudo do livro.
+  return askOpenAI(SYSTEM_BASE, prompt, 500);
 }
 
 /**
  * Segunda passada editorial: revisa um texto já escrito removendo padrões
  * característicos de IA, preservando o conteúdo e a mensagem original.
  */
-export async function humanizeText(text: string, contextLabel: string, maxTokens = 4000): Promise<string> {
+export async function humanizeText(
+  text: string,
+  contextLabel: string,
+  maxTokens = 4000,
+  /**
+   * Sem o modo, esta segunda passada usaria as regras genericas e desfaria a voz
+   * do primeiro passe -- reescreveria a cena do romance como explicacao.
+   */
+  caminhoCategoria = ""
+): Promise<string> {
   const prompt = `Revise o texto abaixo como um editor especializado em detectar e remover padrões artificiais de textos gerados por IA, preservando 100% do conteúdo, dos fatos e da mensagem original.
 
 Contexto: ${contextLabel}
@@ -433,5 +463,7 @@ Não adicione informações novas, não mude o significado, não encurte o texto
 
 TEXTO:
 ${text}`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, maxTokens);
+  return askOpenAI(`${SYSTEM_BASE}
+
+${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens);
 }

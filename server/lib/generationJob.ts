@@ -46,9 +46,14 @@ async function setStep(id: string, step: string) {
 // A humanizacao e uma segunda passada sobre um texto que ja esta pronto. Se ela
 // recusar ou devolver lixo, perder o rascunho bom -- ou derrubar o livro inteiro
 // no capitulo 60 -- e pior do que publicar o rascunho sem essa passada.
-async function humanizarOuManter(draft: string, rotulo: string, maxTokens: number): Promise<string> {
+async function humanizarOuManter(
+  draft: string,
+  rotulo: string,
+  maxTokens: number,
+  caminhoCategoria = ""
+): Promise<string> {
   try {
-    return await humanizeText(draft, rotulo, maxTokens);
+    return await humanizeText(draft, rotulo, maxTokens, caminhoCategoria);
   } catch (err) {
     console.warn(`[geracao] humanizacao ignorada em ${rotulo}: ${err instanceof Error ? err.message : err}`);
     return draft;
@@ -187,7 +192,7 @@ async function runJob(ebookId: string) {
     if (row.intro === null) {
       await setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline);
-      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500);
+      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500, ctx.theme);
       await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
       row = (await getEbook(ebookId))!;
     }
@@ -203,7 +208,7 @@ async function runJob(ebookId: string) {
       await setStep(ebookId, "chapter");
       const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
       const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
-      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
+      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
     }
@@ -263,7 +268,7 @@ async function runJob(ebookId: string) {
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
       const draft = await generateConclusion(ctx, outline);
-      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200);
+      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200, ctx.theme);
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;
     }
