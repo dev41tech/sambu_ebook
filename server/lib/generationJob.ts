@@ -383,9 +383,22 @@ async function startNextQueuedJob() {
   while (activeJobs.size < MAX_CONCURRENT_JOBS && queuedJobs.length > 0) {
     const nextId = queuedJobs.shift()!;
     if (activeJobs.has(nextId)) continue;
-    const row = await getEbook(nextId);
-    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") continue;
+    // Reserva o lugar em activeJobs ANTES do await, nao depois. Entre o shift()
+    // acima e o antigo `activeJobs.add()` (que so rodava depois do getEbook)
+    // havia uma janela em que o id nao estava nem na fila nem em activeJobs --
+    // uma chamada concorrente a ensureGenerationRunning() nessa janela (a tela
+    // de progresso faz polling em GET /:id) via o id livre, reenfileirava, e
+    // um segundo runJob() do MESMO ebook comecava. Foi o que aconteceu em
+    // "Sombras de Vidro": 27 capitulos gravados (com custo de OpenAI cobrado)
+    // para um livro de 19. A janela do reservados/queuedJobs em
+    // ensureGenerationRunning ja fechava a outra ponta dessa mesma corrida;
+    // esta era a que faltava.
     activeJobs.add(nextId);
+    const row = await getEbook(nextId);
+    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") {
+      activeJobs.delete(nextId);
+      continue;
+    }
     void runJob(nextId);
   }
 }
