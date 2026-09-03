@@ -76,3 +76,32 @@ test("mesmo fato contra dois trechos diferentes gera um achado por local", () =>
   assert.equal(achados.length, 2);
   assert.deepEqual(achados.map((a) => a.local).sort(), ["cap 1", "cap 2"]);
 });
+
+test("'N anos ANTES de outro evento' nao e contradicao -- esta ancorado a outro marco", () => {
+  // Falso positivo real, achado gerando "O Segredo Submerso": o capitulo 7 diz
+  // "um ano antes do desaparecimento" (a data de uma foto), e o detector
+  // comparou "1" contra o fato fixo de "15 anos" como se fosse a mesma
+  // afirmacao -- "um ano antes de X" nao e "ha um ano", e o livro nao tinha
+  // contradicao nenhuma. O defeito era da ferramenta, nao do texto.
+  const fatosFixos = ["A irmã de Clara desapareceu há 15 anos"];
+  const trechos = [
+    {
+      local: "capítulo 7",
+      texto: "mãos tremendo levemente ao examinar a imagem de uma festa, um ano antes do desaparecimento. A foto, aparentemente comum",
+    },
+  ];
+  assert.deepEqual(verificarFatosNumericos(fatosFixos, trechos), []);
+});
+
+test("'N anos DEPOIS de outro evento' tambem e excluido", () => {
+  const fatosFixos = ["A irmã de Clara desapareceu há 15 anos"];
+  const trechos = [{ local: "cap X", texto: "Dois anos depois do desaparecimento, tudo mudou para sempre." }];
+  assert.deepEqual(verificarFatosNumericos(fatosFixos, trechos), []);
+});
+
+test("'N anos atrás', sem 'antes de'/'depois de', continua detectando contradicao", () => {
+  const fatosFixos = ["A irmã de Clara desapareceu há 15 anos"];
+  const trechos = [{ local: "cap Y", texto: "Vinte anos atrás, no dia do desaparecimento, tudo começou." }];
+  const achados = verificarFatosNumericos(fatosFixos, trechos);
+  assert.equal(achados.length, 1);
+});

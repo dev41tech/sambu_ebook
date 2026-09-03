@@ -137,6 +137,18 @@ export function verificarFatosNumericos(
         const valor = valorNumerico(m[1]);
         if (valor == null || valor === declarado) continue;
 
+        // "um ano ANTES do desaparecimento" não é o mesmo tipo de afirmação que
+        // "há um ano" -- está ancorado a um marco diferente (a data de uma
+        // foto, por exemplo), não ao "agora" do livro. Sem esta exclusão, o
+        // detector comparou "15 anos" do fato fixo contra "um ano antes do
+        // desaparecimento" em "O Segredo Submerso" e bloqueou um livro que não
+        // tinha contradição nenhuma -- o texto estava certo, a ferramenta não.
+        const depoisDoMatch = texto.slice(
+          (m.index ?? 0) + m[0].length,
+          (m.index ?? 0) + m[0].length + 20,
+        );
+        if (/^\s*(antes|depois)\s+(de|da|do|dos|das)\b/i.test(depoisDoMatch)) continue;
+
         const inicio = Math.max(0, (m.index ?? 0) - 90);
         const fim = Math.min(texto.length, (m.index ?? 0) + m[0].length + 90);
         const janela = normalizar(texto.slice(inicio, fim));
