@@ -316,7 +316,16 @@ async function runJob(ebookId: string) {
     // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
-      const draft = await generateConclusion(ctx, outline);
+      // Os resumos factuais de todos os capitulos ja existem a esta altura --
+      // a conclusao roda depois de todos eles. Sem isso ela so via titulos e
+      // inventava cenas que nunca foram escritas ("bolos voando" num livro
+      // que nao tem essa cena em capitulo nenhum).
+      const capitulosParaConclusao = chapters.map((c) => ({
+        idx: c.idx,
+        title: c.title,
+        resumo: c.resumo_fatos,
+      }));
+      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao);
       const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200, ctx.theme);
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;

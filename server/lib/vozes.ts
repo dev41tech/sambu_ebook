@@ -36,7 +36,11 @@ Consequência — algo precisa mudar no capítulo: alguém decide, descobre, per
 
 Concretude sensorial — lugar, hora do dia, clima, objeto na mão. O leitor precisa saber onde está.
 
-Nada de vocabulário corporativo ou de autoajuda: jornada, transformação, mindset, propósito, ressignificar, protagonismo.`,
+Nada de vocabulário corporativo ou de autoajuda: jornada, transformação, mindset, propósito, ressignificar, protagonismo.
+
+Nada de tensão por adiamento -- "talvez sentisse algo mais", "havia algo diferente no ar", "algo estava mudando entre eles". Essas frases prometem um sentimento sem mostrar nada concreto, e repetidas ao longo do livro ficam a marca mais visível de texto gerado. Se o personagem sente algo, mostre o que ele faz por causa disso -- hesita, se aproxima, muda de assunto, evita olhar. "Talvez" só cabe quando o próprio personagem, em pensamento direto, está genuinamente em dúvida sobre um fato -- não como enfeite de toda frase emocional.
+
+Elemento com peso narrativo não é abandonado. Um personagem secundário que provoca um conflito, uma visita que cria expectativa, uma prova ou avaliação com resultado pendente -- se o capítulo atual introduz algo assim, um capítulo mais à frente precisa mostrar o que aconteceu com aquilo. Não deixe um fio solto sem fechamento até o fim do livro.`,
   aberturas: [
     "uma ação já em curso, sem preparação — o leitor entende o contexto pelo que acontece",
     "uma fala, no meio de uma conversa que já começou",

@@ -247,3 +247,95 @@ test("elenco com papel 'ausente' nao e mais acusado de personagem-nao-autorizado
   const r = avaliarQualidade({ ebook, capitulos });
   assert.ok(!r.achados.some((a) => a.categoria === "personagem-nao-autorizado"), JSON.stringify(r.achados));
 });
+
+test("personagem secundario com peso narrativo que some depois do primeiro terco e sinalizado", () => {
+  // Regressao real: "Dona Marta" provoca o conflito inicial nos capitulos 3-4
+  // de "Amor na Esquina" (20 capitulos) e nunca mais aparece nos 16 seguintes.
+  const inicio = Array.from({ length: 3 }, (_, i) =>
+    capitulo(i, corpo("Naquela manhã, Marta reclamou do preço. Ninguém entendia Marta como Ana. ", 3)),
+  );
+  const meio = Array.from({ length: 6 }, (_, i) =>
+    capitulo(3 + i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: [...inicio, ...meio] });
+  assert.ok(
+    r.achados.some((a) => a.categoria === "personagem-abandonado" && /Marta/.test(a.evidencia)),
+    JSON.stringify(r.achados),
+  );
+});
+
+test("protagonista nao e sinalizado como abandonado mesmo dominando o inicio", () => {
+  const caps = Array.from({ length: 9 }, (_, i) =>
+    capitulo(i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: caps });
+  assert.ok(!r.achados.some((a) => a.categoria === "personagem-abandonado"), JSON.stringify(r.achados));
+});
+
+test("mencao fraca no inicio (abaixo do piso de 5) nao conta como abandono", () => {
+  // Mesmo piso que `recorrentes` usa no resto do arquivo -- abaixo disso e
+  // presenca de passagem, nao peso narrativo para cobrar volta.
+  const inicio = [
+    capitulo(0, "Naquela manhã Marta passou pela loja. Cumprimentou Ana e seguiu seu caminho, sem mais nada."),
+  ];
+  const resto = Array.from({ length: 8 }, (_, i) =>
+    capitulo(1 + i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: [...inicio, ...resto] });
+  assert.ok(!r.achados.some((a) => a.categoria === "personagem-abandonado"), JSON.stringify(r.achados));
+});
+
+test("personagem que reaparece depois do primeiro terco nao e sinalizado", () => {
+  const inicio = Array.from({ length: 3 }, (_, i) =>
+    capitulo(i, corpo("Naquela manhã, Marta reclamou do preço. Ninguém entendia Marta como Ana. ", 3)),
+  );
+  const meio = Array.from({ length: 5 }, (_, i) =>
+    capitulo(3 + i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const volta = [capitulo(8, corpo("No final, todos comemoraram com Marta. Ana agradeceu a Marta pela ajuda. ", 3))];
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: [...inicio, ...meio, ...volta] });
+  assert.ok(
+    !r.achados.some((a) => a.categoria === "personagem-abandonado" && /Marta/.test(a.evidencia)),
+    JSON.stringify(r.achados),
+  );
+});
+
+test("substantivo comum capitalizado com poucas mencoes nao dispara falso positivo", () => {
+  // Bug real pego rodando contra "Amor na Esquina": "Feira" (de "Feira
+  // Cultural", 3 ocorrencias no livro real) e "Macchiato" (produto do
+  // cardapio) foram tratados como personagem que sumiu, so por serem
+  // substantivos capitalizados repetidos -- o mesmo piso de 5 que resolve o
+  // teste anterior tambem resolve este, na frequencia medida no livro real.
+  const inicio = [
+    capitulo(
+      0,
+      "A Feira Cultural estava agitada naquele sábado. Ana observou que a Feira trazia bons clientes, mas nem toda Feira dava lucro para a padaria.",
+    ),
+  ];
+  const resto = Array.from({ length: 8 }, (_, i) =>
+    capitulo(1 + i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: [...inicio, ...resto] });
+  assert.ok(
+    !r.achados.some((a) => a.categoria === "personagem-abandonado" && /Feira/.test(a.evidencia)),
+    JSON.stringify(r.achados),
+  );
+});
+
+test("LIMITACAO CONHECIDA: substantivo comum com muitas mencoes ainda pode disparar falso positivo", () => {
+  // O piso de 5 resolve o caso real medido, mas nao e deteccao de nome de
+  // pessoa de verdade -- e so um limiar de frequencia. Um substantivo comum
+  // que se repita muito no inicio e some depois ainda passa por "personagem".
+  // Registrado aqui para nao virar surpresa se um caso assim aparecer.
+  const inicio = Array.from({ length: 3 }, (_, i) =>
+    capitulo(i, "A Feira acontecia na praça. Todos foram à Feira naquele fim de semana, e a Feira rendeu bons lucros."),
+  );
+  const resto = Array.from({ length: 6 }, (_, i) =>
+    capitulo(3 + i, corpo("Naquela tarde, Ana olhou para Lucas. O silêncio entre Ana e Lucas dizia tudo. ")),
+  );
+  const r = avaliarQualidade({ ebook: ebookFake(), capitulos: [...inicio, ...resto] });
+  assert.ok(
+    r.achados.some((a) => a.categoria === "personagem-abandonado" && /Feira/.test(a.evidencia)),
+    "se este teste falhar, a heuristica melhorou -- atualize o teste",
+  );
+});

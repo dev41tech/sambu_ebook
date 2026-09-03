@@ -372,7 +372,7 @@ O título, o subtítulo e todos os capítulos devem tratar do assunto da classif
 
 Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}
 
-Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui.
+Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui. Se o enredo inventar o nome de um evento, negócio, lugar ou apelido que vai se repetir ao longo do livro, inclua o nome exato aqui também ("o evento conjunto se chama 'Sabores da Esquina'") — sem isso o mesmo evento aparece com dois nomes diferentes em capítulos diferentes.
 
 Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
 {
@@ -593,13 +593,38 @@ ${conteudo.slice(0, 12000)}`;
   return askOpenAI(SYSTEM_BASE, prompt, 300, false, 60);
 }
 
-export async function generateConclusion(ctx: EbookContext, outline: Outline): Promise<string> {
-  const prompt = `Escreva a conclusão do ebook "${outline.title}", amarrando os aprendizados centrais dos capítulos:
-${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
+export async function generateConclusion(
+  ctx: EbookContext,
+  outline: Outline,
+  capitulos: CapituloAnterior[] = [],
+): Promise<string> {
+  // Duas falhas do mesmo prompt, achadas num livro real ("Amor na Esquina"):
+  // a conclusao "amarrava aprendizados" e terminava com um "convite pratico
+  // para o leitor aplicar algo do livro" -- instrucao de nao ficcao, aplicada
+  // cegamente a ficcao, que contradizia a propria regra do modo narrativo de
+  // nao falar com o leitor. E so recebia os TITULOS dos capitulos, nunca o
+  // que de fato aconteceu -- por isso inventou uma cena de "bolos voando"
+  // que nao existe em capitulo nenhum.
+  const ficcao = ehFiccao(ctx.theme);
+
+  const resumoDoLivro = capitulos.length > 0
+    ? capitulos
+        .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+        .join("\n")
+    : outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n");
+
+  const instrucaoFinal = ficcao
+    ? `Escreva a última cena do livro, ambientada depois dos acontecimentos acima -- não um resumo retrospectivo deles. Mostre o estado final dos personagens através de uma ação, um gesto ou uma fala concreta, não através de uma lista do que "aprenderam" ou de uma frase que amarre a jornada. Não fale com o leitor, não dê conselho, não avalie a história que acabou de contar. Só narre o que existe: não invente um acontecimento que não esteja no resumo acima.`
+    : `Amarre os aprendizados centrais do livro e termine com um convite prático e específico para o leitor aplicar algo do que leu — evite frases motivacionais genéricas de encerramento.`;
+
+  const prompt = `Escreva a conclusão do ebook "${outline.title}".
+O QUE ACONTECEU no livro, capítulo a capítulo:
+${resumoDoLivro}
+
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
-Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
+Não repita a introdução com outras palavras. ${instrucaoFinal}
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
   return askOpenAI(promptDoModo(ctx), prompt, 1200);
 }
