@@ -8,6 +8,7 @@ import {
   generateAboutAuthor,
   humanizeText,
   resumirCapitulo,
+  expandirCapitulo,
   type EbookContext,
   type Outline,
 } from "./ai";
@@ -220,7 +221,31 @@ async function runJob(ebookId: string) {
         .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
 
       const draft = await generateChapter(ctx, outline, chapter.idx, anteriores);
-      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
+      let content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
+
+      // Forca o minimo: pedir a meta certa nao garante que ela seja cumprida, e
+      // sem este segundo passo o livro fechava abaixo do prometido mesmo depois
+      // de recalibrar a conta de capitulos. Um limiar de 85% -- o mesmo que
+      // custo.ts usa para decidir se avisa o usuario -- separa "saiu um pouco
+      // curto" de "precisa ser reescrito".
+      const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
+      const metaCapitulo = Math.round(alvoTotal / outline.chapters.length);
+      const palavrasEscritas = content.trim().split(/\s+/).filter(Boolean).length;
+      if (palavrasEscritas < metaCapitulo * 0.85) {
+        try {
+          const expandido = await expandirCapitulo(ctx, content, metaCapitulo);
+          const palavrasExpandidas = expandido.trim().split(/\s+/).filter(Boolean).length;
+          // So aceita se realmente cresceu. Uma reescrita que saiu do mesmo
+          // tamanho ou menor nao ajuda e ainda troca um texto bom por um novo,
+          // sem necessidade.
+          if (palavrasExpandidas > palavrasEscritas) content = expandido;
+        } catch (err) {
+          // Expandir e uma tentativa extra, nao uma etapa obrigatoria -- se
+          // falhar, o capitulo mais curto (mas ja valido) segue em frente.
+          console.warn(`[geracao] expansao do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+        }
+      }
+
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
 

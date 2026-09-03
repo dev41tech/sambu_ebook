@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { withRetry } from "./retry";
 import { detectarRecusa } from "./sanitizar";
-import { MAX_CAPITULOS } from "../../src/lib/custo";
+import { MAX_CAPITULOS, PALAVRAS_POR_CAPITULO } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { vozDe } from "./vozes";
@@ -165,8 +165,14 @@ export interface Outline {
 // coerencia entre capitulos, renderizacao do PDF) antes de fixar um numero.
 const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || MAX_CAPITULOS;
 
-function chapterCountFor(pageCount: number): number {
-  const raw = Math.round(pageCount / 4);
+// Antes esta funcao recebia paginas e dividia por 4 -- com 250 palavras/pagina,
+// isso assumia 1000 palavras por capitulo. A entrega medida real e 841
+// (PALAVRAS_POR_CAPITULO, ver custo.ts): pedir 20.000 palavras virava 20
+// capitulos x meta de 1000, o modelo entregava ~800 cada, e o livro fechava em
+// 75% do pedido -- nao por o modelo escrever pouco, mas porque o proprio
+// sistema tinha pedido 20% a mais do que ele sabia que ia conseguir.
+function chapterCountFor(palavrasAlvo: number): number {
+  const raw = Math.round(palavrasAlvo / PALAVRAS_POR_CAPITULO);
   return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
 
@@ -309,7 +315,7 @@ ${vozDe(modoDe(ctx.theme)).regras}`;
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
   const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
-  const chapterCount = chapterCountFor(Math.round(palavrasAlvo / Math.max(1, ctx.wordsPerPage)));
+  const chapterCount = chapterCountFor(palavrasAlvo);
   const titleInstruction =
     ctx.titleMode === "manual" && ctx.customTitle
       ? `Use exatamente este título: "${ctx.customTitle}". ${
@@ -516,8 +522,36 @@ ${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
-Escreva aproximadamente ${wordsPerChapter} palavras, com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
+Escreva NO MÍNIMO ${wordsPerChapter} palavras -- "aproximadamente" não é licença para entregar menos, é a meta a alcançar ou passar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
   return askOpenAI(promptDoModo(ctx), prompt, 4000);
+}
+
+/**
+ * Reescreve um capítulo que saiu curto demais, expandindo-o para perto da meta.
+ * Existe porque pedir a meta certa no primeiro prompt não é garantia — o modelo
+ * ainda pode entregar menos, e sem um segundo passo o livro fecha abaixo do que
+ * foi prometido mesmo com a conta calibrada.
+ *
+ * Reescreve o capítulo inteiro (não "continua de onde parou"): o capítulo já
+ * tem um fechamento escrito, e simplesmente acrescentar texto depois dele
+ * produziria uma cena extra depois do que devia ser o final. Reescrever com a
+ * mesma história, mesmo início e mesmo fim, mas mais desenvolvida, é mais
+ * seguro estruturalmente.
+ */
+export async function expandirCapitulo(
+  ctx: EbookContext,
+  conteudoAtual: string,
+  metaPalavras: number,
+): Promise<string> {
+  const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para pelo menos ${metaPalavras} palavras, mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
+
+Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.
+
+Responda apenas com o texto expandido do capítulo, sem comentários.
+
+CAPÍTULO ATUAL:
+${conteudoAtual}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
 }
 
 /**

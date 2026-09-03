@@ -50,24 +50,26 @@ export interface Estimativa {
   abaixoDoPedido: boolean;
 }
 
-export function capitulosPara(pageCount: number): number {
-  return Math.min(MAX_CAPITULOS, Math.max(3, Math.round(pageCount / 4)));
+// Espelha server/lib/ai.ts:chapterCountFor() -- os dois precisam concordar,
+// senao este painel promete um numero de capitulos e o servidor pede outro.
+// A versao anterior dividia PAGINAS por 4, o que embutia 1000 palavras por
+// capitulo (4 paginas x 250 palavras/pagina) contra a entrega real de 841 --
+// o painel prometia mais do que a geracao ia pedir, e o pedido em si ja saia
+// 20% inflado antes de qualquer capitulo ser escrito.
+export function capitulosParaPalavras(palavras: number): number {
+  return Math.min(MAX_CAPITULOS, Math.max(3, Math.round(palavras / PALAVRAS_POR_CAPITULO)));
 }
 
-/** Mesma proporcao de capitulosPara(), a partir da meta de palavras. */
-export function capitulosParaPalavras(wordGoal: number, wordsPerPage: number): number {
-  const paginas = wordGoal / Math.max(1, wordsPerPage);
-  return capitulosPara(paginas);
+/** @deprecated use capitulosParaPalavras(pageCount * wordsPerPage) */
+export function capitulosPara(pageCount: number, wordsPerPage = 250): number {
+  return capitulosParaPalavras(pageCount * wordsPerPage);
 }
 
 export function estimarCusto(e: EntradaCusto): Estimativa {
   // A meta de palavras, quando existe, e a verdade do pedido; paginas viram uma
   // leitura dela. Sem meta, o pedido continua sendo paginas x palavras/pagina.
   const palavrasPedidas = e.wordGoal && e.wordGoal > 0 ? e.wordGoal : e.pageCount * e.wordsPerPage;
-  const capitulos =
-    e.wordGoal && e.wordGoal > 0
-      ? capitulosParaPalavras(e.wordGoal, e.wordsPerPage)
-      : capitulosPara(e.pageCount);
+  const capitulos = capitulosParaPalavras(palavrasPedidas);
   const refTokens = Math.round((e.referenceChars ?? 0) / CHARS_POR_TOKEN);
 
   const pedidoPorCapitulo = palavrasPedidas / capitulos;
