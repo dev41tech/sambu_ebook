@@ -103,6 +103,10 @@ CREATE TABLE chapters (
   -- os capitulos seguintes: antes so os TITULOS anteriores passavam adiante, e o
   -- modelo repetia ideias e contradizia o que ele mesmo tinha escrito.
   resumo_fatos text,
+  -- Quem NASCEU na prosa deste capitulo, serializado. O elenco do sumario resolve
+  -- o protagonista; este resolve o resto -- sem ele cada capitulo inventava os
+  -- proprios secundarios e nenhum sabia dos anteriores.
+  personagens_json text,
   audio_path text
 );
 

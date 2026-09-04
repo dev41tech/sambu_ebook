@@ -123,6 +123,13 @@ export interface OutlineChapter {
   funcao?: "apresentacao" | "complicacao" | "virada" | "crise" | "climax" | "desfecho";
   /** O que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois. */
   resultado?: string;
+  /**
+   * Quem do elenco entra em cena neste capitulo. So em ficcao. O sumario dizia o
+   * que cada capitulo trata, nunca de quem ele e -- e a checagem de capitulos
+   * orfaos sabe acusar que 36 de 84 capitulos nao citam ninguem do elenco, mas
+   * nada no prompt tinha pedido que citassem.
+   */
+  personagens?: string[];
 }
 
 /**
@@ -195,9 +202,26 @@ async function askOpenAI(
       ],
     })
   );
-  const text = response.choices[0]?.message?.content;
+  const choice = response.choices[0];
+  const text = choice?.message?.content;
   if (!text) {
     throw new Error("Resposta vazia da IA.");
+  }
+  // Truncamento por teto de tokens passava em silencio. Em JSON ele e fatal e so
+  // aparecia adiante como "Unexpected end of JSON input", sem dizer a causa --
+  // exatamente o modo de falha que o teto calculado do sumario existe para
+  // evitar, mas que ninguem via quando acontecia. Em prosa, entrega um capitulo
+  // cortado no meio da frase; ai o certo e avisar e seguir, porque derrubar o
+  // livro no capitulo 60 por causa de um final truncado e pior.
+  if (choice?.finish_reason === "length") {
+    if (jsonMode) {
+      throw new Error(
+        `Resposta cortada no limite de ${maxTokens} tokens antes de fechar o JSON.`
+      );
+    }
+    console.warn(
+      `[ia] resposta cortada no limite de ${maxTokens} tokens; o texto pode terminar no meio.`
+    );
   }
   // Uma recusa chega em HTTP 200, com texto. Sem esta checagem ela era salva
   // como se fosse o capitulo -- foi o que aconteceu nos capitulos 4 e 10 de
@@ -349,11 +373,12 @@ Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, 
   // Memorias" a protagonista "decide vender a oficina" no capitulo 3 e volta a
   // "ponderar" a mesma venda no capitulo 6.
   const blocoFuncaoSchema = ficcao
-    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois"`
+    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois", "personagens": ["nomes do elenco que entram em cena neste capitulo"]`
     : "";
   const instrucaoFuncao = ficcao
     ? `
-Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada. Exatamente um capitulo deve ter funcao "climax" e ele precisa vir perto do fim; o ultimo capitulo deve ter funcao "desfecho" e seu resultado precisa responder a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta.`
+Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada. Exatamente um capitulo deve ter funcao "climax" e ele precisa vir perto do fim; o ultimo capitulo deve ter funcao "desfecho" e seu resultado precisa responder a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta.
+Diga tambem, em "personagens", quais nomes do elenco entram em cena em cada capitulo. Os protagonistas precisam aparecer na maior parte do livro: um capitulo sem nenhum deles so se justifica se a historia realmente pedir. Nao liste quem tem papel "ausente", a menos que a pessoa apareca de fato naquele capitulo.`
     : "";
 
   const prompt = `Planeje a estrutura de um ebook com estas informações:
@@ -387,8 +412,9 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // O JSON do sumario cresce com o numero de capitulos. Com o teto fixo em 12,
   // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
   // JSON viria invalido -- falha silenciosa e dificil de diagnosticar. fatosFixos
-  // e funcao/resultado por capitulo tambem consomem uma fatia da resposta.
-  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 90 : 50)) + (ficcao ? 600 : 0);
+  // e funcao/resultado por capitulo tambem consomem uma fatia da resposta, e a
+  // lista de personagens por capitulo entrou depois deles.
+  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 110 : 50)) + (ficcao ? 600 : 0);
   const raw = await askOpenAI(promptDoModo(ctx), prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
@@ -398,17 +424,68 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   return parsed;
 }
 
+/** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
+const MAX_REGISTRADOS = 12;
+
+/**
+ * Elenco do sumario mais quem nasceu na prosa e foi registrado.
+ *
+ * O elenco do sumario resolve o protagonista, nao o resto: a permissao
+ * "personagens secundarios novos sao permitidos" era lida por cada chamada de
+ * capitulo, e como as chamadas nao se conhecem, cada uma inventava os seus. Num
+ * livro de 75 capitulos isso sao 75 elencos de apoio descartaveis -- o
+ * personagem que aparece uma vez e some. Registrando quem foi criado, o
+ * secundario do capitulo 2 continua existindo no 40.
+ *
+ * O elenco do sumario nunca e cortado pelo teto: sao os protagonistas, e
+ * empurra-los para fora do prompt seria o defeito que tudo isto corrige.
+ */
+export function elencoEfetivo(outline: Outline, registrados: Personagem[] = []): Personagem[] {
+  const vistos = new Set<string>();
+  const chave = (nome: string) => nome.trim().toLowerCase();
+  const doSumario: Personagem[] = [];
+  const extras: Personagem[] = [];
+
+  for (const p of outline.personagens ?? []) {
+    const k = chave(p?.nome ?? "");
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    doSumario.push(p);
+  }
+  for (const p of registrados) {
+    const k = chave(p?.nome ?? "");
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    extras.push(p);
+  }
+  return [...doSumario, ...extras.slice(-MAX_REGISTRADOS)];
+}
+
 /**
  * Repassa o elenco do sumario a todas as etapas de escrita. Sem ele, cada chamada
  * ao modelo cria personagens do zero e o livro troca de protagonista no meio.
  */
-function elencoBlock(outline: Outline): string {
-  const elenco = outline.personagens ?? [];
+function elencoBlock(outline: Outline, registrados: Personagem[] = []): string {
+  const elenco = elencoEfetivo(outline, registrados);
   if (elenco.length === 0) return "";
   const linhas = elenco.map((p) => `- ${p.nome} (${p.papel}): ${p.descricao}`).join("\n");
   return `
-ELENCO FIXO deste livro — use exatamente estes nomes, sem trocar, encurtar, apelidar nem inventar outro protagonista. Personagens secundarios novos sao permitidos, desde que nao assumam o papel central:
+ELENCO deste livro — use exatamente estes nomes, sem trocar, encurtar, apelidar nem inventar outro protagonista. Prefira sempre reaproveitar quem já está aqui a criar alguém novo; se a cena exigir mesmo uma pessoa nova, ela precisa ter motivo para voltar depois, e não pode assumir o papel central:
 ${linhas}
+`;
+}
+
+/**
+ * Quem o sumario colocou neste capitulo. Sem isto o sumario dizia do que cada
+ * capitulo trata mas nunca de quem ele e, e nada impedia um capitulo de correr
+ * inteiro sem nenhuma figura central -- o que a checagem de capitulos orfaos
+ * acusa depois de pronto, quando ja custou.
+ */
+function presencaBlock(chapter: OutlineChapter): string {
+  const nomes = (chapter.personagens ?? []).filter(Boolean);
+  if (nomes.length === 0) return "";
+  return `
+NESTE CAPÍTULO entram em cena, segundo o sumário: ${nomes.join(", ")}. Eles precisam estar na cena de verdade, agindo ou falando — não apenas citados de passagem.
 `;
 }
 
@@ -427,11 +504,15 @@ ${fatos.map((f) => `- ${f}`).join("\n")}
 `;
 }
 
-export async function generateIntro(ctx: EbookContext, outline: Outline): Promise<string> {
+export async function generateIntro(
+  ctx: EbookContext,
+  outline: Outline,
+  registrados: Personagem[] = []
+): Promise<string> {
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -482,7 +563,8 @@ export async function generateChapter(
   ctx: EbookContext,
   outline: Outline,
   chapterIndex: number,
-  anteriores: CapituloAnterior[]
+  anteriores: CapituloAnterior[],
+  registrados: Personagem[] = []
 ): Promise<string> {
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
@@ -516,7 +598,7 @@ O que este capítulo deve cobrir: ${chapter.summary}
 ${funcaoLinha}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
+${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
 ${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
@@ -565,11 +647,43 @@ ${conteudoAtual}`;
  * ficou em aberto; em nao ficcao, o que foi ensinado e que exemplo foi gasto --
  * e o exemplo repetido que faz dois capitulos parecerem o mesmo.
  */
+/** O que a passada de resumo extrai de um capitulo recem-escrito. */
+export interface ResumoCapitulo {
+  resumo: string;
+  /**
+   * Personagens que nasceram na prosa deste capitulo e precisam continuar
+   * existindo. Vazio em nao ficcao, onde nao ha elenco.
+   */
+  personagensNovos: Personagem[];
+}
+
+function normalizarPersonagens(v: unknown): Personagem[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .slice(0, 6)
+    .map((item) => {
+      const o = (item ?? {}) as Record<string, unknown>;
+      return {
+        nome: String(o.nome ?? "").trim().slice(0, 80),
+        papel: String(o.papel ?? "apoio").trim().slice(0, 60),
+        descricao: String(o.descricao ?? "").trim().slice(0, 200),
+      };
+    })
+    .filter((p) => p.nome.length > 0);
+}
+
+/**
+ * Resumo factual do capitulo recem-escrito e, em ficcao, quem ele criou.
+ *
+ * Os dois saem da MESMA chamada de proposito: extrair o elenco novo em uma
+ * chamada propria custaria mais 75 requisicoes num livro de 75 capitulos, para
+ * uma informacao que quem acabou de ler o capitulo ja tem na mao.
+ */
 export async function resumirCapitulo(
   ctx: EbookContext,
   tituloCapitulo: string,
   conteudo: string
-): Promise<string> {
+): Promise<ResumoCapitulo> {
   const narrativo = modoDe(ctx.theme) === "narrativo";
   const pedido = narrativo
     ? `- o que aconteceu, na ordem
@@ -580,23 +694,44 @@ export async function resumirCapitulo(
 - os exemplos, casos e numeros usados (para nao serem repetidos adiante)
 - as afirmacoes que ficaram pendentes de desenvolvimento`;
 
+  const campoElenco = narrativo
+    ? `,
+  "personagensNovos": [
+    { "nome": "...", "papel": "apoio | antagonista | ...", "descricao": "quem e, em uma frase" }
+  ]`
+    : "";
+  const instrucaoElenco = narrativo
+    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao repita quem ja existia antes; se ninguem novo apareceu, use uma lista vazia.`
+    : "";
+
   const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:
 ${pedido}
 
-Nao interprete, nao elogie, nao tire licao. Escreva em frases corridas, sem lista. Responda apenas com o resumo.
+Nao interprete, nao elogie, nao tire licao. Escreva em frases corridas, sem lista.${instrucaoElenco}
+
+Responda APENAS com um JSON valido neste formato:
+{
+  "resumo": "..."${campoElenco}
+}
 
 CAPITULO "${tituloCapitulo}":
 ${conteudo.slice(0, 12000)}`;
 
   // minChars baixo: um resumo de 80 palavras tem ~450 caracteres, e o piso
-  // padrao de 200 e pensado para capitulo, nao para resumo.
-  return askOpenAI(SYSTEM_BASE, prompt, 300, false, 60);
+  // padrao de 200 e pensado para capitulo, nao para resumo. O teto subiu junto
+  // com o campo de elenco, que sai na mesma resposta.
+  const raw = await askOpenAI(SYSTEM_BASE, prompt, narrativo ? 700 : 400, true, 60);
+  const parsed = JSON.parse(extractJson(raw)) as Partial<ResumoCapitulo>;
+  const resumo = String(parsed.resumo ?? "").trim();
+  if (!resumo) throw new Error("Resumo do capitulo veio vazio.");
+  return { resumo, personagensNovos: normalizarPersonagens(parsed.personagensNovos) };
 }
 
 export async function generateConclusion(
   ctx: EbookContext,
   outline: Outline,
   capitulos: CapituloAnterior[] = [],
+  registrados: Personagem[] = [],
 ): Promise<string> {
   // Duas falhas do mesmo prompt, achadas num livro real ("Amor na Esquina"):
   // a conclusao "amarrava aprendizados" e terminava com um "convite pratico
@@ -623,7 +758,7 @@ ${resumoDoLivro}
 
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
 Não repita a introdução com outras palavras. ${instrucaoFinal}
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
   return askOpenAI(promptDoModo(ctx), prompt, 1200);
@@ -653,11 +788,25 @@ export async function humanizeText(
    * Sem o modo, esta segunda passada usaria as regras genericas e desfaria a voz
    * do primeiro passe -- reescreveria a cena do romance como explicacao.
    */
-  caminhoCategoria = ""
+  caminhoCategoria = "",
+  /**
+   * Nomes que esta passada nao pode tocar. Ela roda por capitulo, sem elenco e
+   * sem sumario: ao "remover generalizacoes vagas" podia trocar um nome proprio
+   * por uma descricao, ou por outro nome, sem ter como saber que aquilo era uma
+   * referencia que o resto do livro depende.
+   */
+  nomes: string[] = []
 ): Promise<string> {
+  const guarda =
+    nomes.length > 0
+      ? `
+NÃO ALTERE estes nomes próprios, nem os substitua por pronomes ou descrições: ${nomes.join(", ")}. Também não mude a ordem dos acontecimentos nem quem faz o quê.
+`
+      : "";
   const prompt = `Revise o texto abaixo como um editor especializado em detectar e remover padrões artificiais de textos gerados por IA, preservando 100% do conteúdo, dos fatos e da mensagem original.
 
 Contexto: ${contextLabel}
+${guarda}
 
 Procure e corrija especificamente:
 - qualquer uma das frases proibidas listadas nas suas instruções, ou variações muito próximas delas
