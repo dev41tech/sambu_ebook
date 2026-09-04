@@ -1,8 +1,10 @@
 import OpenAI from "openai";
 import { withRetry } from "./retry";
 import { detectarRecusa } from "./sanitizar";
-import { MAX_CAPITULOS } from "../../src/lib/custo";
+import { MAX_CAPITULOS, PALAVRAS_POR_CAPITULO } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
+import { modoDe } from "../../src/lib/modos";
+import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
 
@@ -112,6 +114,15 @@ function groundingBlock(ctx: EbookContext): string {
 export interface OutlineChapter {
   title: string;
   summary: string;
+  /**
+   * So em ficcao. Sem isto o capitulo 10 podia reabrir uma decisao que o
+   * capitulo 3 ja tinha fechado -- "Moveis de Memorias" decide vender a oficina
+   * no capitulo 3 e volta a "ponderar" a mesma venda no capitulo 6, porque nada
+   * dizia que aquilo já tinha sido resolvido.
+   */
+  funcao?: "apresentacao" | "complicacao" | "virada" | "crise" | "climax" | "desfecho";
+  /** O que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois. */
+  resultado?: string;
 }
 
 /**
@@ -119,6 +130,12 @@ export interface OutlineChapter {
  * tres chamadas independentes, cada uma inventando os proprios nomes: em "Alem
  * das Quatro Linhas" a introducao apresentou Luisa e Guilherme enquanto os 84
  * capitulos falavam de Ana e Lucas.
+ *
+ * "papel" aceita "ausente" para quem e citado o livro inteiro mas nunca aparece
+ * em cena -- a irma desaparecida, o socio morto. Sem essa opcao o modelo so
+ * pensava em quem "esta na cena" e deixava a figura mais citada do livro de
+ * fora do elenco: em "Moveis de Memorias" a irma desaparecida foi citada 59
+ * vezes e nunca entrou no elenco, porque nada pedia isso.
  */
 export interface Personagem {
   nome: string;
@@ -132,6 +149,14 @@ export interface Outline {
   chapters: OutlineChapter[];
   /** So em ficcao. Nao ficcao nao tem elenco e o bloco nao e pedido. */
   personagens?: Personagem[];
+  /**
+   * Fatos que nao podem mudar ao longo do livro: numeros, datas, relacoes,
+   * quem esta ausente. Sem isto, nada garante que "ha quinze anos" dito no
+   * capitulo 1 continue valendo no capitulo 14 -- em "Moveis de Memorias"
+   * virou "vinte anos" no climax, e nada no sistema tinha esse fato fixado em
+   * lugar nenhum para contradizer.
+   */
+  fatosFixos?: string[];
 }
 
 // Teto de capitulos por ebook. Era 12 fixo, o que fazia qualquer pedido acima de
@@ -140,8 +165,14 @@ export interface Outline {
 // coerencia entre capitulos, renderizacao do PDF) antes de fixar um numero.
 const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || MAX_CAPITULOS;
 
-function chapterCountFor(pageCount: number): number {
-  const raw = Math.round(pageCount / 4);
+// Antes esta funcao recebia paginas e dividia por 4 -- com 250 palavras/pagina,
+// isso assumia 1000 palavras por capitulo. A entrega medida real e 841
+// (PALAVRAS_POR_CAPITULO, ver custo.ts): pedir 20.000 palavras virava 20
+// capitulos x meta de 1000, o modelo entregava ~800 cada, e o livro fechava em
+// 75% do pedido -- nao por o modelo escrever pouco, mas porque o proprio
+// sistema tinha pedido 20% a mais do que ele sabia que ia conseguir.
+function chapterCountFor(palavrasAlvo: number): number {
+  const raw = Math.round(palavrasAlvo / PALAVRAS_POR_CAPITULO);
   return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
 
@@ -242,7 +273,7 @@ const CHAPTER_CLOSINGS = [
 
 const CHAPTER_CLOSINGS_LAST = CHAPTER_CLOSINGS.filter((c) => !c.includes("próximo capítulo"));
 
-const SYSTEM_PROMPT = `Você é um ghostwriter e editor profissional especializado em livros e ebooks humanizados.
+const SYSTEM_BASE = `Você é um ghostwriter e editor profissional especializado em livros e ebooks humanizados.
 
 PRINCÍPIO CENTRAL: escreva como um autor humano experiente escreveria — não como uma IA tentando soar humana. O texto deve ter presença, personalidade, clareza, profundidade e respeito pelo leitor. Nunca deve parecer genérico, mecânico, repetitivo ou artificialmente motivacional. Nunca mencione ser uma IA no texto do livro.
 
@@ -267,10 +298,24 @@ ${BANNED_PHRASES.map((p) => `"${p}"`).join(", ")}.
 
 Evite também: excesso de travessões, sequências de frases muito curtas, excesso de metáforas, excesso de perguntas retóricas seguidas, conclusões que apenas repetem a introdução com outras palavras, e fechamentos motivacionais genéricos.`;
 
+/**
+ * Prompt de sistema montado por modo editorial.
+ *
+ * A base acima vale para qualquer livro -- honestidade, frases proibidas,
+ * naturalidade. O que vem depois muda: as regras de "Profundidade" que mandavam
+ * explicar erros comuns e adaptar recomendacoes so fazem sentido em livro
+ * pratico, e eram aplicadas tambem a romance. Agora cada modo traz as suas.
+ */
+function promptDoModo(ctx: EbookContext): string {
+  return `${SYSTEM_BASE}
+
+${vozDe(modoDe(ctx.theme)).regras}`;
+}
+
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
   const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
-  const chapterCount = chapterCountFor(Math.round(palavrasAlvo / Math.max(1, ctx.wordsPerPage)));
+  const chapterCount = chapterCountFor(palavrasAlvo);
   const titleInstruction =
     ctx.titleMode === "manual" && ctx.customTitle
       ? `Use exatamente este título: "${ctx.customTitle}". ${
@@ -290,12 +335,25 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   const blocoElencoSchema = ficcao
     ? `
   "personagens": [
-    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
+    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista | ausente", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
   ],`
     : "";
   const instrucaoElenco = ficcao
     ? `
-Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.`
+Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.
+Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.`
+    : "";
+
+  // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
+  // reabrir uma decisao que o capitulo 3 ja tinha fechado: em "Moveis de
+  // Memorias" a protagonista "decide vender a oficina" no capitulo 3 e volta a
+  // "ponderar" a mesma venda no capitulo 6.
+  const blocoFuncaoSchema = ficcao
+    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois"`
+    : "";
+  const instrucaoFuncao = ficcao
+    ? `
+Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada. Exatamente um capitulo deve ter funcao "climax" e ele precisa vir perto do fim; o ultimo capitulo deve ter funcao "desfecho" e seu resultado precisa responder a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta.`
     : "";
 
   const prompt = `Planeje a estrutura de um ebook com estas informações:
@@ -312,22 +370,26 @@ ${titleInstruction}
 
 O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
-Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}
+Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}
+
+Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui. Se o enredo inventar o nome de um evento, negócio, lugar ou apelido que vai se repetir ao longo do livro, inclua o nome exato aqui também ("o evento conjunto se chama 'Sabores da Esquina'") — sem isso o mesmo evento aparece com dois nomes diferentes em capítulos diferentes.
 
 Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum texto antes ou depois:
 {
   "title": "...",
   "subtitle": "...",${blocoElencoSchema}
+  "fatosFixos": ["..."],
   "chapters": [
-    { "title": "...", "summary": "uma frase descrevendo o ângulo específico deste capítulo" }
+    { "title": "...", "summary": "uma frase descrevendo o ângulo específico deste capítulo"${blocoFuncaoSchema} }
   ]
 }`;
 
   // O JSON do sumario cresce com o numero de capitulos. Com o teto fixo em 12,
   // 2000 tokens sobravam; com 100 capitulos a resposta seria cortada no meio e o
-  // JSON viria invalido -- falha silenciosa e dificil de diagnosticar.
-  const tokensSumario = Math.max(2000, 400 + chapterCount * 40) + (ficcao ? 600 : 0);
-  const raw = await askOpenAI(SYSTEM_PROMPT, prompt, tokensSumario, true);
+  // JSON viria invalido -- falha silenciosa e dificil de diagnosticar. fatosFixos
+  // e funcao/resultado por capitulo tambem consomem uma fatia da resposta.
+  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 90 : 50)) + (ficcao ? 600 : 0);
+  const raw = await askOpenAI(promptDoModo(ctx), prompt, tokensSumario, true);
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Outline;
   if (!parsed.chapters || parsed.chapters.length === 0) {
@@ -350,55 +412,221 @@ ${linhas}
 `;
 }
 
+/**
+ * Fatos que valem para o livro inteiro, repetidos em toda chamada de escrita
+ * pelo mesmo motivo do elencoBlock: sem repassar, cada chamada so tem o que
+ * esta no proprio prompt, e um numero dito no capitulo 1 nao sobrevive ate o
+ * capitulo 14 se ninguem o repetir a cada vez.
+ */
+function fatosFixosBlock(outline: Outline): string {
+  const fatos = outline.fatosFixos ?? [];
+  if (fatos.length === 0) return "";
+  return `
+FATOS FIXOS deste livro — nao contradiga nenhum destes, mesmo que pareça natural variar o número ou a data ao longo do texto:
+${fatos.map((f) => `- ${f}`).join("\n")}
+`;
+}
+
 export async function generateIntro(ctx: EbookContext, outline: Outline): Promise<string> {
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 1500);
+  return askOpenAI(promptDoModo(ctx), prompt, 1500);
+}
+
+/** O que ja foi escrito antes deste capitulo. */
+export interface CapituloAnterior {
+  idx: number;
+  title: string;
+  /** O que de fato aconteceu ali. Nulo em capitulos anteriores a esta memoria. */
+  resumo: string | null;
+}
+
+/**
+ * Quantos capitulos anteriores entram no prompt com o resumo inteiro. Os mais
+ * antigos entram so como titulo: num livro de 84 capitulos, mandar 83 resumos
+ * custaria mais em contexto do que o capitulo que se quer escrever.
+ */
+const JANELA_DE_MEMORIA = 8;
+
+export function memoriaBlock(anteriores: CapituloAnterior[]): string {
+  if (anteriores.length === 0) return "Este é o primeiro capítulo do livro.\n";
+
+  const recentes = anteriores.slice(-JANELA_DE_MEMORIA);
+  const antigos = anteriores.slice(0, -JANELA_DE_MEMORIA);
+
+  const linhas = recentes.map((c) =>
+    c.resumo
+      ? `- Capítulo ${c.idx + 1} — "${c.title}": ${c.resumo}`
+      : `- Capítulo ${c.idx + 1} — "${c.title}" (sem resumo registrado)`,
+  );
+
+  const antigosLinha =
+    antigos.length > 0
+      ? `
+Capítulos anteriores a esses, apenas pelos títulos: ${antigos.map((c) => `"${c.title}"`).join(", ")}.
+`
+      : "";
+
+  return `O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
+${linhas.join("\n")}${antigosLinha}
+Não repita fatos, exemplos, cenas ou conclusões que já apareceram acima. Se algo ficou em aberto, este capítulo pode retomar; o que já foi resolvido não volta a ser problema.
+`;
 }
 
 export async function generateChapter(
   ctx: EbookContext,
   outline: Outline,
   chapterIndex: number,
-  previousChapterTitles: string[]
+  anteriores: CapituloAnterior[]
 ): Promise<string> {
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
   const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
   const wordsPerChapter = Math.round(alvoTotal / outline.chapters.length);
-  const opening = CHAPTER_OPENINGS[chapterIndex % CHAPTER_OPENINGS.length];
-  const closingPool = isLastChapter ? CHAPTER_CLOSINGS_LAST : CHAPTER_CLOSINGS;
-  const closing = closingPool[chapterIndex % closingPool.length];
+  // Aberturas e fechamentos do modo, nao mais uma lista unica de nao ficcao.
+  const voz = vozDe(modoDe(ctx.theme));
+  const opening = voz.aberturas[chapterIndex % voz.aberturas.length];
+  const fechamentos = isLastChapter
+    ? voz.fechamentos.filter((c) => !c.includes("próximo capítulo"))
+    : voz.fechamentos;
+  const closing = fechamentos[chapterIndex % fechamentos.length];
+
+  // Funcao e resultado do capitulo, quando o sumario os declarou. O ultimo
+  // capitulo e o marcado como climax pedem dramatizacao explicita da resposta
+  // -- sem isto o desfecho de "Moveis de Memorias" resumiu a revelacao central
+  // como "a gravacao narrava uma historia de ciume e chantagem" e o leitor
+  // nunca soube, de fato, o que tinha acontecido.
+  const funcaoLinha = chapter.funcao
+    ? `Função deste capítulo na estrutura: ${chapter.funcao}.${chapter.resultado ? ` Ao final dele, isto precisa estar resolvido de forma irreversível: ${chapter.resultado}` : ""}`
+    : "";
+  const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
+  const instrucaoClimax = ehClimaxOuDesfecho
+    ? `\nEste capítulo revela ou resolve a questão central do livro. Dramatize a revelação em cena — o que aconteceu, dito ou mostrado diretamente — em vez de resumir o conteúdo de uma gravação, carta, diário ou confissão alheia. O leitor precisa saber, no texto, exatamente o que se passou; "ela contou tudo" ou "a gravação revelava a verdade" não é uma resposta, é a ausência de uma.\n`
+    : "";
+
   const prompt = `Escreva o conteúdo completo do capítulo ${chapterIndex + 1} do ebook "${outline.title}".
 Título do capítulo: "${chapter.title}"
 O que este capítulo deve cobrir: ${chapter.summary}
+${funcaoLinha}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${previousChapterTitles.length > 0 ? `Capítulos anteriores já escritos: ${previousChapterTitles.join(", ")}. Não repita o mesmo conteúdo ou os mesmos exemplos deles.` : "Este é o primeiro capítulo."}
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-${groundingBlock(ctx)}
+${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
-Escreva aproximadamente ${wordsPerChapter} palavras, com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 4000);
+Escreva NO MÍNIMO ${wordsPerChapter} palavras -- "aproximadamente" não é licença para entregar menos, é a meta a alcançar ou passar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4000);
 }
 
-export async function generateConclusion(ctx: EbookContext, outline: Outline): Promise<string> {
-  const prompt = `Escreva a conclusão do ebook "${outline.title}", amarrando os aprendizados centrais dos capítulos:
-${outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n")}
+/**
+ * Reescreve um capítulo que saiu curto demais, expandindo-o para perto da meta.
+ * Existe porque pedir a meta certa no primeiro prompt não é garantia — o modelo
+ * ainda pode entregar menos, e sem um segundo passo o livro fecha abaixo do que
+ * foi prometido mesmo com a conta calibrada.
+ *
+ * Reescreve o capítulo inteiro (não "continua de onde parou"): o capítulo já
+ * tem um fechamento escrito, e simplesmente acrescentar texto depois dele
+ * produziria uma cena extra depois do que devia ser o final. Reescrever com a
+ * mesma história, mesmo início e mesmo fim, mas mais desenvolvida, é mais
+ * seguro estruturalmente.
+ */
+export async function expandirCapitulo(
+  ctx: EbookContext,
+  conteudoAtual: string,
+  metaPalavras: number,
+): Promise<string> {
+  const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para pelo menos ${metaPalavras} palavras, mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
+
+Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.
+
+Responda apenas com o texto expandido do capítulo, sem comentários.
+
+CAPÍTULO ATUAL:
+${conteudoAtual}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+}
+
+/**
+ * Resumo factual de um capitulo recem-escrito, para alimentar os proximos.
+ *
+ * Curto e barato de proposito: sao ~150 tokens de saida por capitulo. Mandar o
+ * texto inteiro do capitulo anterior adiante seria mais fiel e custaria varias
+ * vezes mais em contexto a cada capitulo seguinte.
+ *
+ * O que se pede muda com o modo. Em ficcao interessa o que aconteceu e o que
+ * ficou em aberto; em nao ficcao, o que foi ensinado e que exemplo foi gasto --
+ * e o exemplo repetido que faz dois capitulos parecerem o mesmo.
+ */
+export async function resumirCapitulo(
+  ctx: EbookContext,
+  tituloCapitulo: string,
+  conteudo: string
+): Promise<string> {
+  const narrativo = modoDe(ctx.theme) === "narrativo";
+  const pedido = narrativo
+    ? `- o que aconteceu, na ordem
+- quem estava presente e o que cada um decidiu ou descobriu
+- o que mudou na situacao dos personagens
+- o que ficou em aberto para os proximos capitulos`
+    : `- os pontos efetivamente ensinados
+- os exemplos, casos e numeros usados (para nao serem repetidos adiante)
+- as afirmacoes que ficaram pendentes de desenvolvimento`;
+
+  const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:
+${pedido}
+
+Nao interprete, nao elogie, nao tire licao. Escreva em frases corridas, sem lista. Responda apenas com o resumo.
+
+CAPITULO "${tituloCapitulo}":
+${conteudo.slice(0, 12000)}`;
+
+  // minChars baixo: um resumo de 80 palavras tem ~450 caracteres, e o piso
+  // padrao de 200 e pensado para capitulo, nao para resumo.
+  return askOpenAI(SYSTEM_BASE, prompt, 300, false, 60);
+}
+
+export async function generateConclusion(
+  ctx: EbookContext,
+  outline: Outline,
+  capitulos: CapituloAnterior[] = [],
+): Promise<string> {
+  // Duas falhas do mesmo prompt, achadas num livro real ("Amor na Esquina"):
+  // a conclusao "amarrava aprendizados" e terminava com um "convite pratico
+  // para o leitor aplicar algo do livro" -- instrucao de nao ficcao, aplicada
+  // cegamente a ficcao, que contradizia a propria regra do modo narrativo de
+  // nao falar com o leitor. E so recebia os TITULOS dos capitulos, nunca o
+  // que de fato aconteceu -- por isso inventou uma cena de "bolos voando"
+  // que nao existe em capitulo nenhum.
+  const ficcao = ehFiccao(ctx.theme);
+
+  const resumoDoLivro = capitulos.length > 0
+    ? capitulos
+        .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+        .join("\n")
+    : outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n");
+
+  const instrucaoFinal = ficcao
+    ? `Escreva a última cena do livro, ambientada depois dos acontecimentos acima -- não um resumo retrospectivo deles. Mostre o estado final dos personagens através de uma ação, um gesto ou uma fala concreta, não através de uma lista do que "aprenderam" ou de uma frase que amarre a jornada. Não fale com o leitor, não dê conselho, não avalie a história que acabou de contar. Só narre o que existe: não invente um acontecimento que não esteja no resumo acima.`
+    : `Amarre os aprendizados centrais do livro e termine com um convite prático e específico para o leitor aplicar algo do que leu — evite frases motivacionais genéricas de encerramento.`;
+
+  const prompt = `Escreva a conclusão do ebook "${outline.title}".
+O QUE ACONTECEU no livro, capítulo a capítulo:
+${resumoDoLivro}
+
 Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline)}${groundingBlock(ctx)}
-Não repita a introdução com outras palavras. Termine com um convite prático e específico para o leitor aplicar algo do livro — evite frases motivacionais genéricas de encerramento.
+${elencoBlock(outline)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
+Não repita a introdução com outras palavras. ${instrucaoFinal}
 Escreva de 250 a 400 palavras. Responda apenas com o texto final.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 1200);
+  return askOpenAI(promptDoModo(ctx), prompt, 1200);
 }
 
 export async function generateAboutAuthor(
@@ -409,14 +637,24 @@ export async function generateAboutAuthor(
   const prompt = `Escreva uma seção "Sobre o Autor" para um ebook, em ${language}, para o autor "${authorName}".
 ${authorBio ? `Use como base esta informação fornecida pelo autor, sem inventar credenciais além dela: "${authorBio}"` : "O autor não forneceu bio — escreva algo genérico e breve, sem inventar credenciais específicas (formação, prêmios, cargos)."}
 Escreva de 60 a 120 palavras, em terceira pessoa, num tom natural, sem clichês de contracapa de livro. Responda apenas com o texto final.`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, 500);
+  // Bio do autor nao pertence a modo nenhum -- nao e conteudo do livro.
+  return askOpenAI(SYSTEM_BASE, prompt, 500);
 }
 
 /**
  * Segunda passada editorial: revisa um texto já escrito removendo padrões
  * característicos de IA, preservando o conteúdo e a mensagem original.
  */
-export async function humanizeText(text: string, contextLabel: string, maxTokens = 4000): Promise<string> {
+export async function humanizeText(
+  text: string,
+  contextLabel: string,
+  maxTokens = 4000,
+  /**
+   * Sem o modo, esta segunda passada usaria as regras genericas e desfaria a voz
+   * do primeiro passe -- reescreveria a cena do romance como explicacao.
+   */
+  caminhoCategoria = ""
+): Promise<string> {
   const prompt = `Revise o texto abaixo como um editor especializado em detectar e remover padrões artificiais de textos gerados por IA, preservando 100% do conteúdo, dos fatos e da mensagem original.
 
 Contexto: ${contextLabel}
@@ -433,5 +671,7 @@ Não adicione informações novas, não mude o significado, não encurte o texto
 
 TEXTO:
 ${text}`;
-  return askOpenAI(SYSTEM_PROMPT, prompt, maxTokens);
+  return askOpenAI(`${SYSTEM_BASE}
+
+${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens);
 }

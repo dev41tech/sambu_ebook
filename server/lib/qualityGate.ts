@@ -3,6 +3,7 @@
 import type { EbookRow } from "./db";
 import { detectarRecusa } from "./sanitizar";
 import { verificarContinuidade, type Achado, type Gravidade } from "./continuidade";
+import { verificarFatosNumericos } from "./fatosNumericos";
 import { ehFiccao } from "../../src/lib/categorias";
 import type { Outline } from "./ai";
 
@@ -135,6 +136,19 @@ export function avaliarQualidade(e: EntradaGate): ResultadoGate {
       capitulos,
       ficcao: ehFiccao(ebook.category_main || ebook.theme),
     }),
+  );
+
+  // 5. Fatos numéricos que o próprio sumário declarou fixos, contra o que o
+  // texto realmente diz. Não depende de ficção: um livro de finanças que fixa
+  // "o prazo é de vinte anos" também pode contradizer isso adiante. Reaproveita
+  // os mesmos trechos rotulados do passo 3.
+  achados.push(
+    ...verificarFatosNumericos(
+      outline.fatosFixos ?? [],
+      partes
+        .filter((p): p is [string, string] => p[1] != null)
+        .map(([local, texto]) => ({ local, texto })),
+    ),
   );
 
   const contagem: Record<Gravidade, number> = { info: 0, warning: 0, major: 0, blocker: 0 };

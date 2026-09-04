@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, type PexelsPhoto } from "../lib/api";
 import PexelsPicker from "../components/PexelsPicker";
@@ -6,8 +6,11 @@ import LocalCoverPicker from "../components/LocalCoverPicker";
 import ImportIcon from "../components/ImportIcon";
 import ClassificacaoPicker from "../components/ClassificacaoPicker";
 import CustoEstimado from "../components/CustoEstimado";
+import { perfilDe } from "../lib/modos";
 
-const TONES = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
+// Os tons vem do modo editorial da categoria escolhida, nao de uma lista fixa.
+// A lista antiga tinha quatro opcoes escritas para livro pratico, e "Motivador"
+// acabou em 40 dos 57 ebooks do acervo -- inclusive nos 14 de ficcao.
 
 const LANGUAGES = [
   "Português (Brasil)",
@@ -21,10 +24,21 @@ export default function NewEbook() {
   const [searchParams] = useSearchParams();
   const [theme, setTheme] = useState(() => searchParams.get("tema") ?? "");
   const [audience, setAudience] = useState("");
-  const [tone, setTone] = useState(TONES[0]);
+  const [tone, setTone] = useState(() => perfilDe("").tons[0]);
   const [language, setLanguage] = useState(LANGUAGES[0]);
   const [pageCount, setPageCount] = useState(20);
   const [wordsPerPage, setWordsPerPage] = useState(250);
+
+  // O modo editorial sai da categoria escolhida -- nunca e perguntado. Um campo
+  // a mais no formulario seria um campo que ninguem preenche.
+  const perfil = perfilDe(theme);
+  // Trocar de categoria pode invalidar o tom selecionado ("Intimista" nao existe
+  // em livro de financas). Sem isto o select ficaria mostrando o primeiro item e
+  // enviando outro valor.
+  useEffect(() => {
+    if (!perfil.tons.includes(tone)) setTone(perfil.tons[0]);
+  }, [perfil, tone]);
+
   const [extensionMode, setExtensionMode] = useState<"pages" | "words">("pages");
   const [wordGoal, setWordGoal] = useState(25000);
   const [titleMode, setTitleMode] = useState<"ai" | "manual">("ai");
@@ -351,12 +365,13 @@ export default function NewEbook() {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-sm font-medium text-neutral-700">Tom de voz</label>
+            <p className="text-xs text-neutral-500">{perfil.rotulo} — {perfil.resumo}</p>
             <select
               className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm"
               value={tone}
               onChange={(e) => setTone(e.target.value)}
             >
-              {TONES.map((t) => (
+              {perfil.tons.map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>

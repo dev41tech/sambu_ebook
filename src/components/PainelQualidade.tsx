@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type AchadoEditorial, type GravidadeAchado, type ResultadoQualidade } from "../lib/api";
+import { api, type AchadoEditorial, type GravidadeAchado, type Metricas, type ResultadoQualidade } from "../lib/api";
+import { ehFiccao } from "../lib/categorias";
 
 const CORES: Record<GravidadeAchado, string> = {
   blocker: "border-red-300 bg-red-50 text-red-900",
@@ -29,6 +30,53 @@ function Achado({ a }: { a: AchadoEditorial }) {
 }
 
 /**
+ * Placar numérico — nunca bloqueia, é o número para comparar antes/depois de
+ * uma mudança de prompt sem reler o livro inteiro. Existe porque uma leitura
+ * "melhorou"/"piorou" já errou uma vez: um livro que era ensaio corporativo (sem
+ * diálogo, sem metáfora) foi comparado com um romance, e a diferença pareceu
+ * regressão quando não era.
+ */
+function PlacarMetricas({ m, ficcao }: { m: Metricas; ficcao: boolean }) {
+  if (m.capitulos === 0) return null;
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-3 text-xs sm:grid-cols-4">
+      {ficcao && (
+        <div>
+          <dt className="text-neutral-500">Diálogo</dt>
+          <dd className="font-medium text-neutral-800">{m.dialogoPorMil}/mil palavras</dd>
+        </div>
+      )}
+      <div>
+        <dt className="text-neutral-500">Abstração</dt>
+        <dd className="font-medium text-neutral-800">{m.abstracaoPorMil}/mil palavras</dd>
+      </div>
+      <div>
+        <dt className="text-neutral-500">Repetição entre capítulos</dt>
+        <dd className="font-medium text-neutral-800">{Math.round(m.repeticaoEntreCapitulos * 100)}%</dd>
+      </div>
+      <div>
+        <dt className="text-neutral-500">Extensão</dt>
+        <dd className="font-medium text-neutral-800">
+          {m.palavras.toLocaleString("pt-BR")} palavras · {m.capitulos} cap.
+        </dd>
+      </div>
+      {m.personagensSemFuncao.length > 0 && (
+        <div className="col-span-2 sm:col-span-4">
+          <dt className="text-neutral-500">Personagens em menos de 2 capítulos</dt>
+          <dd className="font-medium text-amber-700">{m.personagensSemFuncao.join(", ")}</dd>
+        </div>
+      )}
+      {m.exemplosRepetidos > 0 && (
+        <div className="col-span-2 sm:col-span-4">
+          <dt className="text-neutral-500">Exemplos repetidos entre capítulos</dt>
+          <dd className="font-medium text-amber-700">{m.exemplosRepetidos}</dd>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Mostra o que trava a publicacao ANTES de o usuario clicar em finalizar e
  * receber um erro seco. O escape existe porque o Quality Gate se aplica tambem
  * aos livros antigos: sem ele, quatro ebooks ja publicados ficariam impossiveis
@@ -36,10 +84,13 @@ function Achado({ a }: { a: AchadoEditorial }) {
  */
 export default function PainelQualidade({
   ebookId,
+  caminhoCategoria,
   ignorarBloqueios,
   onIgnorarBloqueios,
 }: {
   ebookId: string;
+  /** Categoria do ebook — decide se mostra a métrica de diálogo (só faz sentido em ficção). */
+  caminhoCategoria: string;
   ignorarBloqueios: boolean;
   onIgnorarBloqueios: (v: boolean) => void;
 }) {
@@ -64,16 +115,9 @@ export default function PainelQualidade({
   }
   if (!r) return null;
 
-  if (r.achados.length === 0) {
-    return (
-      <p className="text-xs text-emerald-700">
-        ✓ Nenhum problema encontrado nas verificações automáticas.
-      </p>
-    );
-  }
-
   const ordem: GravidadeAchado[] = ["blocker", "major", "warning", "info"];
   const ordenados = [...r.achados].sort((a, b) => ordem.indexOf(a.gravidade) - ordem.indexOf(b.gravidade));
+  const ficcao = ehFiccao(caminhoCategoria);
 
   return (
     <div className="space-y-3">
@@ -84,11 +128,19 @@ export default function PainelQualidade({
         </span>
       </div>
 
-      <div className="space-y-2">
-        {ordenados.map((a, i) => (
-          <Achado key={`${a.categoria}-${i}`} a={a} />
-        ))}
-      </div>
+      {r.metricas && <PlacarMetricas m={r.metricas} ficcao={ficcao} />}
+
+      {ordenados.length === 0 ? (
+        <p className="text-xs text-emerald-700">
+          ✓ Nenhum problema encontrado nas verificações automáticas.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {ordenados.map((a, i) => (
+            <Achado key={`${a.categoria}-${i}`} a={a} />
+          ))}
+        </div>
+      )}
 
       {!r.liberado && (
         <label className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900">

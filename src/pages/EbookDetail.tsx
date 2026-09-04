@@ -697,6 +697,7 @@ export default function EbookDetail() {
           <div className="border-t border-neutral-100 pt-5">
             <PainelQualidade
               ebookId={ebook.id}
+              caminhoCategoria={ebook.category_main || ebook.theme}
               ignorarBloqueios={ignorarBloqueios}
               onIgnorarBloqueios={setIgnorarBloqueios}
             />

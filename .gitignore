@@ -6,3 +6,4 @@ data/
 # Cobre .env.local, .env.backup-* e afins — qualquer copia do .env carrega segredo.
 .env*
 !.env.example
+backups

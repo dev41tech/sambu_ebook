@@ -84,6 +84,10 @@ CREATE TABLE ebooks (
   -- Achados da verificacao de continuidade (nomes de personagens). NULL = nunca
   -- verificado; '[]' = verificado e sem achados.
   continuity_json       text,
+  -- Placar objetivo (server/lib/metricas.ts): dialogo/mil, abstracao/mil,
+  -- repeticao entre capitulos, personagens sem funcao. Recalculado a cada
+  -- finalizacao, para comparar mudanca de prompt sem reler o livro.
+  metrics_json          text,
   version               text    NOT NULL DEFAULT 'v1.0',
   created_at            text    NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );
@@ -95,6 +99,10 @@ CREATE TABLE chapters (
   title      text    NOT NULL,
   summary    text    NOT NULL DEFAULT '',
   content    text    NOT NULL DEFAULT '',
+  -- O que de fato aconteceu neste capitulo, gerado logo apos escreve-lo. Alimenta
+  -- os capitulos seguintes: antes so os TITULOS anteriores passavam adiante, e o
+  -- modelo repetia ideias e contradizia o que ele mesmo tinha escrito.
+  resumo_fatos text,
   audio_path text
 );
 

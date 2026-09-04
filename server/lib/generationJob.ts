@@ -7,6 +7,8 @@ import {
   generateConclusion,
   generateAboutAuthor,
   humanizeText,
+  resumirCapitulo,
+  expandirCapitulo,
   type EbookContext,
   type Outline,
 } from "./ai";
@@ -46,9 +48,14 @@ async function setStep(id: string, step: string) {
 // A humanizacao e uma segunda passada sobre um texto que ja esta pronto. Se ela
 // recusar ou devolver lixo, perder o rascunho bom -- ou derrubar o livro inteiro
 // no capitulo 60 -- e pior do que publicar o rascunho sem essa passada.
-async function humanizarOuManter(draft: string, rotulo: string, maxTokens: number): Promise<string> {
+async function humanizarOuManter(
+  draft: string,
+  rotulo: string,
+  maxTokens: number,
+  caminhoCategoria = ""
+): Promise<string> {
   try {
-    return await humanizeText(draft, rotulo, maxTokens);
+    return await humanizeText(draft, rotulo, maxTokens, caminhoCategoria);
   } catch (err) {
     console.warn(`[geracao] humanizacao ignorada em ${rotulo}: ${err instanceof Error ? err.message : err}`);
     return draft;
@@ -187,25 +194,72 @@ async function runJob(ebookId: string) {
     if (row.intro === null) {
       await setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline);
-      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500);
+      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500, ctx.theme);
       await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
       row = (await getEbook(ebookId))!;
     }
 
     // Etapa 4: capítulos, um de cada vez
-    const chapters = await all<{ id: string; idx: number; title: string; summary: string; content: string }>(
-      "SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
-      [ebookId]
-    );
+    const chapters = await all<{
+      id: string;
+      idx: number;
+      title: string;
+      summary: string;
+      content: string;
+      resumo_fatos: string | null;
+    }>("SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC", [ebookId]);
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
       await setStep(ebookId, "chapter");
-      const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
-      const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
-      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
+
+      // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
+      // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
+      // mundo dentro da jangada, no mar.
+      const anteriores = chapters
+        .filter((c) => c.idx < chapter.idx)
+        .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+
+      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores);
+      let content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
+
+      // Forca o minimo: pedir a meta certa nao garante que ela seja cumprida, e
+      // sem este segundo passo o livro fechava abaixo do prometido mesmo depois
+      // de recalibrar a conta de capitulos. Um limiar de 85% -- o mesmo que
+      // custo.ts usa para decidir se avisa o usuario -- separa "saiu um pouco
+      // curto" de "precisa ser reescrito".
+      const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
+      const metaCapitulo = Math.round(alvoTotal / outline.chapters.length);
+      const palavrasEscritas = content.trim().split(/\s+/).filter(Boolean).length;
+      if (palavrasEscritas < metaCapitulo * 0.85) {
+        try {
+          const expandido = await expandirCapitulo(ctx, content, metaCapitulo);
+          const palavrasExpandidas = expandido.trim().split(/\s+/).filter(Boolean).length;
+          // So aceita se realmente cresceu. Uma reescrita que saiu do mesmo
+          // tamanho ou menor nao ajuda e ainda troca um texto bom por um novo,
+          // sem necessidade.
+          if (palavrasExpandidas > palavrasEscritas) content = expandido;
+        } catch (err) {
+          // Expandir e uma tentativa extra, nao uma etapa obrigatoria -- se
+          // falhar, o capitulo mais curto (mas ja valido) segue em frente.
+          console.warn(`[geracao] expansao do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+        }
+      }
+
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+
+      // Resumo factual para os proximos capitulos. Falhar aqui nao pode derrubar
+      // o livro: sem resumo o capitulo seguinte volta a receber so o titulo,
+      // que e o comportamento antigo -- pior, mas nao fatal.
+      try {
+        const resumo = await resumirCapitulo(ctx, chapter.title, content);
+        await run("UPDATE chapters SET resumo_fatos = $1 WHERE id = $2", [resumo, chapter.id]);
+        // O array em memoria alimenta o proximo capitulo desta mesma execucao.
+        chapter.resumo_fatos = resumo;
+      } catch (err) {
+        console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
     }
 
     row = (await getEbook(ebookId))!;
@@ -262,8 +316,17 @@ async function runJob(ebookId: string) {
     // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
-      const draft = await generateConclusion(ctx, outline);
-      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200);
+      // Os resumos factuais de todos os capitulos ja existem a esta altura --
+      // a conclusao roda depois de todos eles. Sem isso ela so via titulos e
+      // inventava cenas que nunca foram escritas ("bolos voando" num livro
+      // que nao tem essa cena em capitulo nenhum).
+      const capitulosParaConclusao = chapters.map((c) => ({
+        idx: c.idx,
+        title: c.title,
+        resumo: c.resumo_fatos,
+      }));
+      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao);
+      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200, ctx.theme);
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;
     }
@@ -320,9 +383,22 @@ async function startNextQueuedJob() {
   while (activeJobs.size < MAX_CONCURRENT_JOBS && queuedJobs.length > 0) {
     const nextId = queuedJobs.shift()!;
     if (activeJobs.has(nextId)) continue;
-    const row = await getEbook(nextId);
-    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") continue;
+    // Reserva o lugar em activeJobs ANTES do await, nao depois. Entre o shift()
+    // acima e o antigo `activeJobs.add()` (que so rodava depois do getEbook)
+    // havia uma janela em que o id nao estava nem na fila nem em activeJobs --
+    // uma chamada concorrente a ensureGenerationRunning() nessa janela (a tela
+    // de progresso faz polling em GET /:id) via o id livre, reenfileirava, e
+    // um segundo runJob() do MESMO ebook comecava. Foi o que aconteceu em
+    // "Sombras de Vidro": 27 capitulos gravados (com custo de OpenAI cobrado)
+    // para um livro de 19. A janela do reservados/queuedJobs em
+    // ensureGenerationRunning ja fechava a outra ponta dessa mesma corrida;
+    // esta era a que faltava.
     activeJobs.add(nextId);
+    const row = await getEbook(nextId);
+    if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") {
+      activeJobs.delete(nextId);
+      continue;
+    }
     void runJob(nextId);
   }
 }

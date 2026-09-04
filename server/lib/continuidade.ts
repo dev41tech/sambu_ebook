@@ -25,7 +25,7 @@ const NAO_SAO_NOMES_BRUTO = [
   "por", "quando", "que", "se", "sem", "sob", "sobre", "um", "uma", "e",
   "agora", "ainda", "além", "antes", "apesar", "após", "assim", "até", "cada", "certa", "certo",
   "depois", "durante", "enquanto", "então", "essa", "esse", "esta", "este", "eu", "ela", "ele",
-  "elas", "eles", "havia", "hoje", "logo", "mesmo", "muito", "nada", "não", "nunca", "outra",
+  "elas", "eles", "você", "vocês", "tu", "havia", "hoje", "logo", "mesmo", "muito", "nada", "não", "nunca", "outra",
   "outro", "pouco", "primeira", "primeiro", "quase", "sempre", "só", "talvez", "tanto", "todas",
   "todo", "todos", "tudo", "última", "último", "capítulo", "parte", "livro", "introdução",
   "conclusão", "segunda", "segundas", "terceira", "janeiro", "fevereiro", "março", "abril",
@@ -65,7 +65,14 @@ export function extrairNomes(texto: string): Map<string, number> {
   const total = new Map<string, number>();
   const meioDeFrase = new Map<string, number>();
 
-  const re = /\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]{2,})\b/g;
+  // \b nao serve aqui: em JS ele usa a definicao ASCII de "caractere de
+  // palavra", entao nao reconhece letra acentuada. "Você" perdia o "e" final
+  // e virava "Voc"; "José" virava "Jos" -- e se um personagem se chamasse
+  // Jose de verdade, ele batia como "personagem nao autorizado" contra o
+  // proprio elenco, porque o nome comparado nunca era o nome inteiro. Troquei
+  // por lookaround que enxerga a letra acentuada como parte da palavra.
+  const LETRA = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const re = new RegExp(`(?<![${LETRA}])([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]{2,})(?![${LETRA}])`, "g");
   for (const m of texto.matchAll(re)) {
     const nome = m[1];
     if (NAO_SAO_NOMES.has(normalizar(nome))) continue;
@@ -119,6 +126,28 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
     for (const parte of p.nome.split(/\s+/)) autorizados.add(normalizar(parte));
   }
 
+  // Palavras que vêm de um fato fixo ou da descrição de um personagem -- nome
+  // de cidade, negócio, evento -- não são candidatas a "personagem". Efeito
+  // colateral real do proprio fato fixo funcionando: pedir para o livro
+  // repetir "Colinas do Mar", "Padaria da Praia" e "Sabores da Esquina" sem
+  // variar fez essas palavras aparecerem dezenas de vezes cada, e cada uma
+  // isolada virou um falso "personagem nao autorizado" sem este filtro.
+  // "São Paulo", citado so na descricao de um personagem ("recem-chegado de
+  // Sao Paulo"), pegou o mesmo problema -- por isso a descricao entra aqui
+  // tambem, nao so o texto do fato fixo.
+  const termosDeFatos = new Set<string>();
+  const LETRA_TERMO = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const reTermo = new RegExp(`(?<![${LETRA_TERMO}])[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?![${LETRA_TERMO}])`, "g");
+  const fontesDeTermos = [
+    ...(e.outline.fatosFixos ?? []),
+    ...elenco.map((p) => p.descricao ?? ""),
+  ];
+  for (const fonte of fontesDeTermos) {
+    for (const palavra of fonte.match(reTermo) ?? []) {
+      termosDeFatos.add(normalizar(palavra));
+    }
+  }
+
   // Frequência no corpo do livro: quem aparece muito é personagem de fato, e é
   // com esse conjunto que a introdução e a conclusão precisam concordar.
   const corpo = new Map<string, number>();
@@ -142,6 +171,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   // Protagonista inventado: nome muito recorrente que não está no elenco.
   if (elenco.length > 0) {
     for (const nome of recorrentes) {
+      if (termosDeFatos.has(normalizar(nome))) continue;
       if (!autorizados.has(normalizar(nome))) {
         const ocorrencias = corpo.get(nome) ?? 0;
         achados.push({
@@ -152,6 +182,46 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
           sugestao: `Incluir "${nome}" no elenco ou substituir pelo nome correto.`,
         });
       }
+    }
+  }
+
+  // Personagem abandonado: tem peso narrativo cedo no livro e some depois. É
+  // diferente de "personagem-nao-autorizado" -- aquele so pergunta "esta no
+  // elenco?"; este pergunta "some da historia?", e vale ate para quem esta no
+  // elenco. Caso real: "Dona Marta" provoca o conflito inicial nos capitulos 3
+  // e 4 de "Amor na Esquina" e nunca mais aparece nos 16 capitulos seguintes.
+  if (e.capitulos.length >= 6) {
+    const primeiroTerco = Math.max(1, Math.floor(e.capitulos.length / 3));
+    const antesMap = new Map<string, number>();
+    const depoisMap = new Map<string, number>();
+    for (const c of e.capitulos) {
+      const alvo = c.idx < primeiroTerco ? antesMap : depoisMap;
+      for (const [nome, n] of extrairNomes(c.content || "")) {
+        alvo.set(nome, (alvo.get(nome) ?? 0) + n);
+      }
+    }
+    const protagonistas = new Set(
+      elenco
+        .filter((p) => /protagonista|par rom|antagonista/i.test(p.papel))
+        .map((p) => normalizar(primeiroNome(p.nome))),
+    );
+    for (const [nome, n] of antesMap) {
+      // Mesmo piso que `recorrentes` usa mais acima (>=5): abaixo disso o
+      // detector de nomes pega tanto personagem de passagem quanto substantivo
+      // comum capitalizado por acaso ("Feira", de "Feira Cultural";
+      // "Macchiato", o produto do cardapio) -- nenhum dos dois e alguem para
+      // "abandonar".
+      if (n < 5) continue;
+      if (protagonistas.has(normalizar(nome))) continue;
+      if (termosDeFatos.has(normalizar(nome))) continue;
+      if ((depoisMap.get(nome) ?? 0) > 0) continue;
+      achados.push({
+        categoria: "personagem-abandonado",
+        gravidade: "warning",
+        local: "capítulos",
+        evidencia: `"${nome}" aparece ${n}× no primeiro terço do livro e não aparece mais depois disso — provável subtrama abandonada.`,
+        sugestao: `Trazer "${nome}" de volta em algum capítulo posterior, ou reduzir sua participação inicial se ela não tiver função no resto da história.`,
+      });
     }
   }
 
@@ -180,6 +250,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
     for (const [nome, n] of extrairNomes(texto)) {
       if (n < 2) continue; // menção única pode ser cidade, marca, mês
       if (palavrasDeTitulo.has(normalizar(nome))) continue;
+      if (termosDeFatos.has(normalizar(nome))) continue;
       if (!conhecidos.has(normalizar(nome))) {
         achados.push({
           categoria: "personagem-fantasma",
