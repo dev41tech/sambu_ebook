@@ -13,6 +13,7 @@ node scripts/aplicar-migration.mjs db/migrations/0004_learnings_por_genero.sql
 node scripts/aplicar-migration.mjs db/migrations/0005_achados_continuidade.sql
 node scripts/aplicar-migration.mjs db/migrations/0006_meta_palavras.sql
 node scripts/aplicar-migration.mjs db/migrations/0007_aprovacao_sumario.sql
+node scripts/aplicar-migration.mjs db/migrations/0008_estado_narrativo.sql
 ```
 
 O script lê `DATABASE_URL` do ambiente. Com `psql` disponível, o equivalente é
@@ -29,6 +30,7 @@ quebra.
 | 0005 | Coluna `ebooks.continuity_json` | A verificação de continuidade falha ao gravar (é capturada, mas nunca registra nada) |
 | 0006 | Colunas `ebooks.extension_mode` e `ebooks.word_goal` | A criação de ebook quebra: o INSERT cita colunas que não existem |
 | 0007 | Colunas `ebooks.outline_approval` e `ebooks.outline_approved_at` | A criação de ebook quebra pelo mesmo motivo |
+| 0008 | Coluna `chapters.state_json` | **A geração quebra no primeiro capítulo**: o UPDATE que grava o estado cita uma coluna que não existe |
 
 A 0006 também preenche `word_goal` dos ebooks existentes com
 `page_count * words_per_page`, para que os dois modos contem a mesma história
@@ -37,7 +39,7 @@ os ebooks atuais se comportam — nada muda para eles.
 
 ### Teste rápido depois de aplicar
 
-Criar um ebook pela tela é o caminho mais curto para confirmar que as cinco
+Criar um ebook pela tela é o caminho mais curto para confirmar que as seis
 migrations pegaram: o `INSERT` cita colunas de 0006 e 0007, e a tela de
 categorias depende da tabela de 0003.
 
@@ -163,10 +165,59 @@ Por isso existe um escape: a caixa **"Publicar mesmo assim"** na tela, que envia
 `ignorar_bloqueios: true`. Sem ela, esses quatro livros ficariam impossíveis de
 reexportar — pior do que o defeito que se quer evitar.
 
+### Continuidade entre capítulos
+
+O defeito que restava depois de tudo acima: **nenhum capítulo lia os
+anteriores**. `generateChapter` recebia `previousChapterTitles` — uma lista de
+strings — junto com a ordem de "não repetir o mesmo conteúdo ou os mesmos
+exemplos deles". O modelo era mandado a não repetir textos que nunca tinha
+visto. Um personagem criado na prosa do capítulo 12 não existia em lugar nenhum
+quando o 13 era escrito, e o prompt ainda dizia, 75 vezes, que "personagens
+secundários novos são permitidos".
+
+Agora cada capítulo devolve, na mesma chamada, um bloco de estado com o que ele
+escreveu — resumo, personagens criados, fios abertos. O bloco é separado da
+prosa (`separarEstado`), gravado em `chapters.state_json` e repassado ao capítulo
+seguinte, junto com o elenco acumulado. Sem chamada extra à OpenAI.
+
+Se o JSON do bloco vier quebrado, o capítulo ainda é salvo limpo: perder o
+registro de um capítulo é melhor do que publicar `===ESTADO=== {...` no fim dele.
+O caso está coberto por teste.
+
+Mudanças que vêm junto:
+
+- **System prompt separado para ficção.** O anterior era um só, com sete regras
+  de estilo e nenhuma linha sobre continuidade, e mandava um romance "não dizer
+  apenas o que o leitor deve fazer" e "nunca inventar experiências pessoais" —
+  em ficção, inventar é o trabalho. `ehFiccao()` agora escolhe entre
+  `SISTEMA_FICCAO` e `SISTEMA_NAO_FICCAO`.
+- **Aberturas e fechamentos de ficção.** As listas eram de não ficção ("uma
+  pergunta legítima que o leitor provavelmente já se fez"), aplicadas a
+  romances. E o par abertura/fechamento andava em lockstep: com `i % 8` e
+  `i % 6`, a mesma combinação voltava a cada 24 capítulos.
+- **A introdução passou a ser escrita depois dos capítulos**, com os resumos
+  reais na mão; a conclusão recebe o que de fato aconteceu, não a lista de
+  títulos. As duas abriam e fechavam um livro que não tinham lido.
+- **O sumário de ficção diz o que acontece em cada capítulo** e quais
+  personagens entram nele, com verba de tokens para isso (era ~53 tokens por
+  capítulo num livro de 75). A checagem de capítulos órfãos já sabia acusar que
+  36 de 84 capítulos não citavam ninguém do elenco — nada tinha pedido que
+  citassem.
+- **`finish_reason` é checado.** Truncamento por teto de tokens era silencioso:
+  em JSON aparecia adiante como "Unexpected end of JSON input", em prosa
+  entregava capítulo cortado no meio da frase.
+- **A humanização recebe os nomes do elenco** e a ordem de não alterá-los. Ela
+  roda por capítulo, sem sumário, e ao "remover generalizações vagas" podia
+  trocar um nome próprio sem saber que era uma referência.
+- **`category_main` passa a decidir o que é ficção** também na escrita. Era o
+  `theme` que decidia em `ai.ts` e o `category_main` na verificação de
+  continuidade: quando discordavam, o livro era escrito sem elenco e depois
+  cobrado como ficção.
+
 ### Testes
 
-O projeto não tinha nenhum. Agora `npm test` roda 12 casos cobrindo as
-regressões reais do acervo. Não precisam de banco: `avaliarQualidade` é pura e o
+O projeto não tinha nenhum. Agora `npm test` roda 22 casos cobrindo as
+regressões reais do acervo e o parser do bloco de estado. Não precisam de banco: `avaliarQualidade` é pura e o
 envelope que lê do Postgres vive na rota.
 
 ---
@@ -199,3 +250,15 @@ Dois ebooks gerados de ponta a ponta neste branch:
   registrado como teste em `qualityGate.test.ts` para não virar surpresa.
 - **Nome composto conta como duas pessoas.** "Bezerra de Menezes" vira
   "Bezerra" e "Menezes" na extração.
+- **O bloco de estado depende de o modelo obedecer.** Quando ele não vem, o
+  capítulo é salvo normalmente e o seguinte perde o contexto daquele — fica um
+  `[continuidade]` no log do servidor, não um erro na tela.
+- **A janela de resumos é de 8 capítulos.** Num livro de 75, o capítulo 60 vê os
+  resumos de 52 a 59, o elenco acumulado e os fios abertos, mas não os resumos
+  de 1 a 51. É a troca entre contexto e custo por chamada; nada garante a
+  coerência de um fio aberto no capítulo 3 e retomado no 70.
+- **O sumário continua saindo de uma chamada só.** Ele ficou mais rico e ganhou
+  verba de tokens, mas para livros muito longos a planificação em duas passadas
+  (partes e depois capítulos) continua sendo o caminho — não foi feita aqui.
+- **A verificação de continuidade segue rodando só no fim.** Os achados são
+  gravados em `continuity_json` e não voltam para o prompt de nenhum capítulo.

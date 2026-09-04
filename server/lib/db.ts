@@ -140,8 +140,15 @@ export interface ChapterRow {
   ebook_id: string;
   idx: number;
   title: string;
+  /** Resumo PLANEJADO pelo sumario, gravado antes da escrita. */
   summary: string;
   content: string;
+  /**
+   * EstadoCapitulo serializado: o que este capitulo de fato escreveu, para o
+   * proximo continuar de onde ele parou. Vazio em capitulo importado ou escrito
+   * antes da migration 0008. Ver server/lib/ai.ts.
+   */
+  state_json: string;
   audio_path: string | null;
 }
 

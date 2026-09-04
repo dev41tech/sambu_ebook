@@ -36,12 +36,6 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
     });
   }
 
-  items.push({
-    key: "intro",
-    label: "Introdução",
-    status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
-  });
-
   const chaptersDone = ebook.chapters_done;
   for (let i = 0; i < ebook.chapters_total; i++) {
     const chapter = ebook.chapters[i];
@@ -54,6 +48,14 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
       status: isDone ? "done" : isCurrent ? "current" : "pending",
     });
   }
+
+  // A introdução vem depois dos capítulos porque é depois deles que ela é
+  // escrita: antes ela abria um livro que ainda não existia.
+  items.push({
+    key: "intro",
+    label: "Introdução",
+    status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
+  });
 
   if (ebook.generate_images) {
     items.push({
@@ -160,9 +162,11 @@ export default function Generating() {
   const hasCover = !!ebook?.generate_cover;
   const hasImages = !!ebook?.generate_images;
   const hasAbout = !!(ebook?.include_about && ebook?.author_name);
-  const stepsBeforeChapters = 2 + (hasCover ? 1 : 0); // outline + intro (+ capa)
-  const stepsAfterChapters = 1 + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // conclusão (+ imagens + sobre o autor)
-  const totalSteps = stepsBeforeChapters + Math.max(chaptersTotal, 1) + stepsAfterChapters;
+  // Etapas que não são capítulo. A introdução conta aqui mesmo tendo passado a
+  // rodar depois deles — a barra mede quanto falta, não a ordem.
+  const stepsSemCapitulo =
+    3 + (hasCover ? 1 : 0) + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // sumário + introdução + conclusão
+  const totalSteps = stepsSemCapitulo + Math.max(chaptersTotal, 1);
   const imagesFraction = hasImages && ebook && ebook.image_count > 0 ? ebook.images_done / ebook.image_count : 0;
   const doneSteps =
     (chaptersTotal > 0 ? 1 : 0) +

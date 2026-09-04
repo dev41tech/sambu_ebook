@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { all, one, run, sql, type EbookRow } from "./db";
+import { all, one, run, sql, type ChapterRow, type EbookRow } from "./db";
 import {
   generateOutline,
   generateIntro,
@@ -7,7 +7,10 @@ import {
   generateConclusion,
   generateAboutAuthor,
   humanizeText,
+  elencoAcumulado,
+  type CapituloEscrito,
   type EbookContext,
+  type EstadoCapitulo,
   type Outline,
 } from "./ai";
 import { renderEbookPdf } from "./pdf";
@@ -46,9 +49,14 @@ async function setStep(id: string, step: string) {
 // A humanizacao e uma segunda passada sobre um texto que ja esta pronto. Se ela
 // recusar ou devolver lixo, perder o rascunho bom -- ou derrubar o livro inteiro
 // no capitulo 60 -- e pior do que publicar o rascunho sem essa passada.
-async function humanizarOuManter(draft: string, rotulo: string, maxTokens: number): Promise<string> {
+async function humanizarOuManter(
+  draft: string,
+  rotulo: string,
+  maxTokens: number,
+  nomes: string[] = []
+): Promise<string> {
   try {
-    return await humanizeText(draft, rotulo, maxTokens);
+    return await humanizeText(draft, rotulo, maxTokens, nomes);
   } catch (err) {
     console.warn(`[geracao] humanizacao ignorada em ${rotulo}: ${err instanceof Error ? err.message : err}`);
     return draft;
@@ -62,6 +70,10 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   );
   return {
     theme: row.theme,
+    // A decisao de ficcao vinha do `theme` aqui e do `category_main` na
+    // verificacao de continuidade -- quando os dois discordavam, o livro era
+    // escrito sem elenco e depois cobrado como ficcao.
+    categoryMain: row.category_main || null,
     secondaryCategories: (() => {
       try {
         const v = JSON.parse(row.categories_secondary || "[]");
@@ -182,33 +194,85 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 3: introdução (intro === '' significa "conteúdo importado sem introdução
-    // separada" — só regeramos por IA quando o campo ainda é NULL, nunca escrito).
-    if (row.intro === null) {
-      await setStep(ebookId, "intro");
-      const draft = await generateIntro(ctx, outline);
-      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500);
-      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
-      row = (await getEbook(ebookId))!;
-    }
-
-    // Etapa 4: capítulos, um de cada vez
-    const chapters = await all<{ id: string; idx: number; title: string; summary: string; content: string }>(
+    // Etapa 3: capítulos, um de cada vez, cada um recebendo o que os anteriores
+    // deixaram para trás.
+    //
+    // Antes o capítulo recebia só a LISTA DE TÍTULOS dos anteriores, e a
+    // introdução era escrita aqui, antes de qualquer capítulo existir. Um
+    // personagem criado na prosa do capítulo 12 não chegava ao 13, e a
+    // introdução abria um livro que não tinha lido. Agora cada capítulo devolve
+    // um estado (resumo, personagens novos, fios abertos) que alimenta o
+    // seguinte, e a introdução foi para o fim.
+    const chapters = await all<ChapterRow>(
       "SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
       [ebookId]
     );
 
+    // Capítulos já escritos numa execução anterior entram no histórico com o
+    // estado que tiverem: sem isto, retomar um livro interrompido no capítulo 40
+    // recomeçaria a história do zero a partir dali.
+    const escritos: CapituloEscrito[] = [];
+    const lerEstado = (bruto: string | null): EstadoCapitulo | null => {
+      if (!bruto) return null;
+      try {
+        return JSON.parse(bruto) as EstadoCapitulo;
+      } catch {
+        return null;
+      }
+    };
+
     for (const chapter of chapters) {
-      if (chapter.content && chapter.content.trim().length > 0) continue;
+      if (chapter.content && chapter.content.trim().length > 0) {
+        escritos.push({
+          idx: chapter.idx,
+          title: chapter.title,
+          estado: lerEstado(chapter.state_json),
+        });
+        continue;
+      }
       await setStep(ebookId, "chapter");
-      const previousTitles = chapters.filter((c) => c.idx < chapter.idx).map((c) => c.title);
-      const draft = await generateChapter(ctx, outline, chapter.idx, previousTitles);
-      const content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000);
-      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
+      const { texto, estado } = await generateChapter(ctx, outline, chapter.idx, escritos);
+      const nomes = elencoAcumulado(outline, escritos).map((p) => p.nome);
+      const content = await humanizarOuManter(
+        texto,
+        `Capítulo "${chapter.title}" do ebook "${outline.title}"`,
+        4000,
+        nomes
+      );
+      await run("UPDATE chapters SET content = $1, state_json = $2 WHERE id = $3", [
+        content,
+        estado ? JSON.stringify(estado) : "",
+        chapter.id,
+      ]);
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+      // O estado sai do rascunho, antes da humanização: é o registro do que foi
+      // escrito, não do texto final revisado.
+      escritos.push({ idx: chapter.idx, title: chapter.title, estado });
+      if (!estado) {
+        console.warn(
+          `[continuidade] capitulo ${chapter.idx + 1} de ${ebookId} nao devolveu estado; o proximo perde o contexto dele.`
+        );
+      }
     }
 
     row = (await getEbook(ebookId))!;
+
+    // Etapa 3b: introdução, agora que existe um livro para ela abrir.
+    // (intro === '' significa "conteúdo importado sem introdução separada" — só
+    // geramos por IA quando o campo ainda é NULL, nunca escrito.)
+    if (row.intro === null) {
+      await setStep(ebookId, "intro");
+      const draft = await generateIntro(ctx, outline, escritos);
+      const nomes = elencoAcumulado(outline, escritos).map((p) => p.nome);
+      const intro = await humanizarOuManter(
+        draft,
+        `Introdução do ebook "${outline.title}"`,
+        1500,
+        nomes
+      );
+      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
+      row = (await getEbook(ebookId))!;
+    }
 
     // Etapa 4b: imagens internas (opcional), distribuídas entre os capítulos em sequência
     if (row.generate_images && chapters.length > 0 && row.images_done < row.image_count) {
@@ -262,8 +326,14 @@ async function runJob(ebookId: string) {
     // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
-      const draft = await generateConclusion(ctx, outline);
-      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200);
+      const draft = await generateConclusion(ctx, outline, escritos);
+      const nomes = elencoAcumulado(outline, escritos).map((p) => p.nome);
+      const conclusion = await humanizarOuManter(
+        draft,
+        `Conclusão do ebook "${outline.title}"`,
+        1200,
+        nomes
+      );
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;
     }
