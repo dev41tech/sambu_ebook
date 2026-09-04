@@ -9,8 +9,10 @@ import {
   humanizeText,
   resumirCapitulo,
   expandirCapitulo,
+  elencoEfetivo,
   type EbookContext,
   type Outline,
+  type Personagem,
 } from "./ai";
 import { renderEbookPdf } from "./pdf";
 import { renderEbookDocx } from "./docx";
@@ -52,10 +54,11 @@ async function humanizarOuManter(
   draft: string,
   rotulo: string,
   maxTokens: number,
-  caminhoCategoria = ""
+  caminhoCategoria = "",
+  nomes: string[] = []
 ): Promise<string> {
   try {
-    return await humanizeText(draft, rotulo, maxTokens, caminhoCategoria);
+    return await humanizeText(draft, rotulo, maxTokens, caminhoCategoria, nomes);
   } catch (err) {
     console.warn(`[geracao] humanizacao ignorada em ${rotulo}: ${err instanceof Error ? err.message : err}`);
     return draft;
@@ -207,7 +210,24 @@ async function runJob(ebookId: string) {
       summary: string;
       content: string;
       resumo_fatos: string | null;
+      personagens_json: string | null;
     }>("SELECT * FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC", [ebookId]);
+
+    // Elenco que nasceu na prosa. O do sumario resolve o protagonista; este
+    // resolve o resto -- sem ele, cada capitulo inventava os proprios
+    // secundarios e nenhum sabia dos anteriores.
+    const lerPersonagens = (bruto: string | null): Personagem[] => {
+      if (!bruto) return [];
+      try {
+        const v = JSON.parse(bruto);
+        return Array.isArray(v) ? (v as Personagem[]) : [];
+      } catch {
+        return [];
+      }
+    };
+    // Capitulos ja escritos numa execucao anterior devolvem seu elenco: retomar
+    // um livro interrompido no capitulo 40 nao pode perder quem foi criado ate la.
+    const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
@@ -220,8 +240,15 @@ async function runJob(ebookId: string) {
         .filter((c) => c.idx < chapter.idx)
         .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
 
-      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores);
-      let content = await humanizarOuManter(draft, `Capítulo "${chapter.title}" do ebook "${outline.title}"`, 4000, ctx.theme);
+      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores, registrados);
+      const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
+      let content = await humanizarOuManter(
+        draft,
+        `Capítulo "${chapter.title}" do ebook "${outline.title}"`,
+        4000,
+        ctx.theme,
+        nomes,
+      );
 
       // Forca o minimo: pedir a meta certa nao garante que ela seja cumprida, e
       // sem este segundo passo o livro fechava abaixo do prometido mesmo depois
@@ -253,10 +280,17 @@ async function runJob(ebookId: string) {
       // o livro: sem resumo o capitulo seguinte volta a receber so o titulo,
       // que e o comportamento antigo -- pior, mas nao fatal.
       try {
-        const resumo = await resumirCapitulo(ctx, chapter.title, content);
-        await run("UPDATE chapters SET resumo_fatos = $1 WHERE id = $2", [resumo, chapter.id]);
-        // O array em memoria alimenta o proximo capitulo desta mesma execucao.
+        const { resumo, personagensNovos } = await resumirCapitulo(ctx, chapter.title, content);
+        const novos = JSON.stringify(personagensNovos);
+        await run("UPDATE chapters SET resumo_fatos = $1, personagens_json = $2 WHERE id = $3", [
+          resumo,
+          novos,
+          chapter.id,
+        ]);
+        // Os dois arrays em memoria alimentam o proximo capitulo desta mesma execucao.
         chapter.resumo_fatos = resumo;
+        chapter.personagens_json = novos;
+        registrados.push(...personagensNovos);
       } catch (err) {
         console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
       }
@@ -325,8 +359,14 @@ async function runJob(ebookId: string) {
         title: c.title,
         resumo: c.resumo_fatos,
       }));
-      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao);
-      const conclusion = await humanizarOuManter(draft, `Conclusão do ebook "${outline.title}"`, 1200, ctx.theme);
+      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao, registrados);
+      const conclusion = await humanizarOuManter(
+        draft,
+        `Conclusão do ebook "${outline.title}"`,
+        1200,
+        ctx.theme,
+        elencoEfetivo(outline, registrados).map((p) => p.nome),
+      );
       await run("UPDATE ebooks SET conclusion = $1 WHERE id = $2", [conclusion, ebookId]);
       row = (await getEbook(ebookId))!;
     }
