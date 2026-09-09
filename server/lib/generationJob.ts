@@ -10,6 +10,10 @@ import {
   resumirCapitulo,
   expandirCapitulo,
   elencoEfetivo,
+  condensarBloco,
+  CAPITULOS_POR_BLOCO,
+  type BlocoDeMemoria,
+  type CapituloAnterior,
   type EbookContext,
   type Outline,
   type Personagem,
@@ -25,7 +29,7 @@ import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings, grupoDaCategoria } from "./memory";
 import { startAudiobookGeneration } from "./tts";
 import { mensagemDeErroParaUsuario } from "./sanitizar";
-import { verificarContinuidade, contarPorGravidade } from "./continuidade";
+import { verificarContinuidade, contarPorGravidade, extrairNomes } from "./continuidade";
 import { ehFiccao } from "../../src/lib/categorias";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
@@ -38,6 +42,16 @@ const activeJobs = new Set<string>();
 // mesmo ebook e dois jobs escreviam os mesmos capitulos.
 const reservados = new Set<string>();
 const queuedJobs: string[] = [];
+
+// De quantos em quantos capitulos a verificacao de continuidade roda no MEIO da
+// geracao, em vez de so no fim.
+//
+// A verificacao ja sabia apontar capitulo orfao -- mas so depois do livro
+// pronto, quando reescrever significa pagar tudo de novo. Rodando a cada bloco,
+// o capitulo que trocou os protagonistas e reescrito na hora, com o defeito
+// nomeado no proprio prompt. Precisa ser >= 8, que e o piso de amostra que a
+// checagem de capitulos orfaos exige.
+const CHECAGEM_A_CADA = 10;
 
 function getEbook(id: string): Promise<EbookRow | undefined> {
   return one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
@@ -192,17 +206,12 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 3: introdução (intro === '' significa "conteúdo importado sem introdução
-    // separada" — só regeramos por IA quando o campo ainda é NULL, nunca escrito).
-    if (row.intro === null) {
-      await setStep(ebookId, "intro");
-      const draft = await generateIntro(ctx, outline);
-      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500, ctx.theme);
-      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
-      row = (await getEbook(ebookId))!;
-    }
-
-    // Etapa 4: capítulos, um de cada vez
+    // Etapa 3: capítulos, um de cada vez.
+    //
+    // A introdução era escrita AQUI, antes de qualquer capítulo existir, com os
+    // títulos do sumário como única fonte -- abria um livro que ainda não tinha
+    // sido escrito. Passou para depois dos capítulos (etapa 5), onde recebe os
+    // mesmos resumos reais que a conclusão sempre recebeu.
     const chapters = await all<{
       id: string;
       idx: number;
@@ -229,18 +238,39 @@ async function runJob(ebookId: string) {
     // um livro interrompido no capitulo 40 nao pode perder quem foi criado ate la.
     const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
-    for (const chapter of chapters) {
-      if (chapter.content && chapter.content.trim().length > 0) continue;
-      await setStep(ebookId, "chapter");
+    const ficcao = ehFiccao(row.category_main || row.theme);
+    const chaveNome = (n: string) => n.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 
-      // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
-      // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
-      // mundo dentro da jangada, no mar.
-      const anteriores = chapters
-        .filter((c) => c.idx < chapter.idx)
+    let memoriaLonga: BlocoDeMemoria[] = (() => {
+      if (!row.memoria_longa) return [];
+      try {
+        const v = JSON.parse(row.memoria_longa);
+        return Array.isArray(v) ? (v as BlocoDeMemoria[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+
+    // Um capitulo so e reescrito uma vez por execucao: sem este teto, uma
+    // checagem que continuasse reprovando faria o mesmo capitulo ser pago em loop.
+    const reescritos = new Set<number>();
+
+    // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
+    // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
+    // mundo dentro da jangada, no mar.
+    const anterioresAte = (idx: number): CapituloAnterior[] =>
+      chapters
+        .filter((c) => c.idx < idx)
         .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
 
-      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores, registrados);
+    const escrever = async (
+      chapter: { id: string; idx: number; title: string },
+      correcao?: string,
+    ): Promise<string> => {
+      const draft = await generateChapter(ctx, outline, chapter.idx, anterioresAte(chapter.idx), registrados, {
+        memoriaLonga,
+        correcao,
+      });
       const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
       let content = await humanizarOuManter(
         draft,
@@ -272,16 +302,59 @@ async function runJob(ebookId: string) {
           console.warn(`[geracao] expansao do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
         }
       }
+      return content;
+    };
 
-      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
-      await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+    /**
+     * Plano B para quando o modelo devolve `personagensNovos` vazio -- falha
+     * silenciosa que faz o secundario recem-criado sumir do livro do mesmo jeito
+     * de antes do registro existir. Reaproveita o detector de nomes proprios da
+     * verificacao de continuidade: nome que aparece 3+ vezes num capitulo e nao
+     * esta entre os conhecidos e, quase sempre, alguem que nasceu ali.
+     */
+    const personagensPorHeuristica = (conteudo: string, idx: number): Personagem[] => {
+      const conhecidos = new Set(elencoEfetivo(outline, registrados).map((p) => chaveNome(p.nome)));
+      const novos: Personagem[] = [];
+      for (const [nome, n] of extrairNomes(conteudo)) {
+        if (n < 3) continue;
+        if (conhecidos.has(chaveNome(nome))) continue;
+        novos.push({
+          nome,
+          papel: "apoio",
+          descricao: `Detectado automaticamente no capítulo ${idx + 1} (${n} menções); o registro do modelo não o listou.`,
+        });
+        conhecidos.add(chaveNome(nome));
+        // Teto baixo de proposito: o detector e um sinal, nao uma certeza, e um
+        // elenco inflado por falso positivo atrapalha os capitulos seguintes
+        // mais do que a ausencia de um secundario.
+        if (novos.length >= 5) break;
+      }
+      return novos;
+    };
 
-      // Resumo factual para os proximos capitulos. Falhar aqui nao pode derrubar
-      // o livro: sem resumo o capitulo seguinte volta a receber so o titulo,
-      // que e o comportamento antigo -- pior, mas nao fatal.
+    // Resumo factual para os proximos capitulos, e quem nasceu neste. Falhar
+    // aqui nao pode derrubar o livro: sem resumo o capitulo seguinte volta a
+    // receber so o titulo, que e o comportamento antigo -- pior, mas nao fatal.
+    const registrar = async (
+      chapter: (typeof chapters)[number],
+      content: string,
+    ): Promise<void> => {
       try {
         const { resumo, personagensNovos } = await resumirCapitulo(ctx, chapter.title, content);
-        const novos = JSON.stringify(personagensNovos);
+        const detectados =
+          ficcao && personagensNovos.length === 0
+            ? personagensPorHeuristica(content, chapter.idx)
+            : personagensNovos;
+
+        // Numa reescrita o capitulo ja tem gente registrada. Sobrescrever a
+        // coluna com o resultado desta passada apagaria do banco quem ele havia
+        // apresentado antes.
+        const jaNoCapitulo = lerPersonagens(chapter.personagens_json);
+        const vistos = new Set(jaNoCapitulo.map((p) => chaveNome(p.nome)));
+        const ineditos = detectados.filter((p) => !vistos.has(chaveNome(p.nome)));
+        const doCapitulo = [...jaNoCapitulo, ...ineditos];
+        const novos = JSON.stringify(doCapitulo);
+
         await run("UPDATE chapters SET resumo_fatos = $1, personagens_json = $2 WHERE id = $3", [
           resumo,
           novos,
@@ -290,9 +363,91 @@ async function runJob(ebookId: string) {
         // Os dois arrays em memoria alimentam o proximo capitulo desta mesma execucao.
         chapter.resumo_fatos = resumo;
         chapter.personagens_json = novos;
-        registrados.push(...personagensNovos);
+        for (const p of ineditos) {
+          if (!registrados.some((r) => chaveNome(r.nome) === chaveNome(p.nome))) registrados.push(p);
+        }
       } catch (err) {
         console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    // A verificacao ja sabia apontar capitulo orfao, mas so depois do livro
+    // pronto: avisava, nao corrigia. Aqui ela roda a cada bloco e o capitulo
+    // reprovado e reescrito na hora, com o defeito nomeado no proprio prompt.
+    const checarEReescrever = async (ateIdx: number): Promise<void> => {
+      try {
+        const escritos = chapters
+          .filter((c) => c.idx <= ateIdx && c.content && c.content.trim().length > 0)
+          .map((c) => ({ idx: c.idx, title: c.title, content: c.content }));
+        if (escritos.length < 8) return; // piso de amostra da checagem de orfaos
+
+        const achados = verificarContinuidade({
+          outline,
+          intro: null,
+          conclusao: null,
+          capitulos: escritos,
+          ficcao: true,
+          elencoRegistrado: registrados,
+        });
+
+        const alvos = new Set<number>();
+        for (const a of achados) {
+          if (a.gravidade !== "blocker" && a.gravidade !== "major") continue;
+          for (const idx of a.capitulosAfetados ?? []) alvos.add(idx);
+        }
+
+        for (const idx of [...alvos].sort((a, b) => a - b)) {
+          if (reescritos.has(idx)) continue;
+          const alvo = chapters.find((c) => c.idx === idx);
+          if (!alvo) continue;
+          reescritos.add(idx);
+          await setStep(ebookId, "chapter");
+          const content = await escrever(
+            alvo,
+            "Ele não citava nenhuma das figuras centrais do livro — provavelmente inventou um elenco próprio em vez de usar o que já existe. Reescreva-o com os personagens do elenco acima em cena, mantendo o mesmo assunto, a mesma função na estrutura e o mesmo resultado ao final.",
+          );
+          await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, alvo.id]);
+          alvo.content = content;
+          await registrar(alvo, content);
+          console.warn(`[continuidade] ${ebookId}: capitulo ${idx + 1} reescrito no meio da geracao`);
+        }
+      } catch (err) {
+        // A checagem intermediaria e um ganho, nao um requisito: falhar nela nao
+        // pode derrubar um livro que ja custou dinheiro ate aqui.
+        console.warn(`[continuidade] checagem intermediaria falhou em ${ebookId}:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    for (const chapter of chapters) {
+      if (chapter.content && chapter.content.trim().length > 0) continue;
+      await setStep(ebookId, "chapter");
+
+      const content = await escrever(chapter);
+      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
+      chapter.content = content;
+      await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+
+      await registrar(chapter, content);
+
+      // Memoria longa: a cada bloco fechado, os resumos daquele trecho viram um
+      // paragrafo so, que viaja ate o fim do livro. Sem isto, tudo que sai da
+      // janela dos 8 mais recentes voltava a ser apenas um titulo.
+      const jaCoberto = memoriaLonga.length > 0 ? Math.max(...memoriaLonga.map((b) => b.ate)) : -1;
+      if ((chapter.idx + 1) % CAPITULOS_POR_BLOCO === 0 && chapter.idx > jaCoberto) {
+        try {
+          const doBloco = chapters
+            .filter((c) => c.idx > jaCoberto && c.idx <= chapter.idx)
+            .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+          const resumo = await condensarBloco(ctx, doBloco);
+          memoriaLonga = [...memoriaLonga, { ate: chapter.idx, resumo }];
+          await run("UPDATE ebooks SET memoria_longa = $1 WHERE id = $2", [JSON.stringify(memoriaLonga), ebookId]);
+        } catch (err) {
+          console.warn(`[geracao] memoria longa ate o capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+        }
+      }
+
+      if (ficcao && (chapter.idx + 1) % CHECAGEM_A_CADA === 0) {
+        await checarEReescrever(chapter.idx);
       }
     }
 
@@ -347,19 +502,38 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
+    // Os resumos factuais de todos os capitulos ja existem a esta altura, e a
+    // introducao e a conclusao rodam depois deles. Sem isso as duas so viam
+    // titulos: a conclusao inventava cenas que nunca foram escritas ("bolos
+    // voando" num livro que nao tem essa cena em capitulo nenhum), e a
+    // introducao abria um livro que ainda nao existia.
+    const capitulosEscritos: CapituloAnterior[] = chapters.map((c) => ({
+      idx: c.idx,
+      title: c.title,
+      resumo: c.resumo_fatos,
+    }));
+
+    // Etapa 5: introdução (intro === '' significa "conteúdo importado sem
+    // introdução separada" — só regeramos por IA quando o campo ainda é NULL,
+    // nunca escrito).
+    if (row.intro === null) {
+      await setStep(ebookId, "intro");
+      const draft = await generateIntro(ctx, outline, registrados, capitulosEscritos);
+      const intro = await humanizarOuManter(
+        draft,
+        `Introdução do ebook "${outline.title}"`,
+        1500,
+        ctx.theme,
+        elencoEfetivo(outline, registrados).map((p) => p.nome),
+      );
+      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
+      row = (await getEbook(ebookId))!;
+    }
+
+    // Etapa 5b: conclusão (mesma lógica da introdução, logo acima)
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
-      // Os resumos factuais de todos os capitulos ja existem a esta altura --
-      // a conclusao roda depois de todos eles. Sem isso ela so via titulos e
-      // inventava cenas que nunca foram escritas ("bolos voando" num livro
-      // que nao tem essa cena em capitulo nenhum).
-      const capitulosParaConclusao = chapters.map((c) => ({
-        idx: c.idx,
-        title: c.title,
-        resumo: c.resumo_fatos,
-      }));
-      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao, registrados);
+      const draft = await generateConclusion(ctx, outline, capitulosEscritos, registrados);
       const conclusion = await humanizarOuManter(
         draft,
         `Conclusão do ebook "${outline.title}"`,
@@ -371,7 +545,7 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5b: sobre o autor (opcional)
+    // Etapa 5c: sobre o autor (opcional)
     if (row.include_about && row.author_name && !row.about_author) {
       await setStep(ebookId, "about");
       const about = await generateAboutAuthor(row.author_name, row.author_bio, row.language);
@@ -379,7 +553,7 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5c: verificacao de continuidade. Deterministica, sem chamada de IA,
+    // Etapa 5d: verificacao de continuidade. Deterministica, sem chamada de IA,
     // entao roda sempre e nao pesa no custo. So compara nomes -- nao aprova nem
     // reprova o livro, apenas registra onde o revisor precisa olhar.
     try {
@@ -392,7 +566,11 @@ async function runJob(ebookId: string) {
         intro: row.intro,
         conclusao: row.conclusion,
         capitulos: capitulosFinais,
-        ficcao: ehFiccao(row.category_main || row.theme),
+        ficcao,
+        // Sem isto a verificacao comparava o texto so contra o elenco do
+        // sumario, e acusava de "nao autorizado" um secundario criado e
+        // registrado corretamente no meio do livro.
+        elencoRegistrado: registrados,
       });
       await run("UPDATE ebooks SET continuity_json = $1 WHERE id = $2", [JSON.stringify(achados), ebookId]);
       if (achados.length > 0) {
@@ -461,6 +639,28 @@ export async function ensureGenerationRunning(ebookId: string) {
     reservados.delete(ebookId);
   }
   await startNextQueuedJob();
+}
+
+/**
+ * Retoma, ao subir, os livros que estavam sendo escritos quando o processo caiu.
+ *
+ * A geracao vive na memoria do processo. Um deploy no meio de um livro de trinta
+ * minutos deixava o registro travado em "generating" para sempre: sem erro, sem
+ * botao de tentar de novo na tela, e com os capitulos ja escritos e pagos
+ * parados no banco. Como o laco pula todo capitulo que ja tem conteudo, retomar
+ * custa apenas o que faltava -- nao o livro inteiro de novo.
+ */
+export async function retomarGeracoesInterrompidas(): Promise<void> {
+  const pendentes = await all<{ id: string; title: string; chapters_done: number; chapters_total: number }>(
+    "SELECT id, title, chapters_done, chapters_total FROM ebooks WHERE status = 'generating' ORDER BY created_at ASC",
+  );
+  if (pendentes.length === 0) return;
+
+  console.warn(`[geracao] retomando ${pendentes.length} livro(s) interrompido(s) por um reinicio do servidor.`);
+  for (const p of pendentes) {
+    console.warn(`[geracao] retomando "${p.title || p.id}" (${p.chapters_done}/${p.chapters_total} capitulos escritos).`);
+    await ensureGenerationRunning(p.id);
+  }
 }
 
 export async function finalizeEbookExport(ebookId: string): Promise<void> {

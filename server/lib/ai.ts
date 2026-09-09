@@ -504,15 +504,33 @@ ${fatos.map((f) => `- ${f}`).join("\n")}
 `;
 }
 
+/**
+ * A introducao roda DEPOIS dos capitulos, como a conclusao.
+ *
+ * Era a etapa 3, escrita quando nenhum capitulo existia ainda: abria um livro
+ * que nao tinha sido escrito, com os titulos do sumario como unica fonte.
+ * Recebendo os resumos reais, ela fala do livro que existe -- sem entregar o
+ * final, que e o risco novo que a troca de ordem cria.
+ */
 export async function generateIntro(
   ctx: EbookContext,
   outline: Outline,
-  registrados: Personagem[] = []
+  registrados: Personagem[] = [],
+  capitulos: CapituloAnterior[] = []
 ): Promise<string> {
+  const comResumo = capitulos.filter((c) => c.resumo);
+  const blocoLivro =
+    comResumo.length > 0
+      ? `
+O QUE O LIVRO REALMENTE CONTÉM, capítulo a capítulo — material de apoio para você acertar o tom, os nomes e o conflito. NÃO resuma nem liste isto na introdução, e não revele o desfecho:
+${comResumo.map((c) => `${c.idx + 1}. "${c.title}": ${c.resumo}`).join("\n")}
+`
+      : "";
+
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${blocoLivro}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -534,7 +552,25 @@ export interface CapituloAnterior {
  */
 const JANELA_DE_MEMORIA = 8;
 
-export function memoriaBlock(anteriores: CapituloAnterior[]): string {
+/** De quantos em quantos capitulos a memoria longa ganha um bloco novo. */
+export const CAPITULOS_POR_BLOCO = JANELA_DE_MEMORIA;
+
+/**
+ * Um trecho do livro ja condensado.
+ *
+ * A janela de 8 resolve a trama curta; isto resolve a longa. Num livro de 75
+ * capitulos, o 60 recebia os resumos do 52 ao 59 e tudo antes disso voltava a
+ * entrar so como titulo -- um fio aberto no capitulo 3 e retomado no 70 nao
+ * tinha garantia nenhuma. Mandar os 59 resumos inteiros custaria mais contexto
+ * do que o capitulo que se quer escrever; um paragrafo por bloco de 8, nao.
+ */
+export interface BlocoDeMemoria {
+  /** idx do ultimo capitulo coberto por este bloco. */
+  ate: number;
+  resumo: string;
+}
+
+export function memoriaBlock(anteriores: CapituloAnterior[], memoriaLonga: BlocoDeMemoria[] = []): string {
   if (anteriores.length === 0) return "Este é o primeiro capítulo do livro.\n";
 
   const recentes = anteriores.slice(-JANELA_DE_MEMORIA);
@@ -546,17 +582,50 @@ export function memoriaBlock(anteriores: CapituloAnterior[]): string {
       : `- Capítulo ${c.idx + 1} — "${c.title}" (sem resumo registrado)`,
   );
 
-  const antigosLinha =
-    antigos.length > 0
-      ? `
-Capítulos anteriores a esses, apenas pelos títulos: ${antigos.map((c) => `"${c.title}"`).join(", ")}.
+  // A memoria longa cobre do inicio do livro ate um certo capitulo. O que sobra
+  // entre ela e a janela dos recentes ainda entra so como titulo: e um bloco em
+  // formacao, no maximo os 7 capitulos que ainda nao fecharam um bloco.
+  const blocos = memoriaLonga.filter((b) => b.resumo && b.resumo.trim());
+  const cobertoAte = blocos.length > 0 ? Math.max(...blocos.map((b) => b.ate)) : -1;
+  const naoCobertos = antigos.filter((c) => c.idx > cobertoAte);
+
+  const blocoLonga =
+    blocos.length > 0
+      ? `ANTES DISSO, o livro até aqui, em resumo:
+${blocos
+  .slice()
+  .sort((a, b) => a.ate - b.ate)
+  .map((b) => `- ${b.resumo}`)
+  .join("\n")}
+
 `
       : "";
 
-  return `O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
+  const antigosLinha =
+    naoCobertos.length > 0
+      ? `
+Outros capítulos anteriores, apenas pelos títulos: ${naoCobertos.map((c) => `"${c.title}"`).join(", ")}.
+`
+      : "";
+
+  return `${blocoLonga}O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
 ${linhas.join("\n")}${antigosLinha}
 Não repita fatos, exemplos, cenas ou conclusões que já apareceram acima. Se algo ficou em aberto, este capítulo pode retomar; o que já foi resolvido não volta a ser problema.
 `;
+}
+
+/**
+ * O que so existe depois que os capitulos comecaram a ser escritos, e por isso
+ * nao cabe no elenco nem na lista de anteriores.
+ */
+export interface ContextoDeEscrita {
+  /** Trechos do livro ja condensados, para alem da janela de 8. */
+  memoriaLonga?: BlocoDeMemoria[];
+  /**
+   * Instrucao corretiva. So chega preenchida quando este capitulo esta sendo
+   * reescrito por ter reprovado numa checagem no meio da geracao.
+   */
+  correcao?: string;
 }
 
 export async function generateChapter(
@@ -564,7 +633,8 @@ export async function generateChapter(
   outline: Outline,
   chapterIndex: number,
   anteriores: CapituloAnterior[],
-  registrados: Personagem[] = []
+  registrados: Personagem[] = [],
+  extra: ContextoDeEscrita = {}
 ): Promise<string> {
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
@@ -587,6 +657,12 @@ export async function generateChapter(
   const funcaoLinha = chapter.funcao
     ? `Função deste capítulo na estrutura: ${chapter.funcao}.${chapter.resultado ? ` Ao final dele, isto precisa estar resolvido de forma irreversível: ${chapter.resultado}` : ""}`
     : "";
+  // So chega preenchido numa reescrita: o capitulo ja foi escrito uma vez e
+  // reprovou na checagem de continuidade que roda no meio da geracao.
+  const correcaoBloco = extra.correcao
+    ? `\nATENÇÃO — este capítulo já foi escrito uma vez e foi reprovado na verificação de continuidade. ${extra.correcao}\n`
+    : "";
+
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
     ? `\nEste capítulo revela ou resolve a questão central do livro. Dramatize a revelação em cena — o que aconteceu, dito ou mostrado diretamente — em vez de resumir o conteúdo de uma gravação, carta, diário ou confissão alheia. O leitor precisa saber, no texto, exatamente o que se passou; "ela contou tudo" ou "a gravação revelava a verdade" não é uma resposta, é a ausência de uma.\n`
@@ -598,7 +674,7 @@ O que este capítulo deve cobrir: ${chapter.summary}
 ${funcaoLinha}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
+${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores, extra.memoriaLonga ?? [])}${correcaoBloco}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
 ${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
@@ -725,6 +801,35 @@ ${conteudo.slice(0, 12000)}`;
   const resumo = String(parsed.resumo ?? "").trim();
   if (!resumo) throw new Error("Resumo do capitulo veio vazio.");
   return { resumo, personagensNovos: normalizarPersonagens(parsed.personagensNovos) };
+}
+
+/**
+ * Condensa um trecho ja escrito do livro numa memoria que viaja ate o fim.
+ *
+ * Uma chamada a cada CAPITULOS_POR_BLOCO capitulos -- num livro de 75 sao 9
+ * chamadas curtas no total, contra as 75 que seria mandar todos os resumos em
+ * todo prompt.
+ */
+export async function condensarBloco(
+  ctx: EbookContext,
+  capitulos: CapituloAnterior[],
+): Promise<string> {
+  const corpo = capitulos
+    .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+    .join("\n");
+  const primeiro = capitulos[0]?.idx ?? 0;
+  const ultimo = capitulos[capitulos.length - 1]?.idx ?? primeiro;
+
+  const prompt = `Abaixo estao os resumos dos capitulos ${primeiro + 1} a ${ultimo + 1} de um livro.
+
+Condense tudo isso em ate 90 palavras, comecando por "Capitulos ${primeiro + 1} a ${ultimo + 1}:". Guarde o que precisa continuar valendo ate o fim do livro: quem entrou na historia, o que mudou de forma irreversivel e o que ficou EM ABERTO. Descarte detalhe de cena. Nao interprete e nao tire licao.
+
+Responda apenas com o texto condensado.
+
+RESUMOS:
+${corpo}`;
+
+  return askOpenAI(SYSTEM_BASE, prompt, 400, false, 40);
 }
 
 export async function generateConclusion(

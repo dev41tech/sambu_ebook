@@ -36,8 +36,8 @@ export const ebooksRouter = Router();
 async function avaliarEbook(ebookId: string) {
   const ebook = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]);
   if (!ebook) return null;
-  const capitulos = await all<{ idx: number; title: string; content: string }>(
-    "SELECT idx, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+  const capitulos = await all<{ idx: number; title: string; content: string; personagens_json: string | null }>(
+    "SELECT idx, title, content, personagens_json FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
     [ebookId]
   );
   return avaliarQualidade({ ebook, capitulos });

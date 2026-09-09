@@ -36,12 +36,6 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
     });
   }
 
-  items.push({
-    key: "intro",
-    label: "Introdução",
-    status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
-  });
-
   const chaptersDone = ebook.chapters_done;
   for (let i = 0; i < ebook.chapters_total; i++) {
     const chapter = ebook.chapters[i];
@@ -62,6 +56,16 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
       status: ebook.images_done >= ebook.image_count ? "done" : step === "images" ? "current" : "pending",
     });
   }
+
+  // Introdução e conclusão vêm depois dos capítulos, nesta ordem. A introdução
+  // era o segundo item da lista porque era o segundo a ser escrito; hoje ela roda
+  // no fim, com os resumos reais dos capítulos na mão, e mantê-la aqui em cima
+  // deixava um "pendente" parado no topo enquanto tudo abaixo ficava verde.
+  items.push({
+    key: "intro",
+    label: "Introdução",
+    status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
+  });
 
   items.push({
     key: "conclusion",

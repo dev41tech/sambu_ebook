@@ -39,7 +39,18 @@ const VAZAMENTOS: Array<[RegExp, string]> = [
 
 export interface EntradaGate {
   ebook: EbookRow;
-  capitulos: Array<{ idx: number; title: string; content: string }>;
+  capitulos: Array<{
+    idx: number;
+    title: string;
+    content: string;
+    /**
+     * Quem nasceu na prosa deste capitulo. Sem isto o portao comparava o texto
+     * so contra o elenco do SUMARIO: um personagem criado depois e registrado
+     * corretamente ainda era acusado de nao autorizado -- falso positivo que
+     * gasta atencao de revisao a toa.
+     */
+    personagens_json?: string | null;
+  }>;
 }
 
 export function avaliarQualidade(e: EntradaGate): ResultadoGate {
@@ -128,6 +139,20 @@ export function avaliarQualidade(e: EntradaGate): ResultadoGate {
       });
     }
   }
+  const elencoRegistrado: Array<{ nome: string }> = [];
+  for (const c of capitulos) {
+    if (!c.personagens_json) continue;
+    try {
+      const lista = JSON.parse(c.personagens_json) as Array<{ nome?: string }>;
+      for (const p of Array.isArray(lista) ? lista : []) {
+        if (p?.nome) elencoRegistrado.push({ nome: p.nome });
+      }
+    } catch {
+      // Registro ilegivel e o mesmo caso de registro ausente: a verificacao
+      // segue com o elenco do sumario, como fazia antes desta coluna existir.
+    }
+  }
+
   achados.push(
     ...verificarContinuidade({
       outline,
@@ -135,6 +160,7 @@ export function avaliarQualidade(e: EntradaGate): ResultadoGate {
       conclusao: ebook.conclusion,
       capitulos,
       ficcao: ehFiccao(ebook.category_main || ebook.theme),
+      elencoRegistrado,
     }),
   );
 

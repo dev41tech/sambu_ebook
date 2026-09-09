@@ -15,6 +15,7 @@ import { localCoversRouter } from "./routes/localCovers";
 import { storefrontRouter } from "./routes/storefront";
 import { requireAuth } from "./lib/requireAuth";
 import { sql } from "./lib/db";
+import { retomarGeracoesInterrompidas } from "./lib/generationJob";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FileStore = FileStoreFactory(session);
@@ -90,6 +91,16 @@ async function iniciar() {
       ].join("\n"),
     );
     process.exit(1);
+  }
+
+  // Livros que estavam sendo escritos quando o processo anterior caiu. Precisa
+  // vir depois da checagem de banco acima -- antes dela nao ha de onde ler.
+  try {
+    await retomarGeracoesInterrompidas();
+  } catch (err) {
+    // Nao impede o servidor de subir: um livro parado e pior do que o app fora
+    // do ar, mas as duas coisas juntas seriam bem piores.
+    console.error("[sambu-ebooks] falha ao retomar geracoes interrompidas:", err);
   }
 
   app.listen(port, () => {

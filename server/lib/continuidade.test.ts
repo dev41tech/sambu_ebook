@@ -94,3 +94,88 @@ test("lugar citado so na descricao do elenco tambem e excluido (caso real: 'Sao 
     JSON.stringify(achados),
   );
 });
+
+test("personagem criado na prosa e registrado nao e acusado de 'nao autorizado'", () => {
+  // A verificacao comparava o texto so contra o elenco do SUMARIO. Um secundario
+  // que nasceu no capitulo 2 e foi registrado corretamente ainda era acusado --
+  // falso positivo que gasta atencao de revisao a toa.
+  const outline = {
+    title: "T",
+    subtitle: "S",
+    chapters: Array.from({ length: 6 }, (_, i) => ({ title: `Cap ${i + 1}`, summary: "" })),
+    personagens: [
+      { nome: "Ana", papel: "protagonista", descricao: "x" },
+      { nome: "Caio", papel: "par romantico", descricao: "y" },
+    ],
+  };
+  const capitulos = Array.from({ length: 6 }, (_, i) => ({
+    idx: i,
+    title: `Cap ${i + 1}`,
+    // Tereza aparece o bastante para passar do piso de 5 mencoes.
+    content: "Ana chamou Tereza. Depois Caio viu Tereza sair, e Tereza voltou com Ana e Tereza riu, e Tereza ficou.",
+  }));
+
+  const semRegistro = verificarContinuidade({ outline, intro: null, conclusao: null, capitulos, ficcao: true });
+  assert.ok(
+    semRegistro.some((a) => a.categoria === "personagem-nao-autorizado" && a.evidencia.includes("Tereza")),
+    "sem o registro, Tereza deve continuar sendo acusada",
+  );
+
+  const comRegistro = verificarContinuidade({
+    outline,
+    intro: null,
+    conclusao: null,
+    capitulos,
+    ficcao: true,
+    elencoRegistrado: [{ nome: "Tereza" }],
+  });
+  assert.equal(
+    comRegistro.filter((a) => a.categoria === "personagem-nao-autorizado").length,
+    0,
+    "registrada, Tereza nao pode mais ser acusada",
+  );
+});
+
+test("capitulos orfaos dizem QUAIS capitulos, nao so quantos", () => {
+  // A checagem no meio da geracao precisa saber qual capitulo reescrever, sem
+  // tentar extrair isso do texto da evidencia.
+  const outline = {
+    title: "T",
+    subtitle: "S",
+    chapters: Array.from({ length: 10 }, (_, i) => ({ title: `Cap ${i + 1}`, summary: "" })),
+    personagens: [
+      { nome: "Ana", papel: "protagonista", descricao: "x" },
+      { nome: "Caio", papel: "par romantico", descricao: "y" },
+    ],
+  };
+  const comCasal = "Ana olhou para Caio. Caio respondeu a Ana com calma, e Ana sorriu para Caio.";
+  const semNinguem = "A chuva caía sobre o telhado e o rio subia devagar, sem pressa nenhuma.";
+  const capitulos = Array.from({ length: 10 }, (_, i) => ({
+    idx: i,
+    title: `Cap ${i + 1}`,
+    content: i >= 7 ? semNinguem : comCasal,
+  }));
+
+  const achados = verificarContinuidade({ outline, intro: null, conclusao: null, capitulos, ficcao: true });
+  const orfaos = achados.find((a) => a.categoria === "capitulos-orfaos");
+  assert.ok(orfaos, "deve acusar capitulos orfaos");
+  assert.deepEqual(orfaos.capitulosAfetados, [7, 8, 9]);
+});
+
+test("livro sem elenco no sumario, mas com elenco registrado, nao e 'elenco-ausente'", () => {
+  const outline = {
+    title: "T",
+    subtitle: "S",
+    chapters: [{ title: "Cap 1", summary: "" }],
+  };
+  const capitulos = [{ idx: 0, title: "Cap 1", content: "Ana falou com Ana e Ana saiu." }];
+  const achados = verificarContinuidade({
+    outline,
+    intro: null,
+    conclusao: null,
+    capitulos,
+    ficcao: true,
+    elencoRegistrado: [{ nome: "Ana" }],
+  });
+  assert.equal(achados.filter((a) => a.categoria === "elenco-ausente").length, 0);
+});

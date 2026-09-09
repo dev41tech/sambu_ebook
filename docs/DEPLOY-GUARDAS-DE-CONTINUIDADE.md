@@ -5,22 +5,26 @@ fecham brechas por onde a continuidade ainda vazava.
 
 ---
 
-## 1. Migration — aplicar ANTES do deploy
+## 1. Migrations — aplicar ANTES do deploy
 
-```bash
-node scripts/aplicar-migration.mjs db/migrations/0010_elenco_por_capitulo.sql
-```
+**A lista completa de migrations do projeto vive em
+[`DEPLOY-ENGENHARIA-EDITORIAL.md`](./DEPLOY-ENGENHARIA-EDITORIAL.md), seção 1.**
+Não duplique a lista aqui: foi mantendo duas listas separadas que a 0008 e a 0009
+passaram a existir sem constar de nenhuma delas.
+
+Desta leva e da seguinte saíram duas migrations, ambas já na lista canônica:
 
 | Migration | O que cria | Se não for aplicada |
 |---|---|---|
 | 0010 | Coluna `chapters.personagens_json` | **A geração quebra no primeiro capítulo**: o UPDATE do resumo cita uma coluna que não existe |
+| 0011 | Coluna `ebooks.memoria_longa` | A memória longa falha ao gravar; o livro volta a enxergar só a janela dos 8 capítulos mais recentes |
 
-Aditiva e idempotente (`IF NOT EXISTS`), como as anteriores. Capítulo antigo fica
-com `NULL`, o elenco volta a ser só o do sumário e nada quebra. Pode ser aplicada
-com o container atual no ar — a versão antiga do app ignora a coluna.
+Aditivas e idempotentes (`IF NOT EXISTS`), como as anteriores. Capítulo antigo
+fica com `NULL`, o elenco volta a ser só o do sumário e nada quebra. Podem ser
+aplicadas com o container atual no ar — a versão antiga do app ignora as colunas.
 
-Confirme antes de subir que `0008_memoria_entre_capitulos` e `0009_metricas_qualidade`
-também já estão aplicadas no banco de destino.
+**Estado conferido em produção** (`vps.41tech.cloud:3308/ebook_forge`): a 0010 já
+está aplicada — `chapters` tem `personagens_json`. Falta apenas a **0011**.
 
 ## 2. Rollback
 
@@ -82,26 +86,105 @@ neles, nem na ordem dos acontecimentos.
 
 ---
 
+## Leva seguinte — memória longa e o portão realimentando a escrita
+
+Migration **0011**. Esta leva fecha três das quatro limitações listadas mais
+abaixo, e é por isso que ela vive neste documento e não num terceiro.
+
+### A memória deixa de ser só de 8 capítulos
+
+A janela de memória guarda os 8 capítulos mais recentes; tudo antes disso voltava
+a entrar no prompt apenas como TÍTULO. Num livro de 75 capítulos, o 60 recebia os
+resumos do 52 ao 59 e nada mais — um fio aberto no capítulo 3 e retomado no 70
+não tinha garantia nenhuma.
+
+A cada 8 capítulos, os resumos daquele bloco viram um parágrafo condensado
+gravado em `ebooks.memoria_longa`, que viaja até o fim do livro ao lado da janela
+dos recentes. São 9 chamadas curtas num livro de 75 capítulos, não 75.
+
+### O portão passa a corrigir, não só avisar
+
+A verificação de continuidade rodava uma vez, no fim, quando reescrever significa
+pagar o livro de novo. Agora ela roda **a cada 10 capítulos durante a geração**, e
+o capítulo reprovado é reescrito na hora, com o defeito nomeado no próprio
+prompt. Cada capítulo é reescrito no máximo uma vez por execução — sem esse teto,
+uma checagem que continuasse reprovando pagaria o mesmo capítulo em loop.
+
+Para isso, `Achado` ganhou `capitulosAfetados: number[]`: a checagem precisa saber
+QUAL capítulo reescrever, e ler isso do texto da evidência seria frágil.
+
+### O portão conhece quem nasceu na prosa
+
+`chapters.personagens_json` passou a alimentar a verificação de continuidade
+(`elencoRegistrado`). Um personagem criado no capítulo 2 e registrado
+corretamente não é mais acusado de `personagem-nao-autorizado` — falso positivo
+que gastava atenção de revisão à toa. O mesmo vale para `elenco-ausente`, que só
+dispara quando não há elenco nem no sumário nem no registro.
+
+### A introdução passou para depois dos capítulos
+
+Era a etapa 3, escrita quando nenhum capítulo existia: abria um livro que ainda
+não tinha sido escrito. Agora roda junto da conclusão e recebe os mesmos resumos
+reais, com instrução explícita de **não revelar o desfecho** — que é o risco novo
+que a troca de ordem cria. O checklist da tela de progresso foi reordenado junto,
+senão ficaria um "pendente" parado no topo enquanto tudo abaixo ficava verde.
+
+### Plano B quando o modelo não devolve a lista
+
+Se `personagensNovos` vier vazio num livro de ficção, um detector determinístico
+extrai do capítulo os nomes próprios que aparecem 3+ vezes e não estão no elenco
+efetivo, reaproveitando `extrairNomes` de `continuidade.ts`. Teto de 5 por
+capítulo: o detector é um sinal, não uma certeza, e um elenco inflado por falso
+positivo atrapalha mais do que a ausência de um secundário.
+
+### A geração é retomada no boot
+
+`retomarGeracoesInterrompidas()` recoloca na fila, ao subir, todo ebook em
+`generating`. Como o laço pula todo capítulo que já tem conteúdo, retomar custa
+só o que faltava. Antes, um deploy no meio de um livro de trinta minutos deixava
+o registro travado em `generating` para sempre — sem erro e sem botão de tentar
+de novo.
+
+### Custo
+
+O registro de elenco não acrescenta chamadas. A memória longa acrescenta uma
+chamada curta a cada 8 capítulos. As reescritas da checagem intermediária são o
+único item variável: uma chamada de capítulo mais a humanização, por capítulo
+reprovado, no máximo uma vez cada.
+
+---
+
 ## Verificação feita
 
-`tsc` sem erros, `vite build` passando, 72 de 72 testes. Sete casos novos em
-`server/lib/elenco.test.ts` cobrindo o acúmulo de elenco — inclusive o que
-garante que o elenco do sumário nunca é empurrado para fora do prompt pelo teto
-de registrados, que seria o defeito que tudo isso existe para corrigir.
+Na leva das guardas: `tsc` sem erros, `vite build` passando, 72 de 72 testes.
+Sete casos novos em `server/lib/elenco.test.ts` cobrindo o acúmulo de elenco —
+inclusive o que garante que o elenco do sumário nunca é empurrado para fora do
+prompt pelo teto de registrados, que seria o defeito que tudo isso existe para
+corrigir.
 
-Nenhum livro foi gerado de ponta a ponta neste branch.
+Na leva da memória longa: `tsc` sem erros, **78 de 78 testes**. Seis casos novos
+em `memoria.test.ts` (memória longa no prompt, bloco vazio ignorado, comportamento
+inalterado sem memória longa) e em `continuidade.test.ts` (personagem registrado
+não é mais acusado, `capitulosAfetados` aponta os capítulos certos,
+`elenco-ausente` não dispara com elenco registrado).
+
+**Nenhum livro foi gerado de ponta a ponta em nenhuma das duas levas.**
 
 ## Limitações conhecidas
 
-- **O registro depende de o modelo devolver a lista.** Se `personagensNovos` vier
-  vazio quando não devia, o secundário daquele capítulo não entra no elenco e
-  pode sumir como antes. Falha silenciosa: o resumo é salvo do mesmo jeito.
 - **O teto de 12 registrados é um chute calibrado por custo**, não medido. Num
   livro com muitos secundários legítimos, o 13º mais antigo sai do prompt.
-- **`chapters.personagens_json` não é usado pela verificação de continuidade.**
-  Ela continua comparando o texto contra o elenco do sumário, então um
-  personagem registrado corretamente ainda pode ser acusado de
-  `personagem-nao-autorizado`.
-- **A introdução continua sendo escrita antes dos capítulos**, com os títulos do
-  sumário. A conclusão já recebe os resumos reais; a introdução não tem
-  equivalente.
+- **A checagem intermediária pode reescrever um capítulo legítimo.** Um capítulo
+  deliberadamente sem os protagonistas — um prólogo de outro ponto de vista —
+  entra como órfão e é reescrito. O teto de uma reescrita por capítulo limita o
+  estrago, mas o critério é de frequência de nome, não de intenção.
+- **Reescrever um capítulo antigo não regenera a memória longa** que já o cobria.
+  O bloco condensado continua descrevendo a versão anterior daquele trecho.
+- **O sumário ainda sai de uma chamada só.** Planejar em duas passadas (partes,
+  depois capítulos de cada parte) vale medir antes de fazer: não se sabe a partir
+  de quantos capítulos compensa.
+- **A humanização nunca foi comparada.** Ela reescreve cada capítulo depois de
+  pronto — num livro de 75 capítulos são ~77 chamadas extras, quase dobrando o
+  custo de texto. Ninguém gerou o mesmo livro com e sem.
+- **A frequência real da falha do registro não foi medida.** O plano B
+  determinístico existe, mas não se sabe com que frequência ele precisa entrar.

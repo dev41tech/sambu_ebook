@@ -15,6 +15,12 @@ export interface Achado {
   local: string;
   evidencia: string;
   sugestao: string;
+  /**
+   * idx dos capitulos que este achado acusa, quando ele sabe aponta-los. So a
+   * mensagem em texto nao servia para agir: a checagem no meio da geracao
+   * precisa saber QUAL capitulo reescrever, sem tentar ler isso da evidencia.
+   */
+  capitulosAfetados?: number[];
 }
 
 // Palavras que começam com maiúscula sem serem nome de pessoa. Sem esta lista o
@@ -108,6 +114,13 @@ export interface EntradaContinuidade {
   capitulos: Array<{ idx: number; title: string; content: string }>;
   /** Só faz sentido em ficção; em não ficção a checagem é pulada. */
   ficcao: boolean;
+  /**
+   * Personagens que nasceram na prosa e foram registrados depois de cada
+   * capitulo. Sem eles, esta verificacao comparava o texto so contra o elenco
+   * do SUMARIO e acusava de "nao autorizado" um secundario criado corretamente
+   * no capitulo 2 -- falso positivo que gasta atencao de revisao a toa.
+   */
+  elencoRegistrado?: Array<{ nome: string }>;
 }
 
 /**
@@ -121,7 +134,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   const achados: Achado[] = [];
 
   const autorizados = new Set<string>();
-  for (const p of elenco) {
+  for (const p of [...elenco, ...(e.elencoRegistrado ?? [])]) {
     autorizados.add(primeiroNome(p.nome));
     for (const parte of p.nome.split(/\s+/)) autorizados.add(normalizar(parte));
   }
@@ -158,7 +171,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   }
   const recorrentes = [...corpo.entries()].filter(([, n]) => n >= 5).map(([nome]) => nome);
 
-  if (elenco.length === 0) {
+  if (elenco.length === 0 && (e.elencoRegistrado ?? []).length === 0) {
     achados.push({
       categoria: "elenco-ausente",
       gravidade: "warning",
@@ -328,6 +341,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
       if (proporcao > 0.15) {
         const lista = orfaos.slice(0, 8).map((c) => c.idx + 1).join(", ");
         achados.push({
+          capitulosAfetados: orfaos.map((c) => c.idx),
           categoria: "capitulos-orfaos",
           // Acima de 30% o livro nao e mais uma obra so; abaixo disso pode ser
           // uma subtrama legitima e fica como aviso forte para o revisor.
