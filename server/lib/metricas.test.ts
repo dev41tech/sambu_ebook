@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { medir, medirComResumos } from "./metricas";
+import {
+  medir,
+  medirComResumos,
+  abstracoesDe,
+  formatoDeDialogo,
+  LIMITE_ABSTRACAO_POR_MIL,
+} from "./metricas";
 
 function cap(idx: number, content: string) {
   return { idx, content };
@@ -96,4 +102,114 @@ test("medirComResumos nao roda a checagem de exemplo em ficcao", () => {
   ];
   const m = medirComResumos(ROMANCE, capitulos);
   assert.equal(m.exemplosRepetidos, 0);
+});
+
+// --- Duas medições que passaram a agir sobre a escrita ----------------------
+//
+// As duas nasceram de "Corações Urbanos": quatro dos doze capítulos escreveram
+// diálogo em aspas, e o livro mediu 12.20 de abstração por mil contra a
+// referência de 8.9.
+
+test("formatoDeDialogo separa a fala em travessao da fala em aspas", () => {
+  const travessao = [
+    "— Espero não ter demorado muito — disse ele, puxando a cadeira.",
+    "",
+    "— Nem um pouco — respondeu Ana.",
+  ].join("\n");
+  const aspas = [
+    '"Ei", cumprimentou ele, erguendo uma xícara de chá.',
+    "",
+    '"Consegui a pauta", respondeu Ana, acomodando-se.',
+  ].join("\n");
+
+  assert.deepEqual(formatoDeDialogo(travessao), { travessao: 2, aspas: 0, usaAspas: false });
+  const f = formatoDeDialogo(aspas);
+  assert.equal(f.aspas, 2);
+  assert.equal(f.usaAspas, true);
+});
+
+test("fala com verbo de acao no lugar do verbo de elocucao nao e contada (limitacao aceita)", () => {
+  // '"Tudo bem?" Ana sorriu' é diálogo, mas "sorriu" não é verbo de elocução e
+  // o detector não o reconhece. A alternativa seria incluir sorriu/assentiu/riu
+  // na lista, o que traria de volta o falso positivo que esta regra existe para
+  // eliminar -- o e-mail do capítulo 2 de "Corações Urbanos".
+  //
+  // A perda é tolerável porque a decisão é POR CAPÍTULO: basta uma fala
+  // reconhecida para o capítulo inteiro ser convertido. No livro real, os
+  // quatro capítulos escritos em aspas foram todos detectados.
+  const f = formatoDeDialogo('"Tudo bem com você?" Ana sorriu, acomodando-se.');
+  assert.equal(f.aspas, 0);
+  assert.equal(f.usaAspas, false);
+
+  // Basta uma fala com verbo de elocução no mesmo capítulo para o defeito
+  // aparecer -- que é o caso real do capítulo 7.
+  const capitulo = [
+    '"Elas contam uma bela história, não é?" Ana sorriu.',
+    "",
+    '"Eu precisava ouvir isso", ela disse, sem levantar os olhos.',
+  ].join("\n");
+  assert.equal(formatoDeDialogo(capitulo).usaAspas, true);
+});
+
+test("aspas que NAO sao fala nao contam como diálogo fora do padrão", () => {
+  // Caso real do capítulo 2: o parágrafo entre aspas é o texto de um e-mail.
+  // Converter isso para travessão transformaria uma citação em fala.
+  const comCitacaoNoMeio = [
+    "— Alguma novidade? — perguntou Ana.",
+    "",
+    'Ela abriu o e-mail. Havia uma linha só: "Verifiquei, Ellie ainda está em São Paulo."',
+  ].join("\n");
+
+  const f = formatoDeDialogo(comCitacaoNoMeio);
+  assert.equal(f.travessao, 1);
+  assert.equal(f.aspas, 0, "aspas no meio do parágrafo são citação, não fala");
+  assert.equal(f.usaAspas, false);
+});
+
+test("formatoDeDialogo aguenta texto sem diálogo nenhum e texto vazio", () => {
+  assert.deepEqual(formatoDeDialogo(""), { travessao: 0, aspas: 0, usaAspas: false });
+  assert.deepEqual(formatoDeDialogo("A chuva batia na janela e a cidade seguia."), {
+    travessao: 0,
+    aspas: 0,
+    usaAspas: false,
+  });
+});
+
+test("abstracoesDe devolve a taxa e NOMEIA os termos que pesaram", () => {
+  // Nomear é o ponto: "reduza a abstração" é a instrução vaga que este motor já
+  // demonstrou ignorar; "você usou 'silêncio' 3 vezes" é verificável.
+  const texto =
+    "O silêncio pesava. Havia um silêncio novo entre eles, e o silêncio dizia " +
+    "mais que a fala. Era como se a sombra da cidade os cobrisse, como um eco.";
+
+  const a = abstracoesDe(texto);
+  const mapa = new Map(a.termos.map((t) => [t.termo, t.vezes]));
+  assert.equal(mapa.get("silêncio"), 3);
+  assert.equal(mapa.get("sombra"), 1);
+  assert.ok(a.porMil > 0);
+  // vem ordenado do mais frequente para o menos
+  assert.equal(a.termos[0].termo, "silêncio");
+});
+
+test("abstracoesDe nao divide por zero em texto vazio", () => {
+  const a = abstracoesDe("");
+  assert.equal(a.porMil, 0);
+  assert.deepEqual(a.termos, []);
+});
+
+test("prosa concreta fica abaixo do limite; a de 'Coracoes Urbanos' ficaria acima", () => {
+  const concreta =
+    "Ana largou a bolsa na cadeira e abriu o laptop. Digitou três linhas, apagou duas. " +
+    "Lucas chegou com a câmera no ombro e pousou o copo na mesa sem dizer nada.";
+  assert.ok(abstracoesDe(concreta).porMil <= LIMITE_ABSTRACAO_POR_MIL);
+
+  // Mesma densidade que o livro real mediu: sobra abstração em cada frase.
+  const abstrata =
+    "O silêncio parecia uma sombra, como se o eco da cidade guardasse a essência " +
+    "de tudo. Era como um reflexo, tal como a melodia de um passado que parecia " +
+    "insistir, como se o silêncio fosse a única resposta.";
+  assert.ok(
+    abstracoesDe(abstrata).porMil > LIMITE_ABSTRACAO_POR_MIL,
+    "prosa saturada de comparação precisa disparar a reescrita",
+  );
 });

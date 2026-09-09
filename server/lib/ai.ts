@@ -771,6 +771,79 @@ function normalizarPersonagens(v: unknown): Personagem[] {
 }
 
 /**
+ * Converte o dialogo de um capitulo para travessao.
+ *
+ * "Coracoes Urbanos" saiu com oito capitulos em travessao e quatro em aspas, e
+ * um deles misturando aspas retas com curvas na mesma cena. E o defeito mais
+ * visivel na pagina: o leitor ve a troca de convencao antes de ler a frase.
+ *
+ * Nao da para converter isto por regex. Naquele mesmo livro, um paragrafo entre
+ * aspas era o texto de um e-mail -- citacao legitima, que viraria fala de
+ * personagem numa conversao automatica. Distinguir os dois casos exige ler o
+ * que esta escrito, entao a conversao pede julgamento ao modelo e o prompt
+ * proibe qualquer outra alteracao.
+ */
+export async function converterDialogoParaTravessao(
+  ctx: EbookContext,
+  conteudo: string,
+): Promise<string> {
+  const prompt = `O capítulo abaixo escreve as falas dos personagens entre aspas. Converta TODAS as falas de personagem para o padrão brasileiro de travessão.
+
+Regras, nesta ordem de prioridade:
+1. NÃO altere nenhuma palavra do texto. Só muda a pontuação que marca a fala.
+2. Cada fala abre o parágrafo com travessão (—). O verbo de elocução que vem depois da fala é separado por outro travessão: — Fala do personagem — respondeu Ana, sem olhar.
+3. NÃO converta aspas que não sejam fala de personagem: texto de e-mail ou mensagem, citação de algo escrito, título de obra, termo destacado, pensamento entre aspas. Essas continuam exatamente como estão.
+4. Não junte nem separe parágrafos, não reordene nada, não corte nem acrescente frase alguma.
+
+Responda apenas com o texto do capítulo, sem comentários.
+
+CAPÍTULO:
+${conteudo}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+}
+
+/**
+ * Reescreve um capitulo abstrato demais, nomeando o que esta sobrando.
+ *
+ * A metrica de abstracao existia desde a migration 0009 e nada agia sobre ela:
+ * "Coracoes Urbanos" mediu 12.20 por mil contra a referencia de 8.9, com 35
+ * ocorrencias da familia de "silencio", 19 de "eco" e 12 de "sombra" -- as tres
+ * ja listadas no proprio RE_ABSTRACAO que produziu o numero.
+ *
+ * Nomear os termos e o ponto. "Reduza a abstracao" e instrucao vaga, do tipo
+ * que este motor ja demonstrou ignorar; "voce usou 'silencio' 9 vezes neste
+ * capitulo" e verificavel.
+ */
+export async function reduzirAbstracao(
+  ctx: EbookContext,
+  conteudo: string,
+  termos: Array<{ termo: string; vezes: number }>,
+): Promise<string> {
+  const lista = termos
+    .slice(0, 8)
+    .map((t) => `"${t.termo}" (${t.vezes}x)`)
+    .join(", ");
+
+  const prompt = `O capítulo abaixo está abstrato demais. Estes são os termos que mais pesaram: ${lista}.
+
+Reescreva-o reduzindo esse excesso, mantendo a MESMA história: os mesmos acontecimentos, na mesma ordem, com os mesmos personagens, a mesma abertura e o mesmo fechamento. Não corte cena, não resuma, não mude o resultado do capítulo, e não deixe o texto mais curto.
+
+Como reduzir:
+- Troque a comparação pela coisa. Em vez de "o silêncio pesava como uma sombra", escreva o que a pessoa faz enquanto não fala — olha para a porta, mexe na alça da bolsa, começa uma frase e desiste.
+- Onde o texto diz que algo "parecia" ou é "como se", mostre o fato direto.
+- Corte o que só enfeita: se a frase continua verdadeira sem a comparação, ela sobra.
+- Sensação sem ação vira ação. O leitor precisa ver o gesto, não a atmosfera.
+
+Não substitua um termo abstrato por outro sinônimo abstrato — isso não resolve nada, só troca a palavra.
+
+Responda apenas com o texto reescrito do capítulo, sem comentários.
+
+CAPÍTULO:
+${conteudo}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+}
+
+/**
  * Resumo factual do capitulo recem-escrito e, em ficcao, quem ele criou.
  *
  * Os dois saem da MESMA chamada de proposito: extrair o elenco novo em uma

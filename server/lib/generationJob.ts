@@ -11,6 +11,8 @@ import {
   expandirCapitulo,
   elencoEfetivo,
   condensarBloco,
+  converterDialogoParaTravessao,
+  reduzirAbstracao,
   blocoQueCobre,
   CAPITULOS_POR_BLOCO,
   type BlocoDeMemoria,
@@ -39,6 +41,8 @@ import {
   normalizarTermo,
 } from "./continuidade";
 import { ehFiccao } from "../../src/lib/categorias";
+import { modoDe } from "../../src/lib/modos";
+import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
 // uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
@@ -247,6 +251,10 @@ async function runJob(ebookId: string) {
     const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
     const ficcao = ehFiccao(row.category_main || row.theme);
+    // As duas passadas de prosa valem para o modo narrativo, que e onde vive a
+    // regra de dialogo e onde a abstracao foi medida. Em nao ficcao o texto nao
+    // tem fala de personagem e a comparacao nao significa a mesma coisa.
+    const narrativo = modoDe(row.category_main || row.theme) === "narrativo";
 
     let memoriaLonga: BlocoDeMemoria[] = (() => {
       if (!row.memoria_longa) return [];
@@ -269,6 +277,72 @@ async function runJob(ebookId: string) {
       chapters
         .filter((c) => c.idx < idx)
         .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+
+    /**
+     * Padroniza a convencao de dialogo do capitulo.
+     *
+     * Mede antes de agir: so gasta chamada no capitulo que de fato saiu fora do
+     * padrao. Em "Coracoes Urbanos" seriam 4 chamadas em 12 capitulos.
+     */
+    const padronizarDialogo = async (conteudo: string, idx: number): Promise<string> => {
+      if (!narrativo) return conteudo;
+      const antes = formatoDeDialogo(conteudo);
+      if (!antes.usaAspas) return conteudo;
+      try {
+        const convertido = await converterDialogoParaTravessao(ctx, conteudo);
+        const depois = formatoDeDialogo(convertido);
+        // So aceita se realmente converteu, e sem perder as falas que ja
+        // estavam certas -- mesma logica de aceitacao da expansao.
+        if (depois.aspas < antes.aspas && depois.travessao >= antes.travessao) {
+          console.warn(
+            `[prosa] ${ebookId} cap. ${idx + 1}: ${antes.aspas} fala(s) em aspas convertidas para travessao.`,
+          );
+          return convertido;
+        }
+        console.warn(`[prosa] ${ebookId} cap. ${idx + 1}: conversao de dialogo descartada, nao melhorou.`);
+      } catch (err) {
+        // Padronizar e um acabamento, nao um requisito: falhar aqui nao pode
+        // custar o capitulo, que ja esta escrito e valido.
+        console.warn(`[prosa] conversao de dialogo do capitulo ${idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+      return conteudo;
+    };
+
+    /**
+     * Reescreve o capitulo abstrato demais, nomeando o que esta sobrando.
+     *
+     * A metrica de abstracao existia e ninguem agia sobre ela. Este e o mesmo
+     * padrao do expandirCapitulo -- mede contra um alvo, reescreve so quando
+     * esta fora, e so aceita a reescrita se o numero melhorou.
+     */
+    const concretizar = async (conteudo: string, idx: number): Promise<string> => {
+      if (!narrativo) return conteudo;
+      const antes = abstracoesDe(conteudo);
+      if (antes.porMil <= LIMITE_ABSTRACAO_POR_MIL) return conteudo;
+      try {
+        const reescrito = await reduzirAbstracao(ctx, conteudo, antes.termos);
+        const depois = abstracoesDe(reescrito);
+        const palavrasAntes = conteudo.trim().split(/\s+/).filter(Boolean).length;
+        const palavrasDepois = reescrito.trim().split(/\s+/).filter(Boolean).length;
+
+        // A reescrita precisa baixar a abstracao SEM encolher o capitulo. Cortar
+        // metade do texto tambem "reduz a abstracao", e derrubaria a entrega em
+        // palavras -- que hoje esta em 97% da meta e custou trabalho.
+        if (depois.porMil < antes.porMil && palavrasDepois >= palavrasAntes * 0.95) {
+          console.warn(
+            `[prosa] ${ebookId} cap. ${idx + 1}: abstracao ${antes.porMil} -> ${depois.porMil} por mil.`,
+          );
+          return reescrito;
+        }
+        console.warn(
+          `[prosa] ${ebookId} cap. ${idx + 1}: reescrita descartada ` +
+            `(abstracao ${antes.porMil} -> ${depois.porMil}, palavras ${palavrasAntes} -> ${palavrasDepois}).`,
+        );
+      } catch (err) {
+        console.warn(`[prosa] reducao de abstracao do capitulo ${idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+      return conteudo;
+    };
 
     const escrever = async (
       chapter: { id: string; idx: number; title: string },
@@ -309,6 +383,8 @@ async function runJob(ebookId: string) {
           console.warn(`[geracao] expansao do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
         }
       }
+      content = await padronizarDialogo(content, chapter.idx);
+      content = await concretizar(content, chapter.idx);
       return content;
     };
 

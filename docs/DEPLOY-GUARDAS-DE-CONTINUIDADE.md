@@ -196,6 +196,76 @@ reprovado, no máximo uma vez cada.
 
 ---
 
+## Leva seguinte — duas verificações de prosa
+
+Sem migration. Vieram da leitura de "Corações Urbanos" como leitor, e as duas
+partem da mesma constatação: **o motor não precisava de mais instruções,
+precisava de verificações.**
+
+Três instruções que já existiam e foram ignoradas pelo modelo:
+
+- `vozes.ts` oferece fechamentos de capítulo como "uma perda ou um custo
+  concreto pago por alguém" — e nove dos doze capítulos terminam em reflexão
+  abstrata sobre o futuro;
+- `vozes.ts` manda "não deixe um fio solto sem fechamento até o fim do livro" —
+  e o maior gancho do livro (um e-mail no capítulo 2) nunca foi retomado;
+- `metricas.ts` mede abstração e lista "silêncio", "eco" e "sombra" no próprio
+  regex — o livro deu 12.20 por mil contra a referência de 8.9, e nada agia.
+
+O padrão do que já funcionou neste código é sempre o mesmo: **medir e reagir**
+(elenco → `verificarContinuidade`; capítulo curto → `expandirCapitulo` abaixo de
+85%; recusa → `detectarRecusa`). O que continua quebrado é sempre instrução sem
+verificação.
+
+### Convenção de diálogo
+
+Quatro dos doze capítulos escreveram as falas entre aspas, um deles misturando
+aspas retas e curvas na mesma cena. É o defeito mais visível na página: o leitor
+vê a troca antes de ler a frase.
+
+`formatoDeDialogo()` mede, e o capítulo fora do padrão é convertido para
+travessão. **A conversão não pode ser feita por regex:** naquele mesmo livro,
+um parágrafo entre aspas era o texto de um e-mail — citação legítima que uma
+conversão automática transformaria em fala. Distinguir os dois exige ler, então
+a conversão pede julgamento ao modelo, com o prompt proibindo qualquer outra
+alteração.
+
+O critério de detecção é o verbo de elocução colado às aspas. A primeira versão
+contava aspas que abrem parágrafo e errou nos dois sentidos contra o livro real:
+marcou o e-mail do capítulo 2 e não viu os capítulos 7 e 12, que embutem a fala
+no meio do parágrafo. Com o critério do verbo, a detecção bate exatamente com a
+leitura manual: capítulos 5, 7, 11 e 12, e nada mais.
+
+### Abstração realimentada
+
+`abstracoesDe()` mede um capítulo e devolve **quais** termos pesaram. Acima de
+`LIMITE_ABSTRACAO_POR_MIL` (10), o capítulo vai para uma reescrita dirigida que
+nomeia os termos com a contagem.
+
+Nomear é o ponto. "Reduza a abstração" é a instrução vaga que este motor já
+demonstrou ignorar; "você usou 'como se' 27 vezes" é verificável. Os termos que
+mais pesaram no livro real não eram os que eu tinha notado lendo — são `como se`
+(27x) e `parecia` (27x), construções de comparação, e não os substantivos.
+
+A reescrita só é aceita se **baixou a abstração e não encolheu o capítulo**
+(tolerância de 5%). Cortar metade do texto também reduz a abstração, e derrubaria
+a entrega em palavras, que está em 97% da meta e custou trabalho.
+
+O limite de 10 é a primeira calibragem: 8.9 é um livro real medido, não uma meta,
+e disparar em 9.0 mandaria reescrever quase todo capítulo de um livro só um pouco
+acima. Nesse livro, 7 dos 12 capítulos ficariam acima — de 4.6 a 27.6, com
+variação alta entre capítulos. Revisar quando houver mais livros medidos.
+
+### Custo
+
+As duas medem antes de agir e só gastam chamada no capítulo que erra. Em
+"Corações Urbanos" seriam 4 conversões de diálogo e 7 reduções de abstração —
+11 chamadas extras em 12 capítulos, o pior caso de um livro que nunca passou por
+nenhuma das duas. A expectativa é cair conforme a regra nova de diálogo em
+`vozes.ts` faça efeito no primeiro passe.
+
+---
+
 ## Verificação feita
 
 Na leva das guardas: `tsc` sem erros, `vite build` passando, 72 de 72 testes.
@@ -203,6 +273,10 @@ Sete casos novos em `server/lib/elenco.test.ts` cobrindo o acúmulo de elenco �
 inclusive o que garante que o elenco do sumário nunca é empurrado para fora do
 prompt pelo teto de registrados, que seria o defeito que tudo isso existe para
 corrigir.
+
+Na leva das verificações de prosa: `tsc` sem erros, `vite build` passando,
+**91 de 91 testes**. As duas medições foram validadas contra os capítulos reais
+de "Corações Urbanos", e não só contra exemplos escritos à mão.
 
 Na leva da memória longa: `tsc` sem erros, `vite build` passando, **80 de 80
 testes**. Oito casos novos em `memoria.test.ts` (memória longa no prompt, bloco
@@ -253,6 +327,15 @@ mecanismo rodou em memória e alimentou os capítulos seguintes; só não salvou
 
 ## Limitações conhecidas
 
+- **O detector de diálogo não reconhece fala com verbo de ação.** `"Tudo bem?"
+  Ana sorriu` é diálogo, mas "sorriu" não é verbo de elocução. Incluir
+  sorriu/assentiu/riu na lista traria de volta o falso positivo que a regra
+  existe para eliminar. A perda é tolerável porque a decisão é por capítulo:
+  basta uma fala reconhecida para o capítulo inteiro ser convertido.
+- **O limite de abstração em 10 não foi calibrado com dados**, só com um livro.
+  Sete de doze capítulos daquele livro ficariam acima dele.
+- **Nenhuma das duas verificações foi exercitada numa geração real** — só contra
+  o texto já escrito. Falta gerar um livro com elas ligadas.
 - **O teto de 12 registrados é um chute calibrado por custo**, não medido. Num
   livro com muitos secundários legítimos, o 13º mais antigo sai do prompt.
 - **A checagem intermediária pode reescrever um capítulo legítimo.** Um capítulo
