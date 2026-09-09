@@ -824,9 +824,20 @@ export async function reduzirAbstracao(
     .map((t) => `"${t.termo}" (${t.vezes}x)`)
     .join(", ");
 
+  // O piso em numero, e nao "nao encurte".
+  //
+  // A primeira versao pedia qualitativamente para nao encolher, e o modelo
+  // devolvia capitulos 7% a 19% menores -- boa reducao de abstracao, descartada
+  // pela guarda de tamanho. E o mesmo defeito que esta leva inteira diagnosticou
+  // no motor: instrucao vaga nao e obedecida. O expandirCapitulo acerta o
+  // tamanho porque diz o numero, entao este diz tambem.
+  const palavrasAtuais = conteudo.trim().split(/\s+/).filter(Boolean).length;
+
   const prompt = `O capítulo abaixo está abstrato demais. Estes são os termos que mais pesaram: ${lista}.
 
-Reescreva-o reduzindo esse excesso, mantendo a MESMA história: os mesmos acontecimentos, na mesma ordem, com os mesmos personagens, a mesma abertura e o mesmo fechamento. Não corte cena, não resuma, não mude o resultado do capítulo, e não deixe o texto mais curto.
+Reescreva-o reduzindo esse excesso, mantendo a MESMA história: os mesmos acontecimentos, na mesma ordem, com os mesmos personagens, a mesma abertura e o mesmo fechamento. Não corte cena, não resuma e não mude o resultado do capítulo.
+
+O capítulo tem ${palavrasAtuais} palavras e o texto reescrito precisa ter NO MÍNIMO ${palavrasAtuais} palavras. Isto não é uma sugestão: trocar comparação por ação concreta costuma render MAIS texto, não menos, porque um gesto descrito ocupa mais espaço do que a metáfora que ele substitui. Se o seu texto ficou menor, você cortou cena em vez de trocar abstração por concretude — volte e desenvolva as cenas que já existem.
 
 Como reduzir:
 - Troque a comparação pela coisa. Em vez de "o silêncio pesava como uma sombra", escreva o que a pessoa faz enquanto não fala — olha para a porta, mexe na alça da bolsa, começa uma frase e desiste.

@@ -334,8 +334,12 @@ async function runJob(ebookId: string) {
           );
           return reescrito;
         }
+        const motivo =
+          depois.porMil >= antes.porMil
+            ? "nao reduziu a abstracao"
+            : `encolheu o capitulo em ${Math.round((1 - palavrasDepois / palavrasAntes) * 100)}%`;
         console.warn(
-          `[prosa] ${ebookId} cap. ${idx + 1}: reescrita descartada ` +
+          `[prosa] ${ebookId} cap. ${idx + 1}: reescrita descartada, ${motivo} ` +
             `(abstracao ${antes.porMil} -> ${depois.porMil}, palavras ${palavrasAntes} -> ${palavrasDepois}).`,
         );
       } catch (err) {
