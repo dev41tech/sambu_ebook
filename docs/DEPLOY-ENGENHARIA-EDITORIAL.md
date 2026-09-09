@@ -221,8 +221,10 @@ Dois ebooks gerados de ponta a ponta neste branch:
 
 ## Limitações conhecidas
 
-- **A entrega fica entre 50% e 64% do pedido.** O modelo escreve cerca de 500
-  palavras quando se pede 1.000. Não foi resolvido nesta versão.
+- ~~**A entrega fica entre 50% e 64% do pedido.**~~ Não é mais verdade, e
+  ninguém tinha medido de novo: "Corações Urbanos", medido em 09/2026, entregou
+  **97% da meta** (9.808 de 10.092 palavras). A expansão forçada abaixo de 85%
+  resolveu isto.
 - ~~**O job de geração vive em memória** e morre em qualquer restart do
   servidor.~~ Resolvido depois desta leva: ver
   `DEPLOY-GUARDAS-DE-CONTINUIDADE.md`.

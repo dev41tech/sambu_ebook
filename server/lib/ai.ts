@@ -780,7 +780,14 @@ function normalizarPersonagens(v: unknown): Personagem[] {
 export async function resumirCapitulo(
   ctx: EbookContext,
   tituloCapitulo: string,
-  conteudo: string
+  conteudo: string,
+  /**
+   * Quem ja faz parte do livro. O prompt sempre mandou "nao repita quem ja
+   * existia antes" -- mas nunca dizia QUEM existia, e o modelo nao tem como
+   * adivinhar. Num livro de teste de 12 capitulos isso registrou Ellie quatro
+   * vezes, mais Lucas, Lucas Almeida e Carlos Silveira, todos ja no elenco.
+   */
+  nomesConhecidos: string[] = []
 ): Promise<ResumoCapitulo> {
   const narrativo = modoDe(ctx.theme) === "narrativo";
   const pedido = narrativo
@@ -798,8 +805,12 @@ export async function resumirCapitulo(
     { "nome": "...", "papel": "apoio | antagonista | ...", "descricao": "quem e, em uma frase" }
   ]`
     : "";
+  const conhecidosLinha =
+    narrativo && nomesConhecidos.length > 0
+      ? `\nJA FAZEM PARTE do livro, nao os liste como novos (nem em versao curta do nome): ${nomesConhecidos.join(", ")}.`
+      : "";
   const instrucaoElenco = narrativo
-    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao repita quem ja existia antes; se ninguem novo apareceu, use uma lista vazia.`
+    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao liste lugares, empresas, eventos nem produtos -- so gente. Se ninguem novo apareceu, use uma lista vazia.${conhecidosLinha}`
     : "";
 
   const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:

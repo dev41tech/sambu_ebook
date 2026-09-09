@@ -143,10 +143,13 @@ faixas é o tipo de coisa que erra em silêncio.
 ### Plano B quando o modelo não devolve a lista
 
 Se `personagensNovos` vier vazio num livro de ficção, um detector determinístico
-extrai do capítulo os nomes próprios que aparecem 3+ vezes e não estão no elenco
-efetivo, reaproveitando `extrairNomes` de `continuidade.ts`. Teto de 5 por
-capítulo: o detector é um sinal, não uma certeza, e um elenco inflado por falso
-positivo atrapalha mais do que a ausência de um secundário.
+extrai do capítulo os nomes próprios que aparecem **5+ vezes** e não são
+conhecidos, reaproveitando `extrairNomes` de `continuidade.ts`. O piso de 5 é o
+mesmo que a verificação de continuidade usa para decidir que alguém é
+"personagem de fato". Teto de 3 por capítulo: o detector é um palpite — não há
+como um contador de nomes próprios distinguir uma pessoa de um lugar — e um
+elenco inflado por falso positivo atrapalha mais do que a ausência de um
+secundário, além de empurrar gente real para fora pelo teto de registrados.
 
 **O plano B é instrumentado.** Quando ele entra E encontra alguém, sai um aviso
 `[registro] <ebook> cap. N: modelo devolveu elenco vazio; plano B detectou ...`.
@@ -154,6 +157,27 @@ Só nesse caso: capítulo que de fato não apresenta ninguém novo é o caso com
 logar isso encheria o log de ruído. Este aviso é a única fonte de dado sobre com
 que frequência o modelo erra o registro — a pergunta que estava em aberto aqui
 embaixo e que agora se responde sozinha, a cada livro gerado.
+
+### O registro sabe quem já existe
+
+Duas correções vindas do primeiro livro gerado de ponta a ponta (ver abaixo).
+
+O prompt de `resumirCapitulo` sempre mandou "não repita quem já existia antes",
+mas **nunca dizia ao modelo quem existia** — e ele não tem como adivinhar. Agora
+recebe a lista do elenco efetivo, com ordem explícita de não listar nem versão
+curta do nome, nem lugares, empresas ou eventos.
+
+E o filtro do lado de cá comparava o nome inteiro, então "Renata" nunca casava
+com "Renata Campos". Passou a comparar **parte a parte** e a barrar também os
+termos que vêm dos fatos fixos e das descrições — as duas regras já existiam na
+verificação de continuidade, e agora são a mesma fonte para as duas: as funções
+`nomesAutorizados()` e `termosDeFatosFixos()`, exportadas de `continuidade.ts`.
+O normalizador de nomes também era duplicado em dois arquivos, com regras
+diferentes; virou um só, `normalizarTermo()`.
+
+Dizer ao modelo quem existe melhora a resposta, não a garante — por isso as duas
+camadas. Quando o filtro descarta algo, sai um aviso `[registro] ... nome(s)
+descartado(s) por já existirem no livro`.
 
 ### A geração é retomada no boot
 
@@ -187,7 +211,45 @@ vazio ignorado, comportamento inalterado sem memória longa, e as duas faixas de
 acusado, `capitulosAfetados` aponta os capítulos certos, `elenco-ausente` não
 dispara com elenco registrado).
 
-**Nenhum livro foi gerado de ponta a ponta em nenhuma das duas levas.**
+### Primeiro livro gerado de ponta a ponta
+
+"Corações Urbanos" — romance contemporâneo, 12 capítulos, 12 minutos. Doze é o
+mínimo que exercita as duas coisas novas uma vez cada: a memória longa fecha
+bloco no capítulo 8 e a checagem intermediária dispara no 10.
+
+O que passou:
+
+| | |
+|---|---|
+| Introdução depois dos capítulos | Confirmado no traço (`intro` com 12/12 escritos) e no texto, que cita um fato fixo do sumário |
+| Presença por capítulo | 12 de 12 com elenco declarado; a protagonista em todos |
+| Continuidade | **zero achados** |
+| `resumo_fatos` | 12 de 12 preenchidos |
+| Entrega | **9.808 de 10.092 palavras — 97%** |
+| `personagensSemFuncao` | nenhum |
+
+Placar de referência para comparar mudanças futuras:
+`palavras 9808 · diálogo/mil 6.30 · abstração/mil 12.20 · repetição entre capítulos 0.125`.
+
+**A abstração está alta.** O comentário em `metricas.ts` registra 8.9 como a
+marca do motor antigo e diz que acima disso é excesso; este livro deu 12.20. Não
+tem relação com estas levas — nenhuma delas toca a prosa — mas é um número que
+só apareceu porque foi medido.
+
+O que o livro reprovou: o registro de elenco gravou **11 nomes errados** em 12
+capítulos — Ellie quatro vezes, Lucas, Lucas Almeida e Carlos Silveira (todos já
+no elenco), e, via plano B, "Renata, Ana" (as duas protagonistas) e "Tóquio"
+(uma cidade). São as duas correções descritas acima. Rodando o filtro corrigido
+contra o registro real daquele livro, **os 11 são eliminados**: 9 pelo
+casamento parte a parte e pelos termos dos fatos, e os 2 restantes pelo piso de
+5 menções ("Elias" aparece 3x, "Tóquio" 4x).
+
+**A checagem intermediária nunca disparou** — não havia capítulo órfão. Esse
+caminho continua sem teste em livro real.
+
+**A memória longa não persistiu**, como previsto: a migration 0011 ainda não
+estava aplicada e o `UPDATE` falhou no capítulo 8, dentro do `try/catch`. O
+mecanismo rodou em memória e alimentou os capítulos seguintes; só não salvou.
 
 ## Limitações conhecidas
 
@@ -203,6 +265,13 @@ dispara com elenco registrado).
 - **A humanização nunca foi comparada.** Ela reescreve cada capítulo depois de
   pronto — num livro de 75 capítulos são ~77 chamadas extras, quase dobrando o
   custo de texto. Ninguém gerou o mesmo livro com e sem.
-- **A frequência real da falha do registro ainda não foi medida** — mas agora é
-  observável: o aviso `[registro] ... plano B detectou` sai no log toda vez que
-  o modelo erra. Falta rodar livros e contar.
+- **O plano B não distingue pessoa de lugar.** É um contador de nomes próprios.
+  O piso de 5 menções e os filtros reduzem o falso positivo — no livro real
+  eliminariam todos —, mas o mecanismo continua sendo um palpite.
+- **O piso de 5 menções descarta secundário legítimo pouco citado.** "Elias", do
+  capítulo 11 daquele livro, é provavelmente uma pessoa de verdade e não seria
+  registrado. Preferimos perder um secundário marginal a admitir uma cidade no
+  elenco.
+- **A frequência da falha do registro foi medida uma vez**, e foi alta: o modelo
+  errou em 11 de 12 capítulos antes da correção. Falta refazer a medição depois
+  dela — o aviso `[registro] ...` continua no log para isso.

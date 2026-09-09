@@ -30,7 +30,14 @@ import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings, grupoDaCategoria } from "./memory";
 import { startAudiobookGeneration } from "./tts";
 import { mensagemDeErroParaUsuario } from "./sanitizar";
-import { verificarContinuidade, contarPorGravidade, extrairNomes } from "./continuidade";
+import {
+  verificarContinuidade,
+  contarPorGravidade,
+  extrairNomes,
+  nomesAutorizados,
+  termosDeFatosFixos,
+  normalizarTermo,
+} from "./continuidade";
 import { ehFiccao } from "../../src/lib/categorias";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
@@ -240,7 +247,6 @@ async function runJob(ebookId: string) {
     const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
     const ficcao = ehFiccao(row.category_main || row.theme);
-    const chaveNome = (n: string) => n.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 
     let memoriaLonga: BlocoDeMemoria[] = (() => {
       if (!row.memoria_longa) return [];
@@ -307,28 +313,51 @@ async function runJob(ebookId: string) {
     };
 
     /**
+     * Ja e alguem (ou algo) que o livro conhece?
+     *
+     * Compara PARTE A PARTE, e nao pelo nome inteiro: "Renata" e "Renata Campos"
+     * sao a mesma pessoa, e comparar a string cheia nunca casava as duas -- num
+     * livro de teste o registro "descobriu" as duas protagonistas como gente
+     * nova por causa disso. Tambem barra o que vem dos fatos fixos, que e o que
+     * impede uma cidade de virar personagem.
+     */
+    const jaConhecido = (nome: string): boolean => {
+      const autorizados = nomesAutorizados(elencoEfetivo(outline, registrados));
+      const reservados = termosDeFatosFixos(outline);
+      const partes = nome.split(/\s+/).map(normalizarTermo).filter(Boolean);
+      if (partes.length === 0) return true;
+      return partes.some((p) => autorizados.has(p) || reservados.has(p));
+    };
+
+    /**
      * Plano B para quando o modelo devolve `personagensNovos` vazio -- falha
      * silenciosa que faz o secundario recem-criado sumir do livro do mesmo jeito
      * de antes do registro existir. Reaproveita o detector de nomes proprios da
-     * verificacao de continuidade: nome que aparece 3+ vezes num capitulo e nao
-     * esta entre os conhecidos e, quase sempre, alguem que nasceu ali.
+     * verificacao de continuidade.
+     *
+     * Piso de 5 mencoes: e o mesmo que `continuidade.ts` usa para decidir que
+     * alguem e "personagem de fato". Com 3 o detector trazia nome de passagem e
+     * substantivo capitalizado por acaso -- e, num livro de teste, uma cidade.
+     * Ele continua sendo um palpite: nao ha como um contador de nomes proprios
+     * distinguir uma pessoa de um lugar, e por isso o teto por capitulo e baixo.
      */
     const personagensPorHeuristica = (conteudo: string, idx: number): Personagem[] => {
-      const conhecidos = new Set(elencoEfetivo(outline, registrados).map((p) => chaveNome(p.nome)));
       const novos: Personagem[] = [];
+      const vistos = new Set<string>();
       for (const [nome, n] of extrairNomes(conteudo)) {
-        if (n < 3) continue;
-        if (conhecidos.has(chaveNome(nome))) continue;
+        if (n < 5) continue;
+        if (jaConhecido(nome) || vistos.has(normalizarTermo(nome))) continue;
+        vistos.add(normalizarTermo(nome));
         novos.push({
           nome,
           papel: "apoio",
           descricao: `Detectado automaticamente no capítulo ${idx + 1} (${n} menções); o registro do modelo não o listou.`,
         });
-        conhecidos.add(chaveNome(nome));
-        // Teto baixo de proposito: o detector e um sinal, nao uma certeza, e um
-        // elenco inflado por falso positivo atrapalha os capitulos seguintes
-        // mais do que a ausencia de um secundario.
-        if (novos.length >= 5) break;
+        // Teto baixo de proposito: um elenco inflado por falso positivo
+        // atrapalha os capitulos seguintes mais do que a ausencia de um
+        // secundario, e ainda empurra gente real para fora pelo teto de
+        // registrados.
+        if (novos.length >= 3) break;
       }
       return novos;
     };
@@ -341,9 +370,27 @@ async function runJob(ebookId: string) {
       content: string,
     ): Promise<void> => {
       try {
-        const { resumo, personagensNovos } = await resumirCapitulo(ctx, chapter.title, content);
+        const { resumo, personagensNovos } = await resumirCapitulo(
+          ctx,
+          chapter.title,
+          content,
+          elencoEfetivo(outline, registrados).map((p) => p.nome),
+        );
         const usouPlanoB = ficcao && personagensNovos.length === 0;
-        const detectados = usouPlanoB ? personagensPorHeuristica(content, chapter.idx) : personagensNovos;
+        const brutos = usouPlanoB ? personagensPorHeuristica(content, chapter.idx) : personagensNovos;
+
+        // Segunda linha de defesa: dizer ao modelo quem ja existe melhora a
+        // resposta, nao a garante. Sem este filtro o elenco acumulava a mesma
+        // pessoa duas vezes com dois nomes -- "Ana" ao lado de "Ana Costa" --,
+        // o que polui o prompt e, pelo teto de registrados, empurra personagem
+        // real para fora num livro longo.
+        const detectados = ficcao ? brutos.filter((p) => !jaConhecido(p.nome)) : brutos;
+        const descartados = brutos.length - detectados.length;
+        if (descartados > 0) {
+          console.warn(
+            `[registro] ${ebookId} cap. ${chapter.idx + 1}: ${descartados} nome(s) descartado(s) por ja existirem no livro.`,
+          );
+        }
 
         // So loga quando o plano B ACHOU alguem: e o unico caso que denuncia
         // falha do registro. Capitulo que de fato nao apresenta ninguem novo e
@@ -362,8 +409,8 @@ async function runJob(ebookId: string) {
         // coluna com o resultado desta passada apagaria do banco quem ele havia
         // apresentado antes.
         const jaNoCapitulo = lerPersonagens(chapter.personagens_json);
-        const vistos = new Set(jaNoCapitulo.map((p) => chaveNome(p.nome)));
-        const ineditos = detectados.filter((p) => !vistos.has(chaveNome(p.nome)));
+        const vistos = new Set(jaNoCapitulo.map((p) => normalizarTermo(p.nome)));
+        const ineditos = detectados.filter((p) => !vistos.has(normalizarTermo(p.nome)));
         const doCapitulo = [...jaNoCapitulo, ...ineditos];
         const novos = JSON.stringify(doCapitulo);
 
@@ -376,7 +423,7 @@ async function runJob(ebookId: string) {
         chapter.resumo_fatos = resumo;
         chapter.personagens_json = novos;
         for (const p of ineditos) {
-          if (!registrados.some((r) => chaveNome(r.nome) === chaveNome(p.nome))) registrados.push(p);
+          if (!registrados.some((r) => normalizarTermo(r.nome) === normalizarTermo(p.nome))) registrados.push(p);
         }
       } catch (err) {
         console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);

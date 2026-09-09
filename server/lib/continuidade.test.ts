@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extrairNomes, verificarContinuidade } from "./continuidade";
+import {
+  extrairNomes,
+  verificarContinuidade,
+  nomesAutorizados,
+  termosDeFatosFixos,
+  normalizarTermo,
+} from "./continuidade";
 
 test("nome terminado em letra acentuada nao e truncado (bug real: 'Você' virava 'Voc')", () => {
   // \b em JS usa a definicao ASCII de "caractere de palavra" -- nao reconhece
@@ -178,4 +184,79 @@ test("livro sem elenco no sumario, mas com elenco registrado, nao e 'elenco-ause
     elencoRegistrado: [{ nome: "Ana" }],
   });
   assert.equal(achados.filter((a) => a.categoria === "elenco-ausente").length, 0);
+});
+
+// --- Regressoes de "Coracoes Urbanos", o primeiro livro gerado de ponta a ponta.
+//
+// O registro de elenco daquele livro saiu assim: Ellie em quatro capitulos,
+// Lucas, Lucas Almeida e Carlos Silveira -- todos ja no elenco do sumario -- e,
+// via plano B, "Renata, Ana" (as duas protagonistas) e "Toquio" (uma cidade).
+
+test("nomesAutorizados casa parte do nome, nao so o nome inteiro", () => {
+  // Comparar a string cheia nunca casava "Renata" com "Renata Campos", e foi
+  // por isso que o plano B registrou as duas protagonistas como gente nova.
+  const a = nomesAutorizados([
+    { nome: "Ana Costa" },
+    { nome: "Renata Campos" },
+    { nome: "Ellie" },
+  ]);
+
+  assert.ok(a.has(normalizarTermo("Renata")), "o primeiro nome sozinho conta");
+  assert.ok(a.has(normalizarTermo("Campos")), "o sobrenome sozinho conta");
+  assert.ok(a.has(normalizarTermo("Ana")));
+  assert.ok(a.has(normalizarTermo("Ellie")), "nome de uma palavra so continua valendo");
+  assert.ok(!a.has(normalizarTermo("Elias")), "nome parecido nao pode casar");
+});
+
+test("nomesAutorizados pula tratamentos e ignora nome vazio", () => {
+  const a = nomesAutorizados([{ nome: "Delegada Mariana Silva" }, { nome: "   " }]);
+  assert.ok(a.has(normalizarTermo("Mariana")));
+  assert.ok(a.has(normalizarTermo("Silva")));
+  assert.ok(!a.has(""), "string vazia nao pode entrar no conjunto");
+});
+
+test("termosDeFatosFixos pega o que vem dos fatos e das descricoes", () => {
+  // É o filtro que impede uma cidade de virar personagem.
+  const t = termosDeFatosFixos({
+    title: "T",
+    subtitle: "S",
+    chapters: [],
+    personagens: [{ nome: "Ana", papel: "protagonista", descricao: "recém-chegada de Salvador" }],
+    fatosFixos: ["Ana e Lucas se conhecem quando ela cobre um evento em São Paulo"],
+  });
+
+  assert.ok(t.has(normalizarTermo("Paulo")));
+  assert.ok(t.has(normalizarTermo("Salvador")), "a descrição do personagem também é fonte");
+});
+
+test("nomesAutorizados e termosDeFatosFixos juntos barram o que o livro real registrou errado", () => {
+  const outline = {
+    title: "Corações Urbanos",
+    subtitle: "S",
+    chapters: [],
+    personagens: [
+      { nome: "Ana Costa", papel: "protagonista", descricao: "jornalista" },
+      { nome: "Lucas Almeida", papel: "par romantico", descricao: "fotógrafo" },
+      { nome: "Renata Campos", papel: "apoio", descricao: "divide o apartamento" },
+      { nome: "Carlos Silveira", papel: "apoio", descricao: "editor-chefe" },
+      { nome: "Ellie", papel: "ausente", descricao: "ex de Lucas" },
+    ],
+    fatosFixos: ["Ana e Lucas se conhecem quando ela cobre um evento em São Paulo"],
+  };
+  const autorizados = nomesAutorizados(outline.personagens);
+  const reservados = termosDeFatosFixos(outline);
+  const jaConhecido = (nome: string) =>
+    nome
+      .split(/\s+/)
+      .map(normalizarTermo)
+      .filter(Boolean)
+      .some((p) => autorizados.has(p) || reservados.has(p));
+
+  // Tudo isto foi registrado como "novo" no livro real e nao deveria ter sido.
+  for (const nome of ["Lucas", "Ellie", "Lucas Almeida", "Renata", "Ana", "Carlos Silveira", "São Paulo"]) {
+    assert.ok(jaConhecido(nome), `"${nome}" ja existe no livro e nao pode entrar como novo`);
+  }
+
+  // "Elias" apareceu no capitulo 11 e é, de fato, alguem que nasceu na prosa.
+  assert.ok(!jaConhecido("Elias"), "quem é realmente novo tem de passar");
 });

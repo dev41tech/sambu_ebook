@@ -49,6 +49,15 @@ function normalizar(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
+/**
+ * A mesma chave usada pelos conjuntos deste modulo. Exportada porque quem
+ * consulta `nomesAutorizados` ou `termosDeFatosFixos` precisa normalizar do
+ * mesmo jeito -- comparar com outra regra e o mesmo que nao comparar.
+ */
+export function normalizarTermo(s: string): string {
+  return normalizar(s).trim();
+}
+
 // A lista acima e escrita com acento para ser legivel, mas a comparacao usa a
 // forma normalizada -- sem isto "Nao" nunca casava com "não" e entrava na lista
 // de personagens.
@@ -107,6 +116,49 @@ function primeiroNome(completo: string): string {
   return partes.find((p) => !NAO_SAO_NOMES.has(p)) ?? partes[0] ?? "";
 }
 
+/**
+ * Todas as formas pelas quais o texto pode chamar alguem que ja existe: o nome
+ * inteiro, cada parte dele e o primeiro nome util (pulando tratamentos).
+ *
+ * Existe como funcao propria porque o registro de elenco precisa exatamente
+ * disto para nao "descobrir" como nova uma pessoa que ja esta no elenco. Comparar
+ * so o nome inteiro nunca casava "Renata" com "Renata Campos" -- foi assim que,
+ * num livro de teste, o plano B registrou as duas protagonistas como gente nova.
+ */
+export function nomesAutorizados(elenco: Array<{ nome: string }>): Set<string> {
+  const autorizados = new Set<string>();
+  for (const p of elenco) {
+    const nome = p?.nome ?? "";
+    if (!nome.trim()) continue;
+    autorizados.add(primeiroNome(nome));
+    for (const parte of nome.split(/\s+/)) {
+      const chave = normalizar(parte);
+      if (chave) autorizados.add(chave);
+    }
+  }
+  autorizados.delete("");
+  return autorizados;
+}
+
+/**
+ * Palavras que vem de um fato fixo ou da descricao de um personagem -- nome de
+ * cidade, negocio, evento. Nao sao candidatas a "personagem": e o filtro que
+ * impede "Colinas do Mar" e "Sao Paulo" de virarem gente.
+ */
+export function termosDeFatosFixos(outline: Outline): Set<string> {
+  const termos = new Set<string>();
+  const LETRA_TERMO = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const re = new RegExp(`(?<![${LETRA_TERMO}])[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?![${LETRA_TERMO}])`, "g");
+  const fontes = [
+    ...(outline.fatosFixos ?? []),
+    ...(outline.personagens ?? []).map((p) => p.descricao ?? ""),
+  ];
+  for (const fonte of fontes) {
+    for (const palavra of fonte.match(re) ?? []) termos.add(normalizar(palavra));
+  }
+  return termos;
+}
+
 export interface EntradaContinuidade {
   outline: Outline;
   intro: string | null;
@@ -133,11 +185,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   const elenco = e.outline.personagens ?? [];
   const achados: Achado[] = [];
 
-  const autorizados = new Set<string>();
-  for (const p of [...elenco, ...(e.elencoRegistrado ?? [])]) {
-    autorizados.add(primeiroNome(p.nome));
-    for (const parte of p.nome.split(/\s+/)) autorizados.add(normalizar(parte));
-  }
+  const autorizados = nomesAutorizados([...elenco, ...(e.elencoRegistrado ?? [])]);
 
   // Palavras que vêm de um fato fixo ou da descrição de um personagem -- nome
   // de cidade, negócio, evento -- não são candidatas a "personagem". Efeito
@@ -148,18 +196,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   // "São Paulo", citado so na descricao de um personagem ("recem-chegado de
   // Sao Paulo"), pegou o mesmo problema -- por isso a descricao entra aqui
   // tambem, nao so o texto do fato fixo.
-  const termosDeFatos = new Set<string>();
-  const LETRA_TERMO = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
-  const reTermo = new RegExp(`(?<![${LETRA_TERMO}])[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?![${LETRA_TERMO}])`, "g");
-  const fontesDeTermos = [
-    ...(e.outline.fatosFixos ?? []),
-    ...elenco.map((p) => p.descricao ?? ""),
-  ];
-  for (const fonte of fontesDeTermos) {
-    for (const palavra of fonte.match(reTermo) ?? []) {
-      termosDeFatos.add(normalizar(palavra));
-    }
-  }
+  const termosDeFatos = termosDeFatosFixos(e.outline);
 
   // Frequência no corpo do livro: quem aparece muito é personagem de fato, e é
   // com esse conjunto que a introdução e a conclusão precisam concordar.
