@@ -129,6 +129,17 @@ reais, com instrução explícita de **não revelar o desfecho** — que é o ri
 que a troca de ordem cria. O checklist da tela de progresso foi reordenado junto,
 senão ficaria um "pendente" parado no topo enquanto tudo abaixo ficava verde.
 
+### Reescrever um capítulo refaz o bloco de memória que o cobria
+
+A reescrita da checagem intermediária deixava o bloco condensado descrevendo uma
+versão do texto que não existe mais — e é essa versão velha que viajaria para
+todos os capítulos seguintes, o oposto do que a memória longa existe para fazer.
+
+Depois das reescritas de uma rodada, cada bloco afetado é condensado de novo,
+uma vez só: duas reescritas dentro do mesmo bloco custam uma condensação, não
+duas. `blocoQueCobre()` vive em `ai.ts`, pura e testada, porque a aritmética de
+faixas é o tipo de coisa que erra em silêncio.
+
 ### Plano B quando o modelo não devolve a lista
 
 Se `personagensNovos` vier vazio num livro de ficção, um detector determinístico
@@ -136,6 +147,13 @@ extrai do capítulo os nomes próprios que aparecem 3+ vezes e não estão no el
 efetivo, reaproveitando `extrairNomes` de `continuidade.ts`. Teto de 5 por
 capítulo: o detector é um sinal, não uma certeza, e um elenco inflado por falso
 positivo atrapalha mais do que a ausência de um secundário.
+
+**O plano B é instrumentado.** Quando ele entra E encontra alguém, sai um aviso
+`[registro] <ebook> cap. N: modelo devolveu elenco vazio; plano B detectou ...`.
+Só nesse caso: capítulo que de fato não apresenta ninguém novo é o caso comum, e
+logar isso encheria o log de ruído. Este aviso é a única fonte de dado sobre com
+que frequência o modelo erra o registro — a pergunta que estava em aberto aqui
+embaixo e que agora se responde sozinha, a cada livro gerado.
 
 ### A geração é retomada no boot
 
@@ -162,11 +180,12 @@ inclusive o que garante que o elenco do sumário nunca é empurrado para fora do
 prompt pelo teto de registrados, que seria o defeito que tudo isso existe para
 corrigir.
 
-Na leva da memória longa: `tsc` sem erros, **78 de 78 testes**. Seis casos novos
-em `memoria.test.ts` (memória longa no prompt, bloco vazio ignorado, comportamento
-inalterado sem memória longa) e em `continuidade.test.ts` (personagem registrado
-não é mais acusado, `capitulosAfetados` aponta os capítulos certos,
-`elenco-ausente` não dispara com elenco registrado).
+Na leva da memória longa: `tsc` sem erros, `vite build` passando, **80 de 80
+testes**. Oito casos novos em `memoria.test.ts` (memória longa no prompt, bloco
+vazio ignorado, comportamento inalterado sem memória longa, e as duas faixas de
+`blocoQueCobre`) e em `continuidade.test.ts` (personagem registrado não é mais
+acusado, `capitulosAfetados` aponta os capítulos certos, `elenco-ausente` não
+dispara com elenco registrado).
 
 **Nenhum livro foi gerado de ponta a ponta em nenhuma das duas levas.**
 
@@ -178,13 +197,12 @@ não é mais acusado, `capitulosAfetados` aponta os capítulos certos,
   deliberadamente sem os protagonistas — um prólogo de outro ponto de vista —
   entra como órfão e é reescrito. O teto de uma reescrita por capítulo limita o
   estrago, mas o critério é de frequência de nome, não de intenção.
-- **Reescrever um capítulo antigo não regenera a memória longa** que já o cobria.
-  O bloco condensado continua descrevendo a versão anterior daquele trecho.
 - **O sumário ainda sai de uma chamada só.** Planejar em duas passadas (partes,
   depois capítulos de cada parte) vale medir antes de fazer: não se sabe a partir
   de quantos capítulos compensa.
 - **A humanização nunca foi comparada.** Ela reescreve cada capítulo depois de
   pronto — num livro de 75 capítulos são ~77 chamadas extras, quase dobrando o
   custo de texto. Ninguém gerou o mesmo livro com e sem.
-- **A frequência real da falha do registro não foi medida.** O plano B
-  determinístico existe, mas não se sabe com que frequência ele precisa entrar.
+- **A frequência real da falha do registro ainda não foi medida** — mas agora é
+  observável: o aviso `[registro] ... plano B detectou` sai no log toda vez que
+  o modelo erra. Falta rodar livros e contar.

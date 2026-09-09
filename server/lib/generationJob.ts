@@ -11,6 +11,7 @@ import {
   expandirCapitulo,
   elencoEfetivo,
   condensarBloco,
+  blocoQueCobre,
   CAPITULOS_POR_BLOCO,
   type BlocoDeMemoria,
   type CapituloAnterior,
@@ -341,10 +342,21 @@ async function runJob(ebookId: string) {
     ): Promise<void> => {
       try {
         const { resumo, personagensNovos } = await resumirCapitulo(ctx, chapter.title, content);
-        const detectados =
-          ficcao && personagensNovos.length === 0
-            ? personagensPorHeuristica(content, chapter.idx)
-            : personagensNovos;
+        const usouPlanoB = ficcao && personagensNovos.length === 0;
+        const detectados = usouPlanoB ? personagensPorHeuristica(content, chapter.idx) : personagensNovos;
+
+        // So loga quando o plano B ACHOU alguem: e o unico caso que denuncia
+        // falha do registro. Capitulo que de fato nao apresenta ninguem novo e
+        // o caso comum, e logar isso encheria o log de ruido sem informar nada.
+        //
+        // Este aviso e a unica fonte de dado sobre "com que frequencia o modelo
+        // erra o registro" -- a pergunta que ficou em aberto na nota de deploy.
+        if (usouPlanoB && detectados.length > 0) {
+          console.warn(
+            `[registro] ${ebookId} cap. ${chapter.idx + 1}: modelo devolveu elenco vazio; ` +
+              `plano B detectou ${detectados.length}: ${detectados.map((p) => p.nome).join(", ")}.`,
+          );
+        }
 
         // Numa reescrita o capitulo ja tem gente registrada. Sobrescrever a
         // coluna com o resultado desta passada apagaria do banco quem ele havia
@@ -368,6 +380,29 @@ async function runJob(ebookId: string) {
         }
       } catch (err) {
         console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    /**
+     * Refaz um bloco da memoria longa depois que um capitulo dele foi reescrito.
+     *
+     * Sem isto, a reescrita de um capitulo antigo deixava o bloco condensado
+     * descrevendo uma versao do texto que nao existe mais -- e e justamente essa
+     * versao velha que viaja para todos os capitulos seguintes, que e o oposto
+     * do que a memoria longa existe para fazer.
+     */
+    const regenerarBloco = async (inicio: number, fim: number): Promise<void> => {
+      try {
+        const doBloco = chapters
+          .filter((c) => c.idx >= inicio && c.idx <= fim)
+          .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+        if (doBloco.length === 0) return;
+        const resumo = await condensarBloco(ctx, doBloco);
+        memoriaLonga = memoriaLonga.map((b) => (b.ate === fim ? { ate: fim, resumo } : b));
+        await run("UPDATE ebooks SET memoria_longa = $1 WHERE id = $2", [JSON.stringify(memoriaLonga), ebookId]);
+        console.warn(`[geracao] ${ebookId}: memoria longa dos capitulos ${inicio + 1} a ${fim + 1} refeita apos reescrita.`);
+      } catch (err) {
+        console.warn(`[geracao] refazer a memoria longa dos capitulos ${inicio + 1} a ${fim + 1} falhou:`, err instanceof Error ? err.message : err);
       }
     };
 
@@ -396,6 +431,11 @@ async function runJob(ebookId: string) {
           for (const idx of a.capitulosAfetados ?? []) alvos.add(idx);
         }
 
+        // Reescrever um capitulo invalida o bloco de memoria longa que o cobria.
+        // Chave = fim do bloco, para que duas reescritas dentro do mesmo bloco
+        // custem uma condensacao so.
+        const blocosParaRefazer = new Map<number, number>();
+
         for (const idx of [...alvos].sort((a, b) => a - b)) {
           if (reescritos.has(idx)) continue;
           const alvo = chapters.find((c) => c.idx === idx);
@@ -410,6 +450,15 @@ async function runJob(ebookId: string) {
           alvo.content = content;
           await registrar(alvo, content);
           console.warn(`[continuidade] ${ebookId}: capitulo ${idx + 1} reescrito no meio da geracao`);
+
+          const bloco = blocoQueCobre(memoriaLonga, idx);
+          if (bloco) blocosParaRefazer.set(bloco.fim, bloco.inicio);
+        }
+
+        // Depois das reescritas, nao entre elas: o resumo de cada capitulo
+        // reescrito precisa ja estar gravado para entrar na condensacao.
+        for (const [fim, inicio] of blocosParaRefazer) {
+          await regenerarBloco(inicio, fim);
         }
       } catch (err) {
         // A checagem intermediaria e um ganho, nao um requisito: falhar nela nao

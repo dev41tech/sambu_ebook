@@ -570,6 +570,28 @@ export interface BlocoDeMemoria {
   resumo: string;
 }
 
+/**
+ * Qual bloco da memoria longa cobre um capitulo, se algum ja cobre.
+ *
+ * Os blocos sao contiguos e fechados em ordem: o primeiro vai do capitulo 0 ate
+ * o seu `ate`, o seguinte comeca no capitulo logo depois, e assim por diante.
+ * Serve para saber o que precisa ser refeito quando um capitulo antigo e
+ * reescrito -- sem isso o bloco condensado segue descrevendo uma versao do
+ * texto que nao existe mais, e e essa versao velha que viaja para o resto do
+ * livro.
+ *
+ * Pura de proposito, fora do orquestrador, para poder ser testada sem banco.
+ */
+export function blocoQueCobre(
+  memoriaLonga: BlocoDeMemoria[],
+  idx: number,
+): { inicio: number; fim: number } | null {
+  const ordenados = [...memoriaLonga].sort((a, b) => a.ate - b.ate);
+  const posicao = ordenados.findIndex((b) => b.ate >= idx);
+  if (posicao === -1) return null;
+  return { inicio: posicao === 0 ? 0 : ordenados[posicao - 1].ate + 1, fim: ordenados[posicao].ate };
+}
+
 export function memoriaBlock(anteriores: CapituloAnterior[], memoriaLonga: BlocoDeMemoria[] = []): string {
   if (anteriores.length === 0) return "Este é o primeiro capítulo do livro.\n";
 
