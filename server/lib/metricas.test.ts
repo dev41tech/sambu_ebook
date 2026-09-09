@@ -213,3 +213,18 @@ test("prosa concreta fica abaixo do limite; a de 'Coracoes Urbanos' ficaria acim
     "prosa saturada de comparação precisa disparar a reescrita",
   );
 });
+
+test("verbo reflexivo nao transforma termo entre aspas em fala", () => {
+  // Caso real do capítulo 12 de "Entre Laços e Destinos": o detector marcou o
+  // capítulo por causa de "lembrou", mas era "lembrou-se" — e o trecho entre
+  // aspas é um termo, não diálogo. Custou uma chamada de conversão à toa.
+  const termo =
+    'Ele passava ali às vezes para garantir que o lugar não se tornasse um ' +
+    '"acampamento de mochileiros", e Marina lembrou-se da carta de Sofia.';
+  assert.equal(formatoDeDialogo(termo).aspas, 0);
+  assert.equal(formatoDeDialogo(termo).usaAspas, false);
+
+  // A forma não reflexiva continua valendo como fala.
+  const fala = '"Ninguém precisa saber disso", lembrou Marina, sem levantar a voz.';
+  assert.equal(formatoDeDialogo(fala).aspas, 1);
+});

@@ -93,8 +93,14 @@ export function abstracoesDe(texto: string): Abstracao {
  * transformaria em fala) e nao viu os capitulos 7 e 12, que embutem a fala no
  * meio do paragrafo narrativo.
  */
+//
+// O `(?!-se)` no fim nao e detalhe: num livro real, o trecho
+// `um "acampamento de mochileiros", e Marina lembrou-se da carta` foi marcado
+// como fala por causa de "lembrou". E termo entre aspas, nao dialogo. Na forma
+// reflexiva estes verbos mudam de sentido -- lembrou-se, perguntou-se,
+// observou-se sao pensamento, nao elocucao.
 const RE_VERBO_DE_FALA =
-  /\b(disse|falou|respondeu|perguntou|indagou|comentou|declarou|afirmou|murmurou|sussurrou|gritou|exclamou|acrescentou|completou|retrucou|replicou|explicou|contou|pediu|avisou|lembrou|insistiu|concordou|discordou|brincou|provocou|cumprimentou|confessou|admitiu|repetiu|emendou|observou|ponderou|sugeriu|propos|propôs)\b/i;
+  /\b(disse|falou|respondeu|perguntou|indagou|comentou|declarou|afirmou|murmurou|sussurrou|gritou|exclamou|acrescentou|completou|retrucou|replicou|explicou|contou|pediu|avisou|lembrou|insistiu|concordou|discordou|brincou|provocou|cumprimentou|confessou|admitiu|repetiu|emendou|observou|ponderou|sugeriu|propos|propôs)\b(?!-se)/i;
 
 /** Trecho entre aspas, retas ou curvas, sem aspas dentro. */
 const RE_TRECHO_ASPAS = /["“]([^"”]{2,}?)["”]/g;
