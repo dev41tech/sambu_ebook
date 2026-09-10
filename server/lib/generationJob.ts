@@ -351,7 +351,10 @@ async function runJob(ebookId: string) {
         // a mais exatamente no caso que hoje ja desperdica uma inteira.
         if (depois.porMil < antes.porMil) {
           try {
-            const expandido = await expandirCapitulo(ctx, reescrito, palavrasAntes);
+            // `true` liga a trava anti-abstracao: sem ela as duas passadas
+            // brigam, e a expansao devolve exatamente a atmosfera que a reducao
+            // acabou de tirar.
+            const expandido = await expandirCapitulo(ctx, reescrito, palavrasAntes, true);
             const finalAbs = abstracoesDe(expandido);
             const finalPalavras = expandido.trim().split(/\s+/).filter(Boolean).length;
 

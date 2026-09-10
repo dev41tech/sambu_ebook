@@ -107,6 +107,48 @@ export function extrairNomes(texto: string): Map<string, number> {
 }
 
 /**
+ * Marcadores que costumam vir logo antes de um LUGAR, e nao de uma pessoa.
+ *
+ * Um bairro aparece quase sempre preposicionado -- "na Liberdade", "bairro da
+ * Liberdade", "ate a Liberdade". Uma pessoa aparece sobretudo nua: "Lucas
+ * olhou", "Marina respondeu". A pergunta nao e se o nome JA apareceu com
+ * preposicao (gente tambem aparece: "o carro da Marina"), e sim se ele aparece
+ * assim quase sempre.
+ */
+const RE_MARCADOR_DE_LUGAR =
+  /(?:^|\s)(?:em|na|no|nas|nos|da|do|das|dos|à|ao|às|aos|pela|pelo|até|para|bairro|rua|avenida|praça|regiao|região|zona|distrito|centro|vila|parque|largo|alameda|estrada|rodovia|mercado|feira)\s+$/i;
+
+/**
+ * Proporcao de mencoes preposicionadas acima da qual o nome e tratado como
+ * lugar. Calibrado contra um caso real: "Liberdade", o bairro de Sao Paulo,
+ * apareceu 10x num livro e foi acusado de "personagem nao autorizado".
+ */
+const PROPORCAO_DE_LUGAR = 0.6;
+const MINIMO_PARA_JULGAR = 3;
+
+/**
+ * O nome se comporta como lugar no texto?
+ *
+ * Deterministico e conservador: exige um minimo de mencoes antes de julgar, e
+ * exige predominancia. Um personagem citado tres vezes, duas delas como "da
+ * Marina", nao vira lugar por isso -- mas um bairro citado dez vezes, nove
+ * delas preposicionado, vira.
+ */
+export function pareceLugar(corpo: string, nome: string): boolean {
+  const LETRA = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const re = new RegExp(`(?<![${LETRA}])${nome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![${LETRA}])`, "g");
+  let total = 0;
+  let comMarcador = 0;
+  for (const m of corpo.matchAll(re)) {
+    total++;
+    const antes = corpo.slice(Math.max(0, (m.index ?? 0) - 24), m.index ?? 0);
+    if (RE_MARCADOR_DE_LUGAR.test(antes)) comMarcador++;
+  }
+  if (total < MINIMO_PARA_JULGAR) return false;
+  return comMarcador / total >= PROPORCAO_DE_LUGAR;
+}
+
+/**
  * Primeiro nome de verdade, pulando tratamentos. O elenco veio com "Delegada
  * Mariana Silva" e isto devolvia "delegada" -- entao Mariana, a protagonista,
  * era acusada de nao ser protagonista na propria introducao.
@@ -197,6 +239,15 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   // Sao Paulo"), pegou o mesmo problema -- por isso a descricao entra aqui
   // tambem, nao so o texto do fato fixo.
   const termosDeFatos = termosDeFatosFixos(e.outline);
+
+  // Nome que se comporta como lugar no texto entra no mesmo filtro dos termos
+  // de fatos fixos. "Liberdade" -- o bairro -- apareceu 10x num livro real e
+  // foi acusado de personagem nao autorizado; o filtro de fatos nao pegava,
+  // porque o bairro nao estava declarado em fato fixo nenhum.
+  const corpoInteiro = e.capitulos.map((c) => c.content || "").join("\n");
+  for (const nome of new Set([...extrairNomes(corpoInteiro).keys()])) {
+    if (pareceLugar(corpoInteiro, nome)) termosDeFatos.add(normalizar(nome));
+  }
 
   // Frequência no corpo do livro: quem aparece muito é personagem de fato, e é
   // com esse conjunto que a introdução e a conclusão precisam concordar.

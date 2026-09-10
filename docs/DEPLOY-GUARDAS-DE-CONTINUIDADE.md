@@ -285,6 +285,34 @@ quais capítulos fecharam fraco.
 erro que fez a redução de abstração nascer jogando dez chamadas fora. Primeiro
 a frequência real em alguns livros, depois a decisão de agir.
 
+### As duas passadas brigavam entre si
+
+Medido no quarto livro. O capítulo 3 tinha caído de 10,2 para 9,0 de abstração,
+a expansão devolveu o tamanho — e a abstração subiu para **14,1**, pior que o
+original. Corretamente descartado pela guarda, mas o ganho foi perdido.
+
+A causa está no próprio pedido da expansão: *"mais detalhe sensorial"* e *"a
+reação interna dos personagens"* é exatamente o que produz comparação e
+atmosfera. `expandirCapitulo` ganhou um modo `semAbstracao` que troca esse
+trecho por crescimento só em diálogo e ação física, com a lista de construções
+proibidas nomeada. A chamada encadeada usa esse modo.
+
+### Nome de lugar deixa de ser acusado de personagem
+
+Primeiro achado de continuidade em quatro livros, e era falso: **"Liberdade"**,
+o bairro, apareceu 10× e virou `personagem-nao-autorizado`. O filtro de termos
+de fatos fixos não pegava, porque o bairro não estava declarado em fato nenhum.
+
+`pareceLugar()` decide por **predominância**: um bairro aparece quase sempre
+preposicionado ("na Liberdade", "bairro da Liberdade", "até a Liberdade"),
+enquanto uma pessoa aparece sobretudo nua ("Marina abriu o caderno"). Exige no
+mínimo 3 menções e 60% delas preposicionadas — "o carro da Marina" não
+transforma a Marina em endereço.
+
+Validado contra os quatro livros: pega "Liberdade", "Paulista", "Japão",
+"Esquina", "Café" e "Notícias", e **não filtra nenhum personagem de elenco em
+nenhum deles**.
+
 ### Custo
 
 As duas medem antes de agir e só gastam chamada no capítulo que erra. Em
@@ -363,11 +391,14 @@ mecanismo rodou em memória e alimentou os capítulos seguintes; só não salvou
   basta uma fala reconhecida para o capítulo inteiro ser convertido.
 - **O limite de abstração em 10 não foi calibrado com dados**, só com um livro.
   Sete de doze capítulos daquele livro ficariam acima dele.
-- **A expansão após a redução de abstração ainda não rodou em livro real.** Foi
-  desenhada a partir dos casos medidos no terceiro livro, mas nenhum livro foi
-  gerado depois dela.
-- **O fechamento de capítulo é só medido.** Não há ação nenhuma associada até
-  existir frequência medida em mais de um livro.
+- **A trava anti-abstração da expansão ainda não rodou em livro real.** O
+  caminho encadeado disparou uma vez no quarto livro, antes dela existir.
+- **O fechamento de capítulo é só medido.** Primeira medição: 4 de 12 capítulos
+  no quarto livro. Uma amostra não é frequência — não há ação associada até
+  haver mais livros.
+- **`pareceLugar` é predominância, não semântica.** Um personagem que só
+  aparece preposicionado — sempre "a casa da Sofia", nunca "Sofia disse" —
+  seria classificado como lugar. Nos quatro livros medidos não aconteceu.
 - **O teto de 12 registrados é um chute calibrado por custo**, não medido. Num
   livro com muitos secundários legítimos, o 13º mais antigo sai do prompt.
 - **A checagem intermediária pode reescrever um capítulo legítimo.** Um capítulo

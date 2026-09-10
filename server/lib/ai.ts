@@ -722,10 +722,27 @@ export async function expandirCapitulo(
   ctx: EbookContext,
   conteudoAtual: string,
   metaPalavras: number,
+  /**
+   * Trava anti-abstracao, usada quando a expansao vem LOGO DEPOIS de uma
+   * reducao de abstracao.
+   *
+   * Sem ela as duas passadas brigam entre si. Medido no quarto livro de teste:
+   * o capitulo 3 tinha caido de 10.2 para 9.0 de abstracao, a expansao devolveu
+   * o tamanho e a abstracao subiu para 14.1 -- pior que o original. A causa
+   * esta no proprio pedido de "mais detalhe sensorial" e "reacao interna dos
+   * personagens", que e exatamente o que produz comparacao e atmosfera.
+   */
+  semAbstracao = false,
 ): Promise<string> {
+  const comoCrescer = semAbstracao
+    ? `Para crescer, aprofunde SOMENTE com material concreto: mais linhas de diálogo, ações físicas (o que a pessoa faz com as mãos, para onde anda, o que pega ou larga), um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo.
+
+PROIBIDO ao expandir: comparação ("como se", "como um", "tal como"), "parecia", atmosfera e clima emocional, e os substantivos abstratos de ambiente -- silêncio, eco, sombra, reflexo, essência. Este capítulo acabou de passar por uma limpeza dessas construções e a expansão não pode trazê-las de volta. Se a única forma que você achar de crescer for por atmosfera, cresça menos.`
+    : `Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.`;
+
   const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para pelo menos ${metaPalavras} palavras, mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
 
-Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.
+${comoCrescer}
 
 Responda apenas com o texto expandido do capítulo, sem comentários.
 

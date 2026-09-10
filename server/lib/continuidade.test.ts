@@ -6,6 +6,7 @@ import {
   nomesAutorizados,
   termosDeFatosFixos,
   normalizarTermo,
+  pareceLugar,
 } from "./continuidade";
 
 test("nome terminado em letra acentuada nao e truncado (bug real: 'Você' virava 'Voc')", () => {
@@ -259,4 +260,41 @@ test("nomesAutorizados e termosDeFatosFixos juntos barram o que o livro real reg
 
   // "Elias" apareceu no capitulo 11 e é, de fato, alguem que nasceu na prosa.
   assert.ok(!jaConhecido("Elias"), "quem é realmente novo tem de passar");
+});
+
+test("bairro citado muitas vezes nao vira 'personagem nao autorizado'", () => {
+  // Caso real de "Encontros Urbanos": "Liberdade" — o bairro — apareceu 10x e
+  // foi acusado de personagem não autorizado, com gravidade warning. O filtro
+  // de termos de fatos fixos não pegava, porque o bairro não estava declarado
+  // em fato fixo nenhum.
+  const corpo = [
+    "Lucas desceu na Liberdade antes do amanhecer.",
+    "O mercado da Liberdade ainda estava fechado.",
+    "Marina disse que ia até a Liberdade depois do expediente.",
+    "Na Liberdade, as lanternas continuavam acesas.",
+    "Ele voltou para a Liberdade no fim da tarde.",
+  ].join(" ");
+
+  assert.equal(pareceLugar(corpo, "Liberdade"), true);
+});
+
+test("pessoa citada nua na maior parte das vezes nao vira lugar", () => {
+  // "da Marina" acontece com gente também — o critério é predominância, não
+  // presença. Sem isso a correção do bairro apagaria metade do elenco.
+  const corpo = [
+    "Marina abriu o caderno e anotou o endereço.",
+    "Lucas esperou Marina na calçada.",
+    "O carro da Marina estava na esquina.",
+    "Marina riu e guardou o lápis.",
+    "Depois Marina saiu sem se despedir.",
+  ].join(" ");
+
+  assert.equal(pareceLugar(corpo, "Marina"), false);
+});
+
+test("pareceLugar nao julga nome citado poucas vezes", () => {
+  // Duas menções não são amostra. Um secundário legítimo que aparece uma vez
+  // "na casa da Clarice" não pode ser reclassificado como endereço.
+  const corpo = "Ela parou na Clarice. Depois seguiu para a Clarice de novo.";
+  assert.equal(pareceLugar(corpo, "Clarice"), false);
 });
