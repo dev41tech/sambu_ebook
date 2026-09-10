@@ -578,7 +578,9 @@ function elencoBlock(outline: Outline, registrados: Personagem[] = []): string {
   if (elenco.length === 0) return "";
   const linhas = elenco.map((p) => `- ${p.nome} (${p.papel}): ${p.descricao}`).join("\n");
   return `
-ELENCO deste livro — use exatamente estes nomes, sem trocar, encurtar, apelidar nem inventar outro protagonista. Prefira sempre reaproveitar quem já está aqui a criar alguém novo; se a cena exigir mesmo uma pessoa nova, ela precisa ter motivo para voltar depois, e não pode assumir o papel central:
+ELENCO deste livro — são estas as pessoas, e ninguém assume o papel central no lugar delas. Prefira sempre reaproveitar quem já está aqui a criar alguém novo; se a cena exigir mesmo uma pessoa nova, ela precisa ter motivo para voltar depois.
+
+Como escrever os nomes: o nome completo aparece na PRIMEIRA vez que a pessoa entra no livro; da segunda em diante, use só o primeiro nome, que é como gente é chamada em português. Repetir "Teodoro Almeida" em toda linha faz o texto soar como boletim de ocorrência. O que não pode é trocar a pessoa, inventar apelido novo ou grafar o nome de outro jeito:
 ${linhas}
 `;
 }

@@ -4,7 +4,17 @@
 // palavras por capítulo do que o modelo entrega, então estimar pelo alvo daria um
 // valor várias vezes maior que a fatura.
 
-// gpt-4o, tarifa de agosto/2026. Se o modelo mudar no .env, isto precisa mudar junto.
+// ATENCAO: estes numeros sao do gpt-4o, tarifa de agosto/2026, e o app passou a
+// rodar em gpt-5.5 (setembro/2026). A estimativa esta ERRADA para baixo por dois
+// motivos somados:
+//
+//   1. a tarifa do gpt-5.5 nao foi medida e nao esta aqui;
+//   2. modelo de raciocinio cobra tambem os tokens de pensamento, que nao
+//      aparecem no texto -- foram ~2.000 a ~2.600 por chamada nas medicoes.
+//
+// Preferimos deixar o numero antigo com este aviso a inventar uma tarifa: um
+// valor plausivel e falso e pior do que um valor sabidamente desatualizado.
+// Recalibrar exige uma fatura real do gpt-5.5. Ver docs/ADOCAO-GPT-5.5.md.
 const USD_ENTRADA_POR_TOKEN = 2.5 / 1_000_000;
 const USD_SAIDA_POR_TOKEN = 10 / 1_000_000;
 const USD_POR_IMAGEM = 0.04; // gpt-image-1
