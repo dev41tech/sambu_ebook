@@ -256,6 +256,35 @@ e disparar em 9.0 mandaria reescrever quase todo capítulo de um livro só um po
 acima. Nesse livro, 7 dos 12 capítulos ficariam acima — de 4.6 a 27.6, com
 variação alta entre capítulos. Revisar quando houver mais livros medidos.
 
+### O tamanho perdido é devolvido, não descartado
+
+Medido no terceiro livro: a reescrita de abstração acertava a prosa e cortava
+texto. O capítulo 3 caiu de 13,6 para 8,1 e foi descartado inteiro por ter
+encolhido 17% — o ganho ia embora junto.
+
+Agora, quando a reescrita **melhora a abstração mas encolhe**, o texto passa
+pelo `expandirCapitulo`, que já existe e já sabe acertar alvo em número de
+palavras. As duas condições são reavaliadas contra o texto **original**, não
+contra o intermediário, porque expandir pode reintroduzir a abstração que a
+passada anterior tirou.
+
+Custa uma chamada a mais exatamente no caso que hoje já desperdiça uma inteira.
+
+### Fechamento de capítulo: medido, não corrigido
+
+O `vozes.ts` oferece fechamentos concretos ao modo narrativo — "uma perda ou um
+custo concreto pago por alguém", "uma decisão tomada, com a consequência já
+visível". Numa leitura de livro real, **nove dos doze capítulos terminavam em
+reflexão abstrata sobre o futuro** mesmo assim.
+
+O `resumirCapitulo` passou a devolver `fechamentoConcreto` no mesmo JSON que já
+devolvia — **sem chamada extra**. No fim da geração sai um aviso com quantos e
+quais capítulos fecharam fraco.
+
+**Nada é reescrito por causa disso.** É deliberado: agir antes de medir foi o
+erro que fez a redução de abstração nascer jogando dez chamadas fora. Primeiro
+a frequência real em alguns livros, depois a decisão de agir.
+
 ### Custo
 
 As duas medem antes de agir e só gastam chamada no capítulo que erra. Em
@@ -334,8 +363,11 @@ mecanismo rodou em memória e alimentou os capítulos seguintes; só não salvou
   basta uma fala reconhecida para o capítulo inteiro ser convertido.
 - **O limite de abstração em 10 não foi calibrado com dados**, só com um livro.
   Sete de doze capítulos daquele livro ficariam acima dele.
-- **Nenhuma das duas verificações foi exercitada numa geração real** — só contra
-  o texto já escrito. Falta gerar um livro com elas ligadas.
+- **A expansão após a redução de abstração ainda não rodou em livro real.** Foi
+  desenhada a partir dos casos medidos no terceiro livro, mas nenhum livro foi
+  gerado depois dela.
+- **O fechamento de capítulo é só medido.** Não há ação nenhuma associada até
+  existir frequência medida em mais de um livro.
 - **O teto de 12 registrados é um chute calibrado por custo**, não medido. Num
   livro com muitos secundários legítimos, o 13º mais antigo sai do prompt.
 - **A checagem intermediária pode reescrever um capítulo legítimo.** Um capítulo

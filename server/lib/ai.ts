@@ -753,6 +753,20 @@ export interface ResumoCapitulo {
    * existindo. Vazio em nao ficcao, onde nao ha elenco.
    */
   personagensNovos: Personagem[];
+  /**
+   * O capitulo termina em decisao, custo ou informacao nova (true), ou numa
+   * reflexao abstrata sobre o futuro (false)?
+   *
+   * O vozes.ts ja oferece fechamentos concretos ao modo narrativo -- "uma perda
+   * ou um custo concreto pago por alguem", "uma decisao tomada, com a
+   * consequencia ja visivel" -- e numa leitura de livro real nove dos doze
+   * capitulos terminavam em reflexao abstrata mesmo assim. Isto MEDE a
+   * frequencia, sem agir: agir antes de medir foi o erro que a reescrita de
+   * abstracao ja cometeu, e custou dez chamadas jogadas fora.
+   *
+   * Default true: capitulo sem resposta do modelo nao pode virar alarme falso.
+   */
+  fechamentoConcreto: boolean;
 }
 
 function normalizarPersonagens(v: unknown): Personagem[] {
@@ -887,14 +901,16 @@ export async function resumirCapitulo(
     ? `,
   "personagensNovos": [
     { "nome": "...", "papel": "apoio | antagonista | ...", "descricao": "quem e, em uma frase" }
-  ]`
+  ],
+  "fechamentoConcreto": true | false`
     : "";
   const conhecidosLinha =
     narrativo && nomesConhecidos.length > 0
       ? `\nJA FAZEM PARTE do livro, nao os liste como novos (nem em versao curta do nome): ${nomesConhecidos.join(", ")}.`
       : "";
   const instrucaoElenco = narrativo
-    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao liste lugares, empresas, eventos nem produtos -- so gente. Se ninguem novo apareceu, use uma lista vazia.${conhecidosLinha}`
+    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao liste lugares, empresas, eventos nem produtos -- so gente. Se ninguem novo apareceu, use uma lista vazia.${conhecidosLinha}
+Em "fechamentoConcreto", responda olhando so o ULTIMO paragrafo do capitulo: true se ele termina numa decisao tomada, num custo pago, num gesto, numa fala ou numa informacao nova; false se termina numa reflexao abstrata sobre o futuro, na atmosfera da cidade ou numa frase de efeito sobre o que ainda pode vir. Julgue o que esta escrito, nao o que o capitulo pretendia.`
     : "";
 
   const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:
@@ -917,7 +933,13 @@ ${conteudo.slice(0, 12000)}`;
   const parsed = JSON.parse(extractJson(raw)) as Partial<ResumoCapitulo>;
   const resumo = String(parsed.resumo ?? "").trim();
   if (!resumo) throw new Error("Resumo do capitulo veio vazio.");
-  return { resumo, personagensNovos: normalizarPersonagens(parsed.personagensNovos) };
+  return {
+    resumo,
+    personagensNovos: normalizarPersonagens(parsed.personagensNovos),
+    // Ausente vira true de proposito: so conta como fechamento fraco quando o
+    // modelo diz explicitamente que e.
+    fechamentoConcreto: parsed.fechamentoConcreto !== false,
+  };
 }
 
 /**

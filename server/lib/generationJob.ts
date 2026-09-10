@@ -270,6 +270,13 @@ async function runJob(ebookId: string) {
     // checagem que continuasse reprovando faria o mesmo capitulo ser pago em loop.
     const reescritos = new Set<number>();
 
+    // Capitulos que terminaram em reflexao abstrata em vez de decisao, custo ou
+    // informacao nova. So contado e reportado -- nenhuma reescrita e disparada
+    // por isto. Primeiro medir a frequencia real, depois decidir se vale agir:
+    // agir antes de medir e o que fez a reducao de abstracao nascer jogando dez
+    // chamadas fora.
+    const fechamentosFracos: number[] = [];
+
     // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
     // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
     // mundo dentro da jangada, no mar.
@@ -327,17 +334,53 @@ async function runJob(ebookId: string) {
 
         // A reescrita precisa baixar a abstracao SEM encolher o capitulo. Cortar
         // metade do texto tambem "reduz a abstracao", e derrubaria a entrega em
-        // palavras -- que hoje esta em 97% da meta e custou trabalho.
+        // palavras -- que hoje esta acima de 97% da meta e custou trabalho.
         if (depois.porMil < antes.porMil && palavrasDepois >= palavrasAntes * 0.95) {
           console.warn(
             `[prosa] ${ebookId} cap. ${idx + 1}: abstracao ${antes.porMil} -> ${depois.porMil} por mil.`,
           );
           return reescrito;
         }
+
+        // Melhorou a prosa mas cortou texto. Era aqui que o ganho ia embora: no
+        // terceiro livro de teste o capitulo 3 caiu de 13.6 para 8.1 de
+        // abstracao e foi descartado inteiro por ter encolhido 17%.
+        //
+        // Em vez de jogar fora, devolve o tamanho com a maquinaria que ja
+        // existe e ja sabe acertar alvo em numero de palavras. Custa uma chamada
+        // a mais exatamente no caso que hoje ja desperdica uma inteira.
+        if (depois.porMil < antes.porMil) {
+          try {
+            const expandido = await expandirCapitulo(ctx, reescrito, palavrasAntes);
+            const finalAbs = abstracoesDe(expandido);
+            const finalPalavras = expandido.trim().split(/\s+/).filter(Boolean).length;
+
+            // Expandir pode reintroduzir a abstracao que a passada anterior
+            // tirou -- por isso as duas condicoes sao checadas de novo, contra
+            // o texto ORIGINAL, e nao contra o intermediario.
+            if (finalAbs.porMil < antes.porMil && finalPalavras >= palavrasAntes * 0.95) {
+              console.warn(
+                `[prosa] ${ebookId} cap. ${idx + 1}: abstracao ${antes.porMil} -> ${finalAbs.porMil} por mil, ` +
+                  `tamanho recuperado (${palavrasAntes} -> ${palavrasDepois} -> ${finalPalavras} palavras).`,
+              );
+              return expandido;
+            }
+            console.warn(
+              `[prosa] ${ebookId} cap. ${idx + 1}: expansao apos a reducao nao fechou ` +
+                `(abstracao ${finalAbs.porMil}, palavras ${finalPalavras} de ${palavrasAntes}).`,
+            );
+          } catch (err) {
+            console.warn(
+              `[prosa] expansao apos reducao no capitulo ${idx + 1} falhou:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+
         const motivo =
           depois.porMil >= antes.porMil
             ? "nao reduziu a abstracao"
-            : `encolheu o capitulo em ${Math.round((1 - palavrasDepois / palavrasAntes) * 100)}%`;
+            : `encolheu o capitulo em ${Math.round((1 - palavrasDepois / palavrasAntes) * 100)}% e a expansao nao recuperou`;
         console.warn(
           `[prosa] ${ebookId} cap. ${idx + 1}: reescrita descartada, ${motivo} ` +
             `(abstracao ${antes.porMil} -> ${depois.porMil}, palavras ${palavrasAntes} -> ${palavrasDepois}).`,
@@ -450,7 +493,7 @@ async function runJob(ebookId: string) {
       content: string,
     ): Promise<void> => {
       try {
-        const { resumo, personagensNovos } = await resumirCapitulo(
+        const { resumo, personagensNovos, fechamentoConcreto } = await resumirCapitulo(
           ctx,
           chapter.title,
           content,
@@ -499,6 +542,10 @@ async function runJob(ebookId: string) {
           novos,
           chapter.id,
         ]);
+        if (narrativo && fechamentoConcreto === false) {
+          fechamentosFracos.push(chapter.idx);
+        }
+
         // Os dois arrays em memoria alimentam o proximo capitulo desta mesma execucao.
         chapter.resumo_fatos = resumo;
         chapter.personagens_json = novos;
@@ -676,6 +723,14 @@ async function runJob(ebookId: string) {
         await run("UPDATE ebooks SET images_done = images_done + 1 WHERE id = $1", [ebookId]);
       }
       row = (await getEbook(ebookId))!;
+    }
+
+    if (fechamentosFracos.length > 0) {
+      console.warn(
+        `[prosa] ${ebookId}: ${fechamentosFracos.length} de ${chapters.length} capitulos terminam em ` +
+          `reflexao abstrata em vez de decisao, custo ou informacao nova. ` +
+          `Capitulos: ${fechamentosFracos.map((i) => i + 1).join(", ")}.`,
+      );
     }
 
     // Os resumos factuais de todos os capitulos ja existem a esta altura, e a
