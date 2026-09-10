@@ -183,6 +183,59 @@ function chapterCountFor(palavrasAlvo: number): number {
   return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
 
+/**
+ * Qual parametro de teto de saida este modelo aceita.
+ *
+ * `max_tokens` era o nome antigo; os modelos novos so aceitam
+ * `max_completion_tokens` e recusam a chamada com 400 se receberem o antigo.
+ * Foi isto que manteve o app preso ao gpt-4o -- nao por escolha, por
+ * incompatibilidade: trocar OPENAI_MODEL para um modelo novo fazia toda geracao
+ * morrer no sumario.
+ *
+ * Em vez de manter uma lista de quais modelos aceitam o que -- que envelhece a
+ * cada lancamento e que eu erraria --, a primeira recusa ensina: o proximo
+ * pedido ja vai com o nome certo, e a escolha vale pelo resto do processo.
+ *
+ * `null` = ainda nao se sabe.
+ */
+let campoDeTeto: "max_tokens" | "max_completion_tokens" | null = null;
+
+/**
+ * Folga de tokens para o raciocinio, em valor ABSOLUTO.
+ *
+ * Nos modelos de raciocinio os tokens de pensamento saem do MESMO teto que o
+ * texto. Os tetos deste app foram calibrados para o gpt-4o, que nao pensa: o
+ * sumario pede 2.600 e o gpt-4o gasta ~2.400 escrevendo. O gpt-5.5 gastou os
+ * 2.600 inteiros raciocinando e devolveu conteudo vazio -- finish_reason=length
+ * com zero caractere.
+ *
+ * A primeira versao disto era um MULTIPLICADOR, e foi um erro caro de medir: ao
+ * triplicar o teto para dar folga de pensamento, triplicou junto o teto do
+ * TEXTO, e o modelo preencheu o espaco. O livro saiu com 35.795 palavras para
+ * uma meta de 10.092 -- 3,5x o pedido.
+ *
+ * Reserva absoluta separa as duas coisas: o alvo de texto continua sendo o que
+ * cada chamada pediu, e a folga cobre so o pensamento. O valor se calibra
+ * sozinho pelo que a API reporta em `reasoning_tokens`, com uma margem, porque
+ * o gasto varia entre chamadas -- no mesmo prompt e no mesmo teto, o sumario
+ * estourou numa tentativa e passou na seguinte.
+ */
+let reservaDeRaciocinio = 0;
+const RESERVA_MAXIMA = 8000;
+/** Quanto somar quando a resposta volta vazia por teto. */
+const PASSO_DA_RESERVA = 2500;
+/** Margem sobre o maior gasto de raciocinio ja observado. */
+const MARGEM = 1.5;
+
+/** A mensagem de 400 da OpenAI diz qual dos dois nomes ela queria. */
+function tetoRecusado(err: unknown): "max_tokens" | "max_completion_tokens" | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!/unsupported parameter/i.test(msg)) return null;
+  if (/'max_tokens'/.test(msg) && /max_completion_tokens/.test(msg)) return "max_completion_tokens";
+  if (/'max_completion_tokens'/.test(msg) && /max_tokens/.test(msg)) return "max_tokens";
+  return null;
+}
+
 async function askOpenAI(
   system: string,
   prompt: string,
@@ -191,21 +244,76 @@ async function askOpenAI(
   minChars = 200
 ): Promise<string> {
   const openai = getClient();
-  const response = await withRetry(() =>
+
+  const pedir = (campo: "max_tokens" | "max_completion_tokens", teto: number) =>
     openai.chat.completions.create({
       model: MODEL,
-      max_tokens: maxTokens,
+      [campo]: teto,
       ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },
       ],
-    })
-  );
+    });
+
+  const response = await withRetry(async () => {
+    const campo = campoDeTeto ?? "max_tokens";
+    let r;
+    try {
+      r = await pedir(campo, maxTokens + reservaDeRaciocinio);
+    } catch (err) {
+      const correto = tetoRecusado(err);
+      // So tenta de novo quando a propria API disse qual e o nome certo.
+      // Qualquer outro erro sobe para o withRetry decidir.
+      if (!correto || correto === campo) throw err;
+      campoDeTeto = correto;
+      console.warn(`[ia] modelo ${MODEL} usa "${correto}" como teto de saida; ajustado para o resto do processo.`);
+      r = await pedir(correto, maxTokens + reservaDeRaciocinio);
+    }
+
+    // Cortado no teto sem produzir texto: o pensamento comeu a verba inteira.
+    // Soma um passo de reserva e refaz -- uma vez so por chamada; se ainda
+    // assim vier vazio, o erro sobe com o diagnostico completo, em vez de
+    // virar um loop caro.
+    const semTexto = !r.choices[0]?.message?.content;
+    if (semTexto && r.choices[0]?.finish_reason === "length" && reservaDeRaciocinio < RESERVA_MAXIMA) {
+      const anterior = reservaDeRaciocinio;
+      reservaDeRaciocinio = Math.min(RESERVA_MAXIMA, reservaDeRaciocinio + PASSO_DA_RESERVA);
+      console.warn(
+        `[ia] modelo ${MODEL} gastou o teto inteiro raciocinando; ` +
+          `reserva de raciocinio ${anterior} -> ${reservaDeRaciocinio} tokens para o resto do processo.`,
+      );
+      r = await pedir(campoDeTeto ?? campo, maxTokens + reservaDeRaciocinio);
+    }
+
+    // Calibra pelo que a API reportou: a reserva converge para o que este
+    // modelo realmente gasta pensando, em vez de ficar num chute.
+    const gasto = r.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+    const desejada = Math.min(RESERVA_MAXIMA, Math.ceil(gasto * MARGEM));
+    if (desejada > reservaDeRaciocinio) {
+      reservaDeRaciocinio = desejada;
+      console.warn(`[ia] reserva de raciocinio ajustada para ${reservaDeRaciocinio} tokens (gasto observado: ${gasto}).`);
+    }
+    return r;
+  });
   const choice = response.choices[0];
   const text = choice?.message?.content;
   if (!text) {
-    throw new Error("Resposta vazia da IA.");
+    // "Resposta vazia da IA" sozinho nao diz nada, e escondeu a causa real na
+    // primeira tentativa de trocar de modelo. O motivo esta sempre no
+    // finish_reason: "length" e teto de saida curto -- em modelo de raciocinio
+    // os tokens de pensamento consomem o mesmo teto e podem nao sobrar nada
+    // para o texto; "content_filter" e recusa da plataforma.
+    const motivo = choice?.finish_reason ?? "desconhecido";
+    const uso = response.usage;
+    const raciocinio = uso?.completion_tokens_details?.reasoning_tokens;
+    const detalhe =
+      uso
+        ? ` (teto ${maxTokens}, saida ${uso.completion_tokens}${
+            raciocinio ? `, sendo ${raciocinio} de raciocinio` : ""
+          })`
+        : "";
+    throw new Error(`Resposta vazia da IA: finish_reason=${motivo}${detalhe}.`);
   }
   // Truncamento por teto de tokens passava em silencio. Em JSON ele e fatal e so
   // aparecia adiante como "Unexpected end of JSON input", sem dizer a causa --
