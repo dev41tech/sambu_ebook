@@ -8,6 +8,7 @@ import { Router } from "express";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { all, one, run, type EbookRow, type ChapterRow } from "../lib/db";
+import { rota } from "../lib/rota";
 
 export const storefrontRouter = Router();
 
@@ -100,13 +101,13 @@ async function toCatalogBook(row: EbookRow, index: number) {
 }
 
 // GET /api/catalog — só ebooks prontos entram na vitrine.
-storefrontRouter.get("/catalog", async (_req, res) => {
+storefrontRouter.get("/catalog", rota(async (_req, res) => {
   const rows = await all<EbookRow>("SELECT * FROM ebooks WHERE status = 'ready' ORDER BY created_at DESC");
   res.json({ books: await Promise.all(rows.map((row, i) => toCatalogBook(row, i))) });
-});
+}));
 
 // GET /api/catalog/content?id= — capítulos no formato que o Reader espera.
-storefrontRouter.get("/catalog/content", async (req, res) => {
+storefrontRouter.get("/catalog/content", rota(async (req, res) => {
   const id = String(req.query.id ?? "");
   if (!id) {
     res.status(400).json({ error: "invalid_payload" });
@@ -142,10 +143,10 @@ storefrontRouter.get("/catalog/content", async (req, res) => {
   });
 
   res.json({ chapters });
-});
+}));
 
 // GET /api/catalog/cover?id= — reaproveita a capa já gerada pelo app.
-storefrontRouter.get("/catalog/cover", async (req, res) => {
+storefrontRouter.get("/catalog/cover", rota(async (req, res) => {
   const id = String(req.query.id ?? "");
   if (!id) {
     res.status(400).json({ error: "invalid_payload" });
@@ -157,18 +158,18 @@ storefrontRouter.get("/catalog/cover", async (req, res) => {
     return;
   }
   res.sendFile(row.cover_path);
-});
+}));
 
 // GET/POST /api/progress
-storefrontRouter.get("/progress", async (_req, res) => {
+storefrontRouter.get("/progress", rota(async (_req, res) => {
   const rows = await all<{ book_id: string; progress: number }>(
     "SELECT book_id, progress FROM reading_progress WHERE user_email = $1",
     [readerEmail()]
   );
   res.json({ progress: Object.fromEntries(rows.map((r) => [r.book_id, r.progress])) });
-});
+}));
 
-storefrontRouter.post("/progress", async (req, res) => {
+storefrontRouter.post("/progress", rota(async (req, res) => {
   const body = req.body ?? {};
   const bookId = String(body.bookId ?? "");
   const progress = Number(body.progress);
@@ -186,17 +187,17 @@ storefrontRouter.post("/progress", async (req, res) => {
     [randomUUID(), readerEmail(), bookId, Number(body.chapter) || 0, progress]
   );
   res.json({ ok: true });
-});
+}));
 
 // GET/POST /api/favorites
-storefrontRouter.get("/favorites", async (_req, res) => {
+storefrontRouter.get("/favorites", rota(async (_req, res) => {
   const rows = await all<{ book_id: string }>("SELECT book_id FROM favorites WHERE user_email = $1", [
     readerEmail(),
   ]);
   res.json({ favorites: rows.map((r) => r.book_id) });
-});
+}));
 
-storefrontRouter.post("/favorites", async (req, res) => {
+storefrontRouter.post("/favorites", rota(async (req, res) => {
   const body = req.body ?? {};
   const bookId = String(body.bookId ?? "");
   if (!bookId || typeof body.favorite !== "boolean") {
@@ -213,18 +214,18 @@ storefrontRouter.post("/favorites", async (req, res) => {
     await run("DELETE FROM favorites WHERE user_email = $1 AND book_id = $2", [readerEmail(), bookId]);
   }
   res.json({ ok: true, bookId, favorite: body.favorite });
-});
+}));
 
 // GET/POST /api/bookmarks
-storefrontRouter.get("/bookmarks", async (req, res) => {
+storefrontRouter.get("/bookmarks", rota(async (req, res) => {
   const bookId = req.query.bookId ? String(req.query.bookId) : null;
   const rows = bookId
     ? await all("SELECT * FROM bookmarks WHERE user_email = $1 AND book_id = $2", [readerEmail(), bookId])
     : await all("SELECT * FROM bookmarks WHERE user_email = $1", [readerEmail()]);
   res.json({ bookmarks: rows });
-});
+}));
 
-storefrontRouter.post("/bookmarks", async (req, res) => {
+storefrontRouter.post("/bookmarks", rota(async (req, res) => {
   const body = req.body ?? {};
   const bookId = String(body.bookId ?? "");
   const chapter = Number(body.chapter);
@@ -256,17 +257,17 @@ storefrontRouter.post("/bookmarks", async (req, res) => {
     ]
   );
   res.json({ ok: true, active: true });
-});
+}));
 
 // GET/POST /api/subscription
 const PLANS = new Set(["immersive_monthly", "immersive_annual", "family_monthly"]);
 
-storefrontRouter.get("/subscription", async (_req, res) => {
+storefrontRouter.get("/subscription", rota(async (_req, res) => {
   const row = (await one("SELECT * FROM subscriptions WHERE user_email = $1", [readerEmail()])) ?? null;
   res.json({ subscription: row });
-});
+}));
 
-storefrontRouter.post("/subscription", async (req, res) => {
+storefrontRouter.post("/subscription", rota(async (req, res) => {
   const plan = String(req.body?.plan ?? "");
   if (!PLANS.has(plan)) {
     res.status(400).json({ error: "invalid_plan" });
@@ -283,18 +284,18 @@ storefrontRouter.post("/subscription", async (req, res) => {
     [randomUUID(), readerEmail(), plan, periodEnd.toISOString()]
   );
   res.json({ ok: true, plan, message: "Teste de 7 dias liberado" });
-});
+}));
 
 // GET/PATCH /api/profile
-storefrontRouter.get("/profile", async (_req, res) => {
+storefrontRouter.get("/profile", rota(async (_req, res) => {
   const email = readerEmail();
   const row = await one<Record<string, unknown>>("SELECT * FROM profiles WHERE email = $1", [email]);
   res.json({
     profile: row ?? { email, displayName: email.split("@")[0], role: "reader" },
   });
-});
+}));
 
-storefrontRouter.patch("/profile", async (req, res) => {
+storefrontRouter.patch("/profile", rota(async (req, res) => {
   const body = req.body ?? {};
   const email = readerEmail();
   const displayName = String(body.displayName ?? "").trim().slice(0, 80) || email.split("@")[0];
@@ -317,10 +318,10 @@ storefrontRouter.patch("/profile", async (req, res) => {
     ]
   );
   res.json({ ok: true });
-});
+}));
 
 // POST /api/analytics
-storefrontRouter.post("/analytics", async (req, res) => {
+storefrontRouter.post("/analytics", rota(async (req, res) => {
   const body = req.body ?? {};
   const event = String(body.event ?? "");
   if (!event || event.length > 80) {
@@ -340,4 +341,4 @@ storefrontRouter.post("/analytics", async (req, res) => {
     ]
   );
   res.status(201).json({ ok: true });
-});
+}));

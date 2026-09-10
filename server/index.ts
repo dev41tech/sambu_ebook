@@ -16,11 +16,37 @@ import { storefrontRouter } from "./routes/storefront";
 import { requireAuth } from "./lib/requireAuth";
 import { sql } from "./lib/db";
 import { retomarGeracoesInterrompidas } from "./lib/generationJob";
+import { mensagemDeErroParaUsuario } from "./lib/sanitizar";
+
+// Rede de seguranca do processo, antes de qualquer rota existir.
+//
+// Uma promise rejeitada sem dono encerra o processo no Node >= 15. Num app que
+// fala com um Postgres remoto e escreve livros de trinta minutos, isso significa
+// perder trabalho por causa de uma oscilacao de rede. O `rota()` das rotas ja
+// entrega a rejeicao ao Express; isto aqui e o que sobra: bug em codigo
+// assincrono fora de rota, callback de biblioteca, timer.
+process.on("unhandledRejection", (motivo) => {
+  const bruta = motivo instanceof Error ? (motivo.stack ?? motivo.message) : String(motivo);
+  console.error("[processo] promise rejeitada sem tratamento (o servidor continua):", bruta);
+});
+
+// Excecao sincrona nao capturada e outra historia: dai em diante o estado do
+// processo nao e confiavel, e seguir rodando pode gravar dado errado no banco.
+// Sai com codigo 1 para o supervisor reiniciar -- o que hoje custa pouco,
+// porque retomarGeracoesInterrompidas() recoloca na fila o livro que estava
+// sendo escrito.
+process.on("uncaughtException", (err) => {
+  console.error("[processo] excecao nao capturada, encerrando para reiniciar limpo:", err);
+  process.exit(1);
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FileStore = FileStoreFactory(session);
 
 const app = express();
+// Nao anunciar o servidor. Nao impede nada sozinho, mas nao ha motivo para
+// entregar a informacao de graca.
+app.disable("x-powered-by");
 app.use(express.json({ limit: "10mb" }));
 
 const sessionSecret = process.env.SESSION_SECRET;
@@ -92,6 +118,40 @@ async function iniciar() {
     );
     process.exit(1);
   }
+
+  // Ultimo elo da corrente de erro: tudo que o `rota()` capturou nas rotas
+  // chega aqui. Sem este handler o Express responde com a stack em HTML, que
+  // ja vazou nome de variavel de ambiente para a tela uma vez -- por isso a
+  // resposta passa pelo mesmo sanitizador das mensagens de geracao.
+  //
+  // Os quatro parametros nao sao decoracao: e a assinatura que faz o Express
+  // reconhecer isto como error handler em vez de middleware comum.
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // Erro que ja se declara do cliente -- JSON malformado pelo body-parser,
+    // payload acima do limite -- nao e falha do servidor. Responder 500 nesses
+    // casos esconde um pedido errado atras de um alarme falso, e enche o log.
+    const declarado = (err as { status?: number; statusCode?: number } | null)?.status
+      ?? (err as { statusCode?: number } | null)?.statusCode;
+    const status = typeof declarado === "number" && declarado >= 400 && declarado < 600 ? declarado : 500;
+
+    const bruta = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    if (status >= 500) {
+      console.error("[erro] rota falhou:", bruta);
+    } else {
+      console.warn(`[erro] pedido recusado (${status}):`, err instanceof Error ? err.message : String(err));
+    }
+
+    // Resposta ja comecou a ser enviada: mexer agora corrompe o corpo. Só resta
+    // deixar o Express derrubar a conexao.
+    if (res.headersSent) return;
+
+    res.status(status).json({
+      error:
+        status >= 500
+          ? mensagemDeErroParaUsuario(err instanceof Error ? err.message : String(err))
+          : "Requisição inválida.",
+    });
+  });
 
   // Livros que estavam sendo escritos quando o processo anterior caiu. Precisa
   // vir depois da checagem de banco acima -- antes dela nao ha de onde ler.

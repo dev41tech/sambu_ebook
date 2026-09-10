@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { extractTextFromUrl, extractTextFromPdf } from "../lib/reference";
+import { rota } from "../lib/rota";
 
 export const referenceRouter = Router();
 
@@ -9,7 +10,7 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
-referenceRouter.post("/url", async (req, res) => {
+referenceRouter.post("/url", rota(async (req, res) => {
   const url = String(req.body?.url ?? "").trim();
   if (!url) {
     res.status(400).json({ error: "Informe um link." });
@@ -21,9 +22,9 @@ referenceRouter.post("/url", async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : "Erro ao extrair o conteúdo do link." });
   }
-});
+}));
 
-referenceRouter.post("/pdf", upload.single("file"), async (req, res) => {
+referenceRouter.post("/pdf", upload.single("file"), rota(async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "Envie um arquivo PDF." });
     return;
@@ -34,4 +35,4 @@ referenceRouter.post("/pdf", upload.single("file"), async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : "Erro ao extrair o conteúdo do PDF." });
   }
-});
+}));
