@@ -771,6 +771,19 @@ export async function generateChapter(
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
   const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
   const wordsPerChapter = Math.round(alvoTotal / outline.chapters.length);
+  // Teto por capitulo, e nao so piso.
+  //
+  // O prompt sempre pediu "NO MINIMO N palavras" e mais nada. Com o gpt-4o
+  // isso bastava, porque ele entrega perto do minimo e o teto de tokens
+  // segurava o resto -- ou seja, o controle de tamanho deste app era
+  // acidental, nao projetado. O gpt-5.5 escreveu 2.875 palavras por capitulo
+  // para um pedido de 841: um livro de 34.502 palavras para uma meta de
+  // 10.092, 3,4x o pedido.
+  //
+  // 30% de folga sobre o alvo deixa espaco para uma cena render mais sem
+  // transformar o livro inteiro noutra coisa -- e sem estourar a estimativa de
+  // custo e de paginas que o usuario viu antes de mandar gerar.
+  const tetoDoCapitulo = Math.round(wordsPerChapter * 1.3);
   // Aberturas e fechamentos do modo, nao mais uma lista unica de nao ficcao.
   const voz = vozDe(modoDe(ctx.theme));
   const opening = voz.aberturas[chapterIndex % voz.aberturas.length];
@@ -810,7 +823,7 @@ ${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
-Escreva NO MÍNIMO ${wordsPerChapter} palavras -- "aproximadamente" não é licença para entregar menos, é a meta a alcançar ou passar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
+Escreva entre ${wordsPerChapter} e ${tetoDoCapitulo} palavras. O piso não é sugestão: "aproximadamente" não é licença para entregar menos. O teto também não: passar dele desequilibra o livro em relação aos outros capítulos e estoura a extensão que o autor pediu. Se a cena pedir mais espaço, corte o que for acessório em vez de ultrapassar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
   return askOpenAI(promptDoModo(ctx), prompt, 4000);
 }
 
