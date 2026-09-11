@@ -89,6 +89,7 @@ export interface EbookRow {
   word_goal: number;
   continuity_json: string | null;
   metrics_json: string | null;
+  memoria_longa: string | null;
   author_name: string;
   author_bio: string;
   include_copyright: boolean;

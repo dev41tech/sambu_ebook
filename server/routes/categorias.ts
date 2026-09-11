@@ -8,6 +8,7 @@ import {
   limparNomeCategoria,
   normalizarCategoria,
 } from "../../src/lib/categorias";
+import { rota } from "../lib/rota";
 
 export const categoriasRouter = Router();
 
@@ -36,12 +37,12 @@ export async function isCategoriaPersonalizada(caminho: string): Promise<boolean
   return !!row;
 }
 
-categoriasRouter.get("/", async (_req, res) => {
+categoriasRouter.get("/", rota(async (_req, res) => {
   const personalizadas = await listarPersonalizadas();
   res.json({ fixas: CATEGORIAS, personalizadas: personalizadas.map((c) => c.caminho) });
-});
+}));
 
-categoriasRouter.post("/", async (req, res) => {
+categoriasRouter.post("/", rota(async (req, res) => {
   const item = limparNomeCategoria(String(req.body?.item ?? ""));
   if (!item) {
     res.status(400).json({ error: "Informe o nome da categoria." });
@@ -80,4 +81,4 @@ categoriasRouter.post("/", async (req, res) => {
   );
 
   res.status(201).json({ caminho, criada: true });
-});
+}));

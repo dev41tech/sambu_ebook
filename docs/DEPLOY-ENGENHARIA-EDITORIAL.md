@@ -7,12 +7,21 @@ antes de subir a imagem: sem elas o app sobe e falha.
 
 ## 1. Migrations — aplicar ANTES do deploy, nesta ordem
 
+> **Esta é a lista completa e canônica de migrations do projeto.** As notas de
+> deploy das levas seguintes (`DEPLOY-GUARDAS-DE-CONTINUIDADE.md`) apontam para
+> cá em vez de manter a própria lista — duas listas divergentes foi como a 0008
+> e a 0009 chegaram a existir sem constar de lugar nenhum.
+
 ```bash
 node scripts/aplicar-migration.mjs db/migrations/0003_custom_categories.sql
 node scripts/aplicar-migration.mjs db/migrations/0004_learnings_por_genero.sql
 node scripts/aplicar-migration.mjs db/migrations/0005_achados_continuidade.sql
 node scripts/aplicar-migration.mjs db/migrations/0006_meta_palavras.sql
 node scripts/aplicar-migration.mjs db/migrations/0007_aprovacao_sumario.sql
+node scripts/aplicar-migration.mjs db/migrations/0008_memoria_entre_capitulos.sql
+node scripts/aplicar-migration.mjs db/migrations/0009_metricas_qualidade.sql
+node scripts/aplicar-migration.mjs db/migrations/0010_elenco_por_capitulo.sql
+node scripts/aplicar-migration.mjs db/migrations/0011_memoria_longa.sql
 ```
 
 O script lê `DATABASE_URL` do ambiente. Com `psql` disponível, o equivalente é
@@ -29,6 +38,10 @@ quebra.
 | 0005 | Coluna `ebooks.continuity_json` | A verificação de continuidade falha ao gravar (é capturada, mas nunca registra nada) |
 | 0006 | Colunas `ebooks.extension_mode` e `ebooks.word_goal` | A criação de ebook quebra: o INSERT cita colunas que não existem |
 | 0007 | Colunas `ebooks.outline_approval` e `ebooks.outline_approved_at` | A criação de ebook quebra pelo mesmo motivo |
+| 0008 | Coluna `chapters.resumo_fatos` | A geração falha ao gravar o resumo do primeiro capítulo, e todos os seguintes voltam a receber só os títulos anteriores |
+| 0009 | Coluna `ebooks.metrics_json` | A finalização falha ao gravar o placar de qualidade |
+| 0010 | Coluna `chapters.personagens_json` | **A geração quebra no primeiro capítulo**: o UPDATE do resumo cita uma coluna que não existe |
+| 0011 | Coluna `ebooks.memoria_longa` | A memória longa falha ao gravar; o livro volta a enxergar só a janela dos 8 capítulos mais recentes |
 
 A 0006 também preenche `word_goal` dos ebooks existentes com
 `page_count * words_per_page`, para que os dois modos contem a mesma história
@@ -37,9 +50,33 @@ os ebooks atuais se comportam — nada muda para eles.
 
 ### Teste rápido depois de aplicar
 
-Criar um ebook pela tela é o caminho mais curto para confirmar que as cinco
-migrations pegaram: o `INSERT` cita colunas de 0006 e 0007, e a tela de
-categorias depende da tabela de 0003.
+Criar um ebook pela tela é o caminho mais curto para confirmar que as migrations
+até a 0007 pegaram: o `INSERT` cita colunas de 0006 e 0007, e a tela de
+categorias depende da tabela de 0003. As de 0008 a 0011 só se manifestam depois
+do primeiro capítulo — para conferi-las, gere um livro curto e verifique:
+
+```sql
+SELECT idx, resumo_fatos IS NOT NULL AS tem_resumo,
+       personagens_json IS NOT NULL AS tem_elenco
+FROM chapters WHERE ebook_id = '<id>' ORDER BY idx;
+
+SELECT memoria_longa IS NOT NULL AS tem_memoria_longa FROM ebooks WHERE id = '<id>';
+```
+
+Vazio em algum capítulo significa que o registro falhou ali, e o capítulo
+seguinte perdeu aquele contexto. `memoria_longa` só é preenchida a partir do 8º
+capítulo — em livro menor que isso, `NULL` é o esperado.
+
+### Coluna órfã: `chapters.state_json`
+
+Existe no banco de produção, vinda de uma tentativa anterior de memória entre
+capítulos que não foi adiante. **Nenhum código lê ou escreve nela.** Removê-la é
+seguro, mas fica como decisão à parte, fora de qualquer migration, porque
+`DROP COLUMN` não tem volta:
+
+```sql
+ALTER TABLE chapters DROP COLUMN IF EXISTS state_json;
+```
 
 ## 2. Variáveis de ambiente
 
@@ -184,10 +221,13 @@ Dois ebooks gerados de ponta a ponta neste branch:
 
 ## Limitações conhecidas
 
-- **A entrega fica entre 50% e 64% do pedido.** O modelo escreve cerca de 500
-  palavras quando se pede 1.000. Não foi resolvido nesta versão.
-- **O job de geração vive em memória** e morre em qualquer restart do servidor.
-  Com livros de 12 a 33 minutos, um deploy no meio perde o que já foi pago.
+- ~~**A entrega fica entre 50% e 64% do pedido.**~~ Não é mais verdade, e
+  ninguém tinha medido de novo: "Corações Urbanos", medido em 09/2026, entregou
+  **97% da meta** (9.808 de 10.092 palavras). A expansão forçada abaixo de 85%
+  resolveu isto.
+- ~~**O job de geração vive em memória** e morre em qualquer restart do
+  servidor.~~ Resolvido depois desta leva: ver
+  `DEPLOY-GUARDAS-DE-CONTINUIDADE.md`.
 - **Os tons de voz não servem a ficção** — "Motivador", "Técnico e direto",
   "Descontraído" e "Formal" foram pensados para não ficção.
 - **`page_count` grava o default do formulário** quando o modo é palavras.

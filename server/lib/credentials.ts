@@ -7,7 +7,19 @@
 // A senha e guardada com scrypt + salt aleatorio, nunca em texto puro. scrypt
 // vem do node:crypto, entao nao entra dependencia nova.
 import crypto from "node:crypto";
+import { promisify } from "node:util";
 import { one, run } from "./db";
+
+// scrypt e caro DE PROPOSITO -- e o que o torna bom para senha. A versao
+// SINCRONA, porem, cobra esse custo do event loop: cada tentativa de login
+// congelava o processo inteiro por dezenas de milissegundos, e o processo e o
+// mesmo que serve as rotas e escreve os livros. Sem limite de tentativas, isso
+// virava um jeito barato de derrubar o servidor de fora.
+const scrypt = promisify(crypto.scrypt) as (
+  senha: string,
+  salt: string,
+  tamanho: number,
+) => Promise<Buffer>;
 
 const SCRYPT_KEYLEN = 64;
 const MIN_SENHA = 8;
@@ -17,16 +29,16 @@ export interface Credenciais {
   password_hash: string;
 }
 
-function hash(senha: string): string {
+async function hash(senha: string): Promise<string> {
   const salt = crypto.randomBytes(16).toString("hex");
-  const derivada = crypto.scryptSync(senha, salt, SCRYPT_KEYLEN).toString("hex");
+  const derivada = (await scrypt(senha, salt, SCRYPT_KEYLEN)).toString("hex");
   return `scrypt$${salt}$${derivada}`;
 }
 
-function confere(senha: string, guardado: string): boolean {
+async function confere(senha: string, guardado: string): Promise<boolean> {
   const [algoritmo, salt, esperado] = guardado.split("$");
   if (algoritmo !== "scrypt" || !salt || !esperado) return false;
-  const derivada = crypto.scryptSync(senha, salt, SCRYPT_KEYLEN);
+  const derivada = await scrypt(senha, salt, SCRYPT_KEYLEN);
   const alvo = Buffer.from(esperado, "hex");
   // Comprimentos diferentes fariam o timingSafeEqual lancar em vez de devolver
   // false, e a excecao vazaria como erro 500 no login.
@@ -56,7 +68,7 @@ export async function autentica(username: string, password: string): Promise<boo
   const linha = await guardadas();
 
   if (linha) {
-    return comparaTextoFixo(username, linha.username) && confere(password, linha.password_hash);
+    return comparaTextoFixo(username, linha.username) && (await confere(password, linha.password_hash));
   }
 
   // Estado inicial: ninguem trocou a senha ainda.
@@ -94,7 +106,7 @@ export async function trocaSenha(
      DO UPDATE SET username = excluded.username,
                    password_hash = excluded.password_hash,
                    updated_at = excluded.updated_at`,
-    [usuario, hash(novaSenha)]
+    [usuario, await hash(novaSenha)]
   );
   return { ok: true };
 }

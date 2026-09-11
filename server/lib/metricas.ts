@@ -41,6 +41,109 @@ function contarOcorrencias(texto: string, re: RegExp): number {
   return m ? m.length : 0;
 }
 
+/**
+ * Teto de abstracao por mil palavras acima do qual um capitulo e reescrito.
+ *
+ * A referencia medida e 8.9 ("Sob o Sol do Misterio", motor antigo). 8.9 e um
+ * livro real, nao uma meta: disparar em 9.0 mandaria reescrever quase todo
+ * capitulo de um livro so um pouco acima. 10 deixa uma folga de ~12% e so pega
+ * o excesso claro -- "Coracoes Urbanos" deu 12.20. E a primeira calibragem;
+ * revisar quando houver mais livros medidos.
+ */
+export const LIMITE_ABSTRACAO_POR_MIL = 10;
+
+export interface Abstracao {
+  porMil: number;
+  /** Os termos que mais pesaram, do mais frequente para o menos. */
+  termos: Array<{ termo: string; vezes: number }>;
+}
+
+/**
+ * Densidade de abstracao de UM texto, com os termos que a produziram.
+ *
+ * `medir()` ja calculava isto para o livro inteiro, mas so como numero final. A
+ * reescrita precisa saber tambem QUAIS palavras estao sobrando naquele
+ * capitulo: mandar "reduza a abstracao" sem nomear nada e o tipo de instrucao
+ * vaga que o modelo ignora.
+ */
+export function abstracoesDe(texto: string): Abstracao {
+  const limpo = (texto || "").trim();
+  const palavras = limpo.length === 0 ? 0 : limpo.split(/\s+/).length;
+  const mil = palavras > 0 ? palavras / 1000 : 1;
+
+  const contagem = new Map<string, number>();
+  for (const achado of limpo.match(RE_ABSTRACAO) ?? []) {
+    const chave = achado.toLowerCase().trim();
+    contagem.set(chave, (contagem.get(chave) ?? 0) + 1);
+  }
+
+  const termos = [...contagem.entries()]
+    .map(([termo, vezes]) => ({ termo, vezes }))
+    .sort((a, b) => b.vezes - a.vezes);
+
+  return { porMil: Math.round((termos.reduce((s, t) => s + t.vezes, 0) / mil) * 10) / 10, termos };
+}
+
+/**
+ * Verbos que denunciam que o trecho entre aspas e FALA, e nao citacao.
+ *
+ * E o unico criterio confiavel que achei. A primeira versao contava aspas que
+ * abrem paragrafo, e errou nos dois sentidos contra o livro real: marcou o
+ * e-mail do capitulo 2 (citacao legitima, que uma conversao automatica
+ * transformaria em fala) e nao viu os capitulos 7 e 12, que embutem a fala no
+ * meio do paragrafo narrativo.
+ */
+//
+// O `(?!-se)` no fim nao e detalhe: num livro real, o trecho
+// `um "acampamento de mochileiros", e Marina lembrou-se da carta` foi marcado
+// como fala por causa de "lembrou". E termo entre aspas, nao dialogo. Na forma
+// reflexiva estes verbos mudam de sentido -- lembrou-se, perguntou-se,
+// observou-se sao pensamento, nao elocucao.
+const RE_VERBO_DE_FALA =
+  /\b(disse|falou|respondeu|perguntou|indagou|comentou|declarou|afirmou|murmurou|sussurrou|gritou|exclamou|acrescentou|completou|retrucou|replicou|explicou|contou|pediu|avisou|lembrou|insistiu|concordou|discordou|brincou|provocou|cumprimentou|confessou|admitiu|repetiu|emendou|observou|ponderou|sugeriu|propos|propôs)\b(?!-se)/i;
+
+/** Trecho entre aspas, retas ou curvas, sem aspas dentro. */
+const RE_TRECHO_ASPAS = /["“]([^"”]{2,}?)["”]/g;
+
+/**
+ * Qual convencao de dialogo o texto usa.
+ *
+ * "Coracoes Urbanos" escreveu oito capitulos com travessao e quatro com aspas,
+ * e um deles misturou aspas retas com curvas na mesma cena. Nenhuma verificacao
+ * olhava para isso, e e o defeito mais visivel na pagina: o leitor ve a troca
+ * de convencao antes de ler a frase.
+ */
+export interface FormatoDeDialogo {
+  travessao: number;
+  /** Falas de personagem escritas entre aspas -- citacao nao entra na conta. */
+  aspas: number;
+  /** true quando ha fala de personagem em aspas, com travessao sendo o padrao. */
+  usaAspas: boolean;
+}
+
+/** Quantas letras ao redor das aspas contam como "perto" do verbo de fala. */
+const JANELA_DO_VERBO = 40;
+
+export function formatoDeDialogo(texto: string): FormatoDeDialogo {
+  const conteudo = texto || "";
+
+  const travessao = (conteudo.match(/(^|\n)\s*[—–]\s?\S/g) ?? []).length;
+
+  // Fala entre aspas: um trecho citado com verbo de elocucao colado, antes ou
+  // depois. Sem verbo por perto e citacao -- e-mail, titulo, termo destacado --
+  // e converter isso para travessao seria transformar documento em dialogo.
+  let aspas = 0;
+  for (const m of conteudo.matchAll(RE_TRECHO_ASPAS)) {
+    const inicio = m.index ?? 0;
+    const fim = inicio + m[0].length;
+    const antes = conteudo.slice(Math.max(0, inicio - JANELA_DO_VERBO), inicio);
+    const depois = conteudo.slice(fim, fim + JANELA_DO_VERBO);
+    if (RE_VERBO_DE_FALA.test(depois) || RE_VERBO_DE_FALA.test(antes)) aspas++;
+  }
+
+  return { travessao, aspas, usaAspas: aspas > 0 };
+}
+
 function normalizarPalavra(p: string): string {
   return p
     .toLowerCase()
@@ -113,7 +216,7 @@ export function medir(e: EntradaMetricas): Metricas {
   const mil = palavras > 0 ? palavras / 1000 : 1;
 
   const dialogoPorMil = modo === "narrativo" ? contarOcorrencias(textoCompleto, RE_DIALOGO) / mil : 0;
-  const abstracaoPorMil = contarOcorrencias(textoCompleto, RE_ABSTRACAO) / mil;
+  const abstracaoPorMil = abstracoesDe(textoCompleto).porMil;
 
   // Repetição: sobreposição de vocabulário entre cada par de capítulos
   // consecutivos, com a média de todos os pares. Alto = os capítulos usam as
@@ -151,7 +254,7 @@ export function medir(e: EntradaMetricas): Metricas {
     palavras,
     capitulos: e.capitulos.length,
     dialogoPorMil: Math.round(dialogoPorMil * 10) / 10,
-    abstracaoPorMil: Math.round(abstracaoPorMil * 10) / 10,
+    abstracaoPorMil,
     repeticaoEntreCapitulos: Math.round(repeticaoEntreCapitulos * 1000) / 1000,
     personagensSemFuncao,
     exemplosRepetidos: 0, // depende do resumo_fatos por capítulo; calculado à parte, ver metricasComResumos()

@@ -10,6 +10,13 @@ import {
   resumirCapitulo,
   expandirCapitulo,
   elencoEfetivo,
+  condensarBloco,
+  converterDialogoParaTravessao,
+  reduzirAbstracao,
+  blocoQueCobre,
+  CAPITULOS_POR_BLOCO,
+  type BlocoDeMemoria,
+  type CapituloAnterior,
   type EbookContext,
   type Outline,
   type Personagem,
@@ -25,8 +32,17 @@ import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings, grupoDaCategoria } from "./memory";
 import { startAudiobookGeneration } from "./tts";
 import { mensagemDeErroParaUsuario } from "./sanitizar";
-import { verificarContinuidade, contarPorGravidade } from "./continuidade";
+import {
+  verificarContinuidade,
+  contarPorGravidade,
+  extrairNomes,
+  nomesAutorizados,
+  termosDeFatosFixos,
+  normalizarTermo,
+} from "./continuidade";
 import { ehFiccao } from "../../src/lib/categorias";
+import { modoDe } from "../../src/lib/modos";
+import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
 // uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
@@ -38,6 +54,16 @@ const activeJobs = new Set<string>();
 // mesmo ebook e dois jobs escreviam os mesmos capitulos.
 const reservados = new Set<string>();
 const queuedJobs: string[] = [];
+
+// De quantos em quantos capitulos a verificacao de continuidade roda no MEIO da
+// geracao, em vez de so no fim.
+//
+// A verificacao ja sabia apontar capitulo orfao -- mas so depois do livro
+// pronto, quando reescrever significa pagar tudo de novo. Rodando a cada bloco,
+// o capitulo que trocou os protagonistas e reescrito na hora, com o defeito
+// nomeado no proprio prompt. Precisa ser >= 8, que e o piso de amostra que a
+// checagem de capitulos orfaos exige.
+const CHECAGEM_A_CADA = 10;
 
 function getEbook(id: string): Promise<EbookRow | undefined> {
   return one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
@@ -192,17 +218,12 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 3: introdução (intro === '' significa "conteúdo importado sem introdução
-    // separada" — só regeramos por IA quando o campo ainda é NULL, nunca escrito).
-    if (row.intro === null) {
-      await setStep(ebookId, "intro");
-      const draft = await generateIntro(ctx, outline);
-      const intro = await humanizarOuManter(draft, `Introdução do ebook "${outline.title}"`, 1500, ctx.theme);
-      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
-      row = (await getEbook(ebookId))!;
-    }
-
-    // Etapa 4: capítulos, um de cada vez
+    // Etapa 3: capítulos, um de cada vez.
+    //
+    // A introdução era escrita AQUI, antes de qualquer capítulo existir, com os
+    // títulos do sumário como única fonte -- abria um livro que ainda não tinha
+    // sido escrito. Passou para depois dos capítulos (etapa 5), onde recebe os
+    // mesmos resumos reais que a conclusão sempre recebeu.
     const chapters = await all<{
       id: string;
       idx: number;
@@ -229,18 +250,158 @@ async function runJob(ebookId: string) {
     // um livro interrompido no capitulo 40 nao pode perder quem foi criado ate la.
     const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
-    for (const chapter of chapters) {
-      if (chapter.content && chapter.content.trim().length > 0) continue;
-      await setStep(ebookId, "chapter");
+    const ficcao = ehFiccao(row.category_main || row.theme);
+    // As duas passadas de prosa valem para o modo narrativo, que e onde vive a
+    // regra de dialogo e onde a abstracao foi medida. Em nao ficcao o texto nao
+    // tem fala de personagem e a comparacao nao significa a mesma coisa.
+    const narrativo = modoDe(row.category_main || row.theme) === "narrativo";
 
-      // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
-      // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
-      // mundo dentro da jangada, no mar.
-      const anteriores = chapters
-        .filter((c) => c.idx < chapter.idx)
+    let memoriaLonga: BlocoDeMemoria[] = (() => {
+      if (!row.memoria_longa) return [];
+      try {
+        const v = JSON.parse(row.memoria_longa);
+        return Array.isArray(v) ? (v as BlocoDeMemoria[]) : [];
+      } catch {
+        return [];
+      }
+    })();
+
+    // Um capitulo so e reescrito uma vez por execucao: sem este teto, uma
+    // checagem que continuasse reprovando faria o mesmo capitulo ser pago em loop.
+    const reescritos = new Set<number>();
+
+    // Capitulos que terminaram em reflexao abstrata em vez de decisao, custo ou
+    // informacao nova. So contado e reportado -- nenhuma reescrita e disparada
+    // por isto. Primeiro medir a frequencia real, depois decidir se vale agir:
+    // agir antes de medir e o que fez a reducao de abstracao nascer jogando dez
+    // chamadas fora.
+    const fechamentosFracos: number[] = [];
+
+    // O que ja aconteceu, nao so os titulos anteriores. Era a lista de titulos
+    // que fazia o capitulo 5 recomecar na ilha depois de o 4 terminar com todo
+    // mundo dentro da jangada, no mar.
+    const anterioresAte = (idx: number): CapituloAnterior[] =>
+      chapters
+        .filter((c) => c.idx < idx)
         .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
 
-      const draft = await generateChapter(ctx, outline, chapter.idx, anteriores, registrados);
+    /**
+     * Padroniza a convencao de dialogo do capitulo.
+     *
+     * Mede antes de agir: so gasta chamada no capitulo que de fato saiu fora do
+     * padrao. Em "Coracoes Urbanos" seriam 4 chamadas em 12 capitulos.
+     */
+    const padronizarDialogo = async (conteudo: string, idx: number): Promise<string> => {
+      if (!narrativo) return conteudo;
+      const antes = formatoDeDialogo(conteudo);
+      if (!antes.usaAspas) return conteudo;
+      try {
+        const convertido = await converterDialogoParaTravessao(ctx, conteudo);
+        const depois = formatoDeDialogo(convertido);
+        // So aceita se realmente converteu, e sem perder as falas que ja
+        // estavam certas -- mesma logica de aceitacao da expansao.
+        if (depois.aspas < antes.aspas && depois.travessao >= antes.travessao) {
+          console.warn(
+            `[prosa] ${ebookId} cap. ${idx + 1}: ${antes.aspas} fala(s) em aspas convertidas para travessao.`,
+          );
+          return convertido;
+        }
+        console.warn(`[prosa] ${ebookId} cap. ${idx + 1}: conversao de dialogo descartada, nao melhorou.`);
+      } catch (err) {
+        // Padronizar e um acabamento, nao um requisito: falhar aqui nao pode
+        // custar o capitulo, que ja esta escrito e valido.
+        console.warn(`[prosa] conversao de dialogo do capitulo ${idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+      return conteudo;
+    };
+
+    /**
+     * Reescreve o capitulo abstrato demais, nomeando o que esta sobrando.
+     *
+     * A metrica de abstracao existia e ninguem agia sobre ela. Este e o mesmo
+     * padrao do expandirCapitulo -- mede contra um alvo, reescreve so quando
+     * esta fora, e so aceita a reescrita se o numero melhorou.
+     */
+    const concretizar = async (conteudo: string, idx: number): Promise<string> => {
+      if (!narrativo) return conteudo;
+      const antes = abstracoesDe(conteudo);
+      if (antes.porMil <= LIMITE_ABSTRACAO_POR_MIL) return conteudo;
+      try {
+        const reescrito = await reduzirAbstracao(ctx, conteudo, antes.termos);
+        const depois = abstracoesDe(reescrito);
+        const palavrasAntes = conteudo.trim().split(/\s+/).filter(Boolean).length;
+        const palavrasDepois = reescrito.trim().split(/\s+/).filter(Boolean).length;
+
+        // A reescrita precisa baixar a abstracao SEM encolher o capitulo. Cortar
+        // metade do texto tambem "reduz a abstracao", e derrubaria a entrega em
+        // palavras -- que hoje esta acima de 97% da meta e custou trabalho.
+        if (depois.porMil < antes.porMil && palavrasDepois >= palavrasAntes * 0.95) {
+          console.warn(
+            `[prosa] ${ebookId} cap. ${idx + 1}: abstracao ${antes.porMil} -> ${depois.porMil} por mil.`,
+          );
+          return reescrito;
+        }
+
+        // Melhorou a prosa mas cortou texto. Era aqui que o ganho ia embora: no
+        // terceiro livro de teste o capitulo 3 caiu de 13.6 para 8.1 de
+        // abstracao e foi descartado inteiro por ter encolhido 17%.
+        //
+        // Em vez de jogar fora, devolve o tamanho com a maquinaria que ja
+        // existe e ja sabe acertar alvo em numero de palavras. Custa uma chamada
+        // a mais exatamente no caso que hoje ja desperdica uma inteira.
+        if (depois.porMil < antes.porMil) {
+          try {
+            // `true` liga a trava anti-abstracao: sem ela as duas passadas
+            // brigam, e a expansao devolve exatamente a atmosfera que a reducao
+            // acabou de tirar.
+            const expandido = await expandirCapitulo(ctx, reescrito, palavrasAntes, true);
+            const finalAbs = abstracoesDe(expandido);
+            const finalPalavras = expandido.trim().split(/\s+/).filter(Boolean).length;
+
+            // Expandir pode reintroduzir a abstracao que a passada anterior
+            // tirou -- por isso as duas condicoes sao checadas de novo, contra
+            // o texto ORIGINAL, e nao contra o intermediario.
+            if (finalAbs.porMil < antes.porMil && finalPalavras >= palavrasAntes * 0.95) {
+              console.warn(
+                `[prosa] ${ebookId} cap. ${idx + 1}: abstracao ${antes.porMil} -> ${finalAbs.porMil} por mil, ` +
+                  `tamanho recuperado (${palavrasAntes} -> ${palavrasDepois} -> ${finalPalavras} palavras).`,
+              );
+              return expandido;
+            }
+            console.warn(
+              `[prosa] ${ebookId} cap. ${idx + 1}: expansao apos a reducao nao fechou ` +
+                `(abstracao ${finalAbs.porMil}, palavras ${finalPalavras} de ${palavrasAntes}).`,
+            );
+          } catch (err) {
+            console.warn(
+              `[prosa] expansao apos reducao no capitulo ${idx + 1} falhou:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+
+        const motivo =
+          depois.porMil >= antes.porMil
+            ? "nao reduziu a abstracao"
+            : `encolheu o capitulo em ${Math.round((1 - palavrasDepois / palavrasAntes) * 100)}% e a expansao nao recuperou`;
+        console.warn(
+          `[prosa] ${ebookId} cap. ${idx + 1}: reescrita descartada, ${motivo} ` +
+            `(abstracao ${antes.porMil} -> ${depois.porMil}, palavras ${palavrasAntes} -> ${palavrasDepois}).`,
+        );
+      } catch (err) {
+        console.warn(`[prosa] reducao de abstracao do capitulo ${idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+      return conteudo;
+    };
+
+    const escrever = async (
+      chapter: { id: string; idx: number; title: string },
+      correcao?: string,
+    ): Promise<string> => {
+      const draft = await generateChapter(ctx, outline, chapter.idx, anterioresAte(chapter.idx), registrados, {
+        memoriaLonga,
+        correcao,
+      });
       const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
       let content = await humanizarOuManter(
         draft,
@@ -272,27 +433,247 @@ async function runJob(ebookId: string) {
           console.warn(`[geracao] expansao do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
         }
       }
+      content = await padronizarDialogo(content, chapter.idx);
+      content = await concretizar(content, chapter.idx);
+      return content;
+    };
 
-      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
-      await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+    /**
+     * Ja e alguem (ou algo) que o livro conhece?
+     *
+     * Compara PARTE A PARTE, e nao pelo nome inteiro: "Renata" e "Renata Campos"
+     * sao a mesma pessoa, e comparar a string cheia nunca casava as duas -- num
+     * livro de teste o registro "descobriu" as duas protagonistas como gente
+     * nova por causa disso. Tambem barra o que vem dos fatos fixos, que e o que
+     * impede uma cidade de virar personagem.
+     */
+    const jaConhecido = (nome: string): boolean => {
+      const autorizados = nomesAutorizados(elencoEfetivo(outline, registrados));
+      const reservados = termosDeFatosFixos(outline);
+      const partes = nome.split(/\s+/).map(normalizarTermo).filter(Boolean);
+      if (partes.length === 0) return true;
+      return partes.some((p) => autorizados.has(p) || reservados.has(p));
+    };
 
-      // Resumo factual para os proximos capitulos. Falhar aqui nao pode derrubar
-      // o livro: sem resumo o capitulo seguinte volta a receber so o titulo,
-      // que e o comportamento antigo -- pior, mas nao fatal.
+    /**
+     * Plano B para quando o modelo devolve `personagensNovos` vazio -- falha
+     * silenciosa que faz o secundario recem-criado sumir do livro do mesmo jeito
+     * de antes do registro existir. Reaproveita o detector de nomes proprios da
+     * verificacao de continuidade.
+     *
+     * Piso de 5 mencoes: e o mesmo que `continuidade.ts` usa para decidir que
+     * alguem e "personagem de fato". Com 3 o detector trazia nome de passagem e
+     * substantivo capitalizado por acaso -- e, num livro de teste, uma cidade.
+     * Ele continua sendo um palpite: nao ha como um contador de nomes proprios
+     * distinguir uma pessoa de um lugar, e por isso o teto por capitulo e baixo.
+     */
+    const personagensPorHeuristica = (conteudo: string, idx: number): Personagem[] => {
+      const novos: Personagem[] = [];
+      const vistos = new Set<string>();
+      for (const [nome, n] of extrairNomes(conteudo)) {
+        if (n < 5) continue;
+        if (jaConhecido(nome) || vistos.has(normalizarTermo(nome))) continue;
+        vistos.add(normalizarTermo(nome));
+        novos.push({
+          nome,
+          papel: "apoio",
+          descricao: `Detectado automaticamente no capítulo ${idx + 1} (${n} menções); o registro do modelo não o listou.`,
+        });
+        // Teto baixo de proposito: um elenco inflado por falso positivo
+        // atrapalha os capitulos seguintes mais do que a ausencia de um
+        // secundario, e ainda empurra gente real para fora pelo teto de
+        // registrados.
+        if (novos.length >= 3) break;
+      }
+      return novos;
+    };
+
+    // Resumo factual para os proximos capitulos, e quem nasceu neste. Falhar
+    // aqui nao pode derrubar o livro: sem resumo o capitulo seguinte volta a
+    // receber so o titulo, que e o comportamento antigo -- pior, mas nao fatal.
+    const registrar = async (
+      chapter: (typeof chapters)[number],
+      content: string,
+    ): Promise<void> => {
       try {
-        const { resumo, personagensNovos } = await resumirCapitulo(ctx, chapter.title, content);
-        const novos = JSON.stringify(personagensNovos);
+        const { resumo, personagensNovos, fechamentoConcreto } = await resumirCapitulo(
+          ctx,
+          chapter.title,
+          content,
+          elencoEfetivo(outline, registrados).map((p) => p.nome),
+        );
+        const usouPlanoB = ficcao && personagensNovos.length === 0;
+        const brutos = usouPlanoB ? personagensPorHeuristica(content, chapter.idx) : personagensNovos;
+
+        // Segunda linha de defesa: dizer ao modelo quem ja existe melhora a
+        // resposta, nao a garante. Sem este filtro o elenco acumulava a mesma
+        // pessoa duas vezes com dois nomes -- "Ana" ao lado de "Ana Costa" --,
+        // o que polui o prompt e, pelo teto de registrados, empurra personagem
+        // real para fora num livro longo.
+        const detectados = ficcao ? brutos.filter((p) => !jaConhecido(p.nome)) : brutos;
+        const descartados = brutos.length - detectados.length;
+        if (descartados > 0) {
+          console.warn(
+            `[registro] ${ebookId} cap. ${chapter.idx + 1}: ${descartados} nome(s) descartado(s) por ja existirem no livro.`,
+          );
+        }
+
+        // So loga quando o plano B ACHOU alguem: e o unico caso que denuncia
+        // falha do registro. Capitulo que de fato nao apresenta ninguem novo e
+        // o caso comum, e logar isso encheria o log de ruido sem informar nada.
+        //
+        // Este aviso e a unica fonte de dado sobre "com que frequencia o modelo
+        // erra o registro" -- a pergunta que ficou em aberto na nota de deploy.
+        if (usouPlanoB && detectados.length > 0) {
+          console.warn(
+            `[registro] ${ebookId} cap. ${chapter.idx + 1}: modelo devolveu elenco vazio; ` +
+              `plano B detectou ${detectados.length}: ${detectados.map((p) => p.nome).join(", ")}.`,
+          );
+        }
+
+        // Numa reescrita o capitulo ja tem gente registrada. Sobrescrever a
+        // coluna com o resultado desta passada apagaria do banco quem ele havia
+        // apresentado antes.
+        const jaNoCapitulo = lerPersonagens(chapter.personagens_json);
+        const vistos = new Set(jaNoCapitulo.map((p) => normalizarTermo(p.nome)));
+        const ineditos = detectados.filter((p) => !vistos.has(normalizarTermo(p.nome)));
+        const doCapitulo = [...jaNoCapitulo, ...ineditos];
+        const novos = JSON.stringify(doCapitulo);
+
         await run("UPDATE chapters SET resumo_fatos = $1, personagens_json = $2 WHERE id = $3", [
           resumo,
           novos,
           chapter.id,
         ]);
+        if (narrativo && fechamentoConcreto === false) {
+          fechamentosFracos.push(chapter.idx);
+        }
+
         // Os dois arrays em memoria alimentam o proximo capitulo desta mesma execucao.
         chapter.resumo_fatos = resumo;
         chapter.personagens_json = novos;
-        registrados.push(...personagensNovos);
+        for (const p of ineditos) {
+          if (!registrados.some((r) => normalizarTermo(r.nome) === normalizarTermo(p.nome))) registrados.push(p);
+        }
       } catch (err) {
         console.warn(`[geracao] resumo do capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    /**
+     * Refaz um bloco da memoria longa depois que um capitulo dele foi reescrito.
+     *
+     * Sem isto, a reescrita de um capitulo antigo deixava o bloco condensado
+     * descrevendo uma versao do texto que nao existe mais -- e e justamente essa
+     * versao velha que viaja para todos os capitulos seguintes, que e o oposto
+     * do que a memoria longa existe para fazer.
+     */
+    const regenerarBloco = async (inicio: number, fim: number): Promise<void> => {
+      try {
+        const doBloco = chapters
+          .filter((c) => c.idx >= inicio && c.idx <= fim)
+          .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+        if (doBloco.length === 0) return;
+        const resumo = await condensarBloco(ctx, doBloco);
+        memoriaLonga = memoriaLonga.map((b) => (b.ate === fim ? { ate: fim, resumo } : b));
+        await run("UPDATE ebooks SET memoria_longa = $1 WHERE id = $2", [JSON.stringify(memoriaLonga), ebookId]);
+        console.warn(`[geracao] ${ebookId}: memoria longa dos capitulos ${inicio + 1} a ${fim + 1} refeita apos reescrita.`);
+      } catch (err) {
+        console.warn(`[geracao] refazer a memoria longa dos capitulos ${inicio + 1} a ${fim + 1} falhou:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    // A verificacao ja sabia apontar capitulo orfao, mas so depois do livro
+    // pronto: avisava, nao corrigia. Aqui ela roda a cada bloco e o capitulo
+    // reprovado e reescrito na hora, com o defeito nomeado no proprio prompt.
+    const checarEReescrever = async (ateIdx: number): Promise<void> => {
+      try {
+        const escritos = chapters
+          .filter((c) => c.idx <= ateIdx && c.content && c.content.trim().length > 0)
+          .map((c) => ({ idx: c.idx, title: c.title, content: c.content }));
+        if (escritos.length < 8) return; // piso de amostra da checagem de orfaos
+
+        const achados = verificarContinuidade({
+          outline,
+          intro: null,
+          conclusao: null,
+          capitulos: escritos,
+          ficcao: true,
+          elencoRegistrado: registrados,
+        });
+
+        const alvos = new Set<number>();
+        for (const a of achados) {
+          if (a.gravidade !== "blocker" && a.gravidade !== "major") continue;
+          for (const idx of a.capitulosAfetados ?? []) alvos.add(idx);
+        }
+
+        // Reescrever um capitulo invalida o bloco de memoria longa que o cobria.
+        // Chave = fim do bloco, para que duas reescritas dentro do mesmo bloco
+        // custem uma condensacao so.
+        const blocosParaRefazer = new Map<number, number>();
+
+        for (const idx of [...alvos].sort((a, b) => a - b)) {
+          if (reescritos.has(idx)) continue;
+          const alvo = chapters.find((c) => c.idx === idx);
+          if (!alvo) continue;
+          reescritos.add(idx);
+          await setStep(ebookId, "chapter");
+          const content = await escrever(
+            alvo,
+            "Ele não citava nenhuma das figuras centrais do livro — provavelmente inventou um elenco próprio em vez de usar o que já existe. Reescreva-o com os personagens do elenco acima em cena, mantendo o mesmo assunto, a mesma função na estrutura e o mesmo resultado ao final.",
+          );
+          await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, alvo.id]);
+          alvo.content = content;
+          await registrar(alvo, content);
+          console.warn(`[continuidade] ${ebookId}: capitulo ${idx + 1} reescrito no meio da geracao`);
+
+          const bloco = blocoQueCobre(memoriaLonga, idx);
+          if (bloco) blocosParaRefazer.set(bloco.fim, bloco.inicio);
+        }
+
+        // Depois das reescritas, nao entre elas: o resumo de cada capitulo
+        // reescrito precisa ja estar gravado para entrar na condensacao.
+        for (const [fim, inicio] of blocosParaRefazer) {
+          await regenerarBloco(inicio, fim);
+        }
+      } catch (err) {
+        // A checagem intermediaria e um ganho, nao um requisito: falhar nela nao
+        // pode derrubar um livro que ja custou dinheiro ate aqui.
+        console.warn(`[continuidade] checagem intermediaria falhou em ${ebookId}:`, err instanceof Error ? err.message : err);
+      }
+    };
+
+    for (const chapter of chapters) {
+      if (chapter.content && chapter.content.trim().length > 0) continue;
+      await setStep(ebookId, "chapter");
+
+      const content = await escrever(chapter);
+      await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
+      chapter.content = content;
+      await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
+
+      await registrar(chapter, content);
+
+      // Memoria longa: a cada bloco fechado, os resumos daquele trecho viram um
+      // paragrafo so, que viaja ate o fim do livro. Sem isto, tudo que sai da
+      // janela dos 8 mais recentes voltava a ser apenas um titulo.
+      const jaCoberto = memoriaLonga.length > 0 ? Math.max(...memoriaLonga.map((b) => b.ate)) : -1;
+      if ((chapter.idx + 1) % CAPITULOS_POR_BLOCO === 0 && chapter.idx > jaCoberto) {
+        try {
+          const doBloco = chapters
+            .filter((c) => c.idx > jaCoberto && c.idx <= chapter.idx)
+            .map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos }));
+          const resumo = await condensarBloco(ctx, doBloco);
+          memoriaLonga = [...memoriaLonga, { ate: chapter.idx, resumo }];
+          await run("UPDATE ebooks SET memoria_longa = $1 WHERE id = $2", [JSON.stringify(memoriaLonga), ebookId]);
+        } catch (err) {
+          console.warn(`[geracao] memoria longa ate o capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+        }
+      }
+
+      if (ficcao && (chapter.idx + 1) % CHECAGEM_A_CADA === 0) {
+        await checarEReescrever(chapter.idx);
       }
     }
 
@@ -347,19 +728,46 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5: conclusão (mesma lógica da introdução — ver comentário na etapa 3)
+    if (fechamentosFracos.length > 0) {
+      console.warn(
+        `[prosa] ${ebookId}: ${fechamentosFracos.length} de ${chapters.length} capitulos terminam em ` +
+          `reflexao abstrata em vez de decisao, custo ou informacao nova. ` +
+          `Capitulos: ${fechamentosFracos.map((i) => i + 1).join(", ")}.`,
+      );
+    }
+
+    // Os resumos factuais de todos os capitulos ja existem a esta altura, e a
+    // introducao e a conclusao rodam depois deles. Sem isso as duas so viam
+    // titulos: a conclusao inventava cenas que nunca foram escritas ("bolos
+    // voando" num livro que nao tem essa cena em capitulo nenhum), e a
+    // introducao abria um livro que ainda nao existia.
+    const capitulosEscritos: CapituloAnterior[] = chapters.map((c) => ({
+      idx: c.idx,
+      title: c.title,
+      resumo: c.resumo_fatos,
+    }));
+
+    // Etapa 5: introdução (intro === '' significa "conteúdo importado sem
+    // introdução separada" — só regeramos por IA quando o campo ainda é NULL,
+    // nunca escrito).
+    if (row.intro === null) {
+      await setStep(ebookId, "intro");
+      const draft = await generateIntro(ctx, outline, registrados, capitulosEscritos);
+      const intro = await humanizarOuManter(
+        draft,
+        `Introdução do ebook "${outline.title}"`,
+        1500,
+        ctx.theme,
+        elencoEfetivo(outline, registrados).map((p) => p.nome),
+      );
+      await run("UPDATE ebooks SET intro = $1 WHERE id = $2", [intro, ebookId]);
+      row = (await getEbook(ebookId))!;
+    }
+
+    // Etapa 5b: conclusão (mesma lógica da introdução, logo acima)
     if (row.conclusion === null) {
       await setStep(ebookId, "conclusion");
-      // Os resumos factuais de todos os capitulos ja existem a esta altura --
-      // a conclusao roda depois de todos eles. Sem isso ela so via titulos e
-      // inventava cenas que nunca foram escritas ("bolos voando" num livro
-      // que nao tem essa cena em capitulo nenhum).
-      const capitulosParaConclusao = chapters.map((c) => ({
-        idx: c.idx,
-        title: c.title,
-        resumo: c.resumo_fatos,
-      }));
-      const draft = await generateConclusion(ctx, outline, capitulosParaConclusao, registrados);
+      const draft = await generateConclusion(ctx, outline, capitulosEscritos, registrados);
       const conclusion = await humanizarOuManter(
         draft,
         `Conclusão do ebook "${outline.title}"`,
@@ -371,7 +779,7 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5b: sobre o autor (opcional)
+    // Etapa 5c: sobre o autor (opcional)
     if (row.include_about && row.author_name && !row.about_author) {
       await setStep(ebookId, "about");
       const about = await generateAboutAuthor(row.author_name, row.author_bio, row.language);
@@ -379,7 +787,7 @@ async function runJob(ebookId: string) {
       row = (await getEbook(ebookId))!;
     }
 
-    // Etapa 5c: verificacao de continuidade. Deterministica, sem chamada de IA,
+    // Etapa 5d: verificacao de continuidade. Deterministica, sem chamada de IA,
     // entao roda sempre e nao pesa no custo. So compara nomes -- nao aprova nem
     // reprova o livro, apenas registra onde o revisor precisa olhar.
     try {
@@ -392,7 +800,11 @@ async function runJob(ebookId: string) {
         intro: row.intro,
         conclusao: row.conclusion,
         capitulos: capitulosFinais,
-        ficcao: ehFiccao(row.category_main || row.theme),
+        ficcao,
+        // Sem isto a verificacao comparava o texto so contra o elenco do
+        // sumario, e acusava de "nao autorizado" um secundario criado e
+        // registrado corretamente no meio do livro.
+        elencoRegistrado: registrados,
       });
       await run("UPDATE ebooks SET continuity_json = $1 WHERE id = $2", [JSON.stringify(achados), ebookId]);
       if (achados.length > 0) {
@@ -461,6 +873,28 @@ export async function ensureGenerationRunning(ebookId: string) {
     reservados.delete(ebookId);
   }
   await startNextQueuedJob();
+}
+
+/**
+ * Retoma, ao subir, os livros que estavam sendo escritos quando o processo caiu.
+ *
+ * A geracao vive na memoria do processo. Um deploy no meio de um livro de trinta
+ * minutos deixava o registro travado em "generating" para sempre: sem erro, sem
+ * botao de tentar de novo na tela, e com os capitulos ja escritos e pagos
+ * parados no banco. Como o laco pula todo capitulo que ja tem conteudo, retomar
+ * custa apenas o que faltava -- nao o livro inteiro de novo.
+ */
+export async function retomarGeracoesInterrompidas(): Promise<void> {
+  const pendentes = await all<{ id: string; title: string; chapters_done: number; chapters_total: number }>(
+    "SELECT id, title, chapters_done, chapters_total FROM ebooks WHERE status = 'generating' ORDER BY created_at ASC",
+  );
+  if (pendentes.length === 0) return;
+
+  console.warn(`[geracao] retomando ${pendentes.length} livro(s) interrompido(s) por um reinicio do servidor.`);
+  for (const p of pendentes) {
+    console.warn(`[geracao] retomando "${p.title || p.id}" (${p.chapters_done}/${p.chapters_total} capitulos escritos).`);
+    await ensureGenerationRunning(p.id);
+  }
 }
 
 export async function finalizeEbookExport(ebookId: string): Promise<void> {

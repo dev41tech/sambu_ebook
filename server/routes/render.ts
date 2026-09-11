@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { all, one, run, type EbookRow } from "../lib/db";
 import { renderEbookPdfValidated } from "../lib/pdf";
 import { renderEbookEpubValidated } from "../lib/epub";
+import { rota } from "../lib/rota";
 
 export const renderRouter = Router();
 
@@ -114,7 +115,7 @@ function loadChapters(ebookId: string) {
   );
 }
 
-renderRouter.post("/pdf", async (req, res) => {
+renderRouter.post("/pdf", rota(async (req, res) => {
   try {
     const ebook = await upsertManuscript(req.body ?? {});
     const chapters = await loadChapters(ebook.id);
@@ -138,9 +139,9 @@ renderRouter.post("/pdf", async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Falha ao renderizar PDF." });
   }
-});
+}));
 
-renderRouter.post("/epub", async (req, res) => {
+renderRouter.post("/epub", rota(async (req, res) => {
   try {
     const ebook = await upsertManuscript(req.body ?? {});
     const chapters = await loadChapters(ebook.id);
@@ -161,4 +162,4 @@ renderRouter.post("/epub", async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Falha ao renderizar EPUB." });
   }
-});
+}));

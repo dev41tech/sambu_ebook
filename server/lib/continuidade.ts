@@ -15,6 +15,12 @@ export interface Achado {
   local: string;
   evidencia: string;
   sugestao: string;
+  /**
+   * idx dos capitulos que este achado acusa, quando ele sabe aponta-los. So a
+   * mensagem em texto nao servia para agir: a checagem no meio da geracao
+   * precisa saber QUAL capitulo reescrever, sem tentar ler isso da evidencia.
+   */
+  capitulosAfetados?: number[];
 }
 
 // Palavras que começam com maiúscula sem serem nome de pessoa. Sem esta lista o
@@ -41,6 +47,15 @@ const NAO_SAO_NOMES_BRUTO = [
 
 function normalizar(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+/**
+ * A mesma chave usada pelos conjuntos deste modulo. Exportada porque quem
+ * consulta `nomesAutorizados` ou `termosDeFatosFixos` precisa normalizar do
+ * mesmo jeito -- comparar com outra regra e o mesmo que nao comparar.
+ */
+export function normalizarTermo(s: string): string {
+  return normalizar(s).trim();
 }
 
 // A lista acima e escrita com acento para ser legivel, mas a comparacao usa a
@@ -92,6 +107,48 @@ export function extrairNomes(texto: string): Map<string, number> {
 }
 
 /**
+ * Marcadores que costumam vir logo antes de um LUGAR, e nao de uma pessoa.
+ *
+ * Um bairro aparece quase sempre preposicionado -- "na Liberdade", "bairro da
+ * Liberdade", "ate a Liberdade". Uma pessoa aparece sobretudo nua: "Lucas
+ * olhou", "Marina respondeu". A pergunta nao e se o nome JA apareceu com
+ * preposicao (gente tambem aparece: "o carro da Marina"), e sim se ele aparece
+ * assim quase sempre.
+ */
+const RE_MARCADOR_DE_LUGAR =
+  /(?:^|\s)(?:em|na|no|nas|nos|da|do|das|dos|à|ao|às|aos|pela|pelo|até|para|bairro|rua|avenida|praça|regiao|região|zona|distrito|centro|vila|parque|largo|alameda|estrada|rodovia|mercado|feira)\s+$/i;
+
+/**
+ * Proporcao de mencoes preposicionadas acima da qual o nome e tratado como
+ * lugar. Calibrado contra um caso real: "Liberdade", o bairro de Sao Paulo,
+ * apareceu 10x num livro e foi acusado de "personagem nao autorizado".
+ */
+const PROPORCAO_DE_LUGAR = 0.6;
+const MINIMO_PARA_JULGAR = 3;
+
+/**
+ * O nome se comporta como lugar no texto?
+ *
+ * Deterministico e conservador: exige um minimo de mencoes antes de julgar, e
+ * exige predominancia. Um personagem citado tres vezes, duas delas como "da
+ * Marina", nao vira lugar por isso -- mas um bairro citado dez vezes, nove
+ * delas preposicionado, vira.
+ */
+export function pareceLugar(corpo: string, nome: string): boolean {
+  const LETRA = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const re = new RegExp(`(?<![${LETRA}])${nome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![${LETRA}])`, "g");
+  let total = 0;
+  let comMarcador = 0;
+  for (const m of corpo.matchAll(re)) {
+    total++;
+    const antes = corpo.slice(Math.max(0, (m.index ?? 0) - 24), m.index ?? 0);
+    if (RE_MARCADOR_DE_LUGAR.test(antes)) comMarcador++;
+  }
+  if (total < MINIMO_PARA_JULGAR) return false;
+  return comMarcador / total >= PROPORCAO_DE_LUGAR;
+}
+
+/**
  * Primeiro nome de verdade, pulando tratamentos. O elenco veio com "Delegada
  * Mariana Silva" e isto devolvia "delegada" -- entao Mariana, a protagonista,
  * era acusada de nao ser protagonista na propria introducao.
@@ -101,6 +158,49 @@ function primeiroNome(completo: string): string {
   return partes.find((p) => !NAO_SAO_NOMES.has(p)) ?? partes[0] ?? "";
 }
 
+/**
+ * Todas as formas pelas quais o texto pode chamar alguem que ja existe: o nome
+ * inteiro, cada parte dele e o primeiro nome util (pulando tratamentos).
+ *
+ * Existe como funcao propria porque o registro de elenco precisa exatamente
+ * disto para nao "descobrir" como nova uma pessoa que ja esta no elenco. Comparar
+ * so o nome inteiro nunca casava "Renata" com "Renata Campos" -- foi assim que,
+ * num livro de teste, o plano B registrou as duas protagonistas como gente nova.
+ */
+export function nomesAutorizados(elenco: Array<{ nome: string }>): Set<string> {
+  const autorizados = new Set<string>();
+  for (const p of elenco) {
+    const nome = p?.nome ?? "";
+    if (!nome.trim()) continue;
+    autorizados.add(primeiroNome(nome));
+    for (const parte of nome.split(/\s+/)) {
+      const chave = normalizar(parte);
+      if (chave) autorizados.add(chave);
+    }
+  }
+  autorizados.delete("");
+  return autorizados;
+}
+
+/**
+ * Palavras que vem de um fato fixo ou da descricao de um personagem -- nome de
+ * cidade, negocio, evento. Nao sao candidatas a "personagem": e o filtro que
+ * impede "Colinas do Mar" e "Sao Paulo" de virarem gente.
+ */
+export function termosDeFatosFixos(outline: Outline): Set<string> {
+  const termos = new Set<string>();
+  const LETRA_TERMO = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
+  const re = new RegExp(`(?<![${LETRA_TERMO}])[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?![${LETRA_TERMO}])`, "g");
+  const fontes = [
+    ...(outline.fatosFixos ?? []),
+    ...(outline.personagens ?? []).map((p) => p.descricao ?? ""),
+  ];
+  for (const fonte of fontes) {
+    for (const palavra of fonte.match(re) ?? []) termos.add(normalizar(palavra));
+  }
+  return termos;
+}
+
 export interface EntradaContinuidade {
   outline: Outline;
   intro: string | null;
@@ -108,6 +208,13 @@ export interface EntradaContinuidade {
   capitulos: Array<{ idx: number; title: string; content: string }>;
   /** Só faz sentido em ficção; em não ficção a checagem é pulada. */
   ficcao: boolean;
+  /**
+   * Personagens que nasceram na prosa e foram registrados depois de cada
+   * capitulo. Sem eles, esta verificacao comparava o texto so contra o elenco
+   * do SUMARIO e acusava de "nao autorizado" um secundario criado corretamente
+   * no capitulo 2 -- falso positivo que gasta atencao de revisao a toa.
+   */
+  elencoRegistrado?: Array<{ nome: string }>;
 }
 
 /**
@@ -120,11 +227,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   const elenco = e.outline.personagens ?? [];
   const achados: Achado[] = [];
 
-  const autorizados = new Set<string>();
-  for (const p of elenco) {
-    autorizados.add(primeiroNome(p.nome));
-    for (const parte of p.nome.split(/\s+/)) autorizados.add(normalizar(parte));
-  }
+  const autorizados = nomesAutorizados([...elenco, ...(e.elencoRegistrado ?? [])]);
 
   // Palavras que vêm de um fato fixo ou da descrição de um personagem -- nome
   // de cidade, negócio, evento -- não são candidatas a "personagem". Efeito
@@ -135,17 +238,15 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   // "São Paulo", citado so na descricao de um personagem ("recem-chegado de
   // Sao Paulo"), pegou o mesmo problema -- por isso a descricao entra aqui
   // tambem, nao so o texto do fato fixo.
-  const termosDeFatos = new Set<string>();
-  const LETRA_TERMO = "A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç";
-  const reTermo = new RegExp(`(?<![${LETRA_TERMO}])[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?![${LETRA_TERMO}])`, "g");
-  const fontesDeTermos = [
-    ...(e.outline.fatosFixos ?? []),
-    ...elenco.map((p) => p.descricao ?? ""),
-  ];
-  for (const fonte of fontesDeTermos) {
-    for (const palavra of fonte.match(reTermo) ?? []) {
-      termosDeFatos.add(normalizar(palavra));
-    }
+  const termosDeFatos = termosDeFatosFixos(e.outline);
+
+  // Nome que se comporta como lugar no texto entra no mesmo filtro dos termos
+  // de fatos fixos. "Liberdade" -- o bairro -- apareceu 10x num livro real e
+  // foi acusado de personagem nao autorizado; o filtro de fatos nao pegava,
+  // porque o bairro nao estava declarado em fato fixo nenhum.
+  const corpoInteiro = e.capitulos.map((c) => c.content || "").join("\n");
+  for (const nome of new Set([...extrairNomes(corpoInteiro).keys()])) {
+    if (pareceLugar(corpoInteiro, nome)) termosDeFatos.add(normalizar(nome));
   }
 
   // Frequência no corpo do livro: quem aparece muito é personagem de fato, e é
@@ -158,7 +259,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   }
   const recorrentes = [...corpo.entries()].filter(([, n]) => n >= 5).map(([nome]) => nome);
 
-  if (elenco.length === 0) {
+  if (elenco.length === 0 && (e.elencoRegistrado ?? []).length === 0) {
     achados.push({
       categoria: "elenco-ausente",
       gravidade: "warning",
@@ -328,6 +429,7 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
       if (proporcao > 0.15) {
         const lista = orfaos.slice(0, 8).map((c) => c.idx + 1).join(", ");
         achados.push({
+          capitulosAfetados: orfaos.map((c) => c.idx),
           categoria: "capitulos-orfaos",
           // Acima de 30% o livro nao e mais uma obra so; abaixo disso pode ser
           // uma subtrama legitima e fica como aviso forte para o revisor.

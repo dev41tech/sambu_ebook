@@ -28,6 +28,7 @@ import { TODOS_OS_TONS } from "../../src/lib/modos";
 import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
 import { medirComResumos, type Metricas } from "../lib/metricas";
+import { rota } from "../lib/rota";
 
 export const ebooksRouter = Router();
 
@@ -36,8 +37,8 @@ export const ebooksRouter = Router();
 async function avaliarEbook(ebookId: string) {
   const ebook = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [ebookId]);
   if (!ebook) return null;
-  const capitulos = await all<{ idx: number; title: string; content: string }>(
-    "SELECT idx, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+  const capitulos = await all<{ idx: number; title: string; content: string; personagens_json: string | null }>(
+    "SELECT idx, title, content, personagens_json FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
     [ebookId]
   );
   return avaliarQualidade({ ebook, capitulos });
@@ -85,13 +86,13 @@ const CATEGORIES = new Set(["geral", "tecnico", "comportamental"]);
 
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-ebooksRouter.get("/", async (_req, res) => {
+ebooksRouter.get("/", rota(async (_req, res) => {
   const rows = await all(
     `SELECT id, title, theme, status, page_count, chapters_done, chapters_total, template, audio_status, category, version, created_at
        FROM ebooks ORDER BY created_at DESC`
   );
   res.json(rows);
-});
+}));
 
 // Secundarias sao texto livre digitado pelo usuario, nao caminhos da taxonomia.
 // Antes isto passava por isCategoriaValida(), que descartava em silencio tudo que
@@ -109,7 +110,7 @@ function limparSecundarias(bruto: unknown[], principal: string): string[] {
     .slice(0, 8);
 }
 
-ebooksRouter.post("/", async (req, res) => {
+ebooksRouter.post("/", rota(async (req, res) => {
   const body = req.body ?? {};
   const theme = String(body.theme ?? "").trim();
   const audience = String(body.audience ?? "").trim();
@@ -258,11 +259,11 @@ ebooksRouter.post("/", async (req, res) => {
 
   await ensureGenerationRunning(id);
   res.status(201).json({ id });
-});
+}));
 
 const IMPORT_EXTENSIONS = new Set([".txt", ".md", ".pdf", ".epub"]);
 
-ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
+ebooksRouter.post("/import", importUpload.single("file"), rota(async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "Envie um arquivo .txt, .md, .pdf ou .epub com o conteúdo do ebook." });
     return;
@@ -421,9 +422,9 @@ ebooksRouter.post("/import", importUpload.single("file"), async (req, res) => {
 
   await ensureGenerationRunning(id);
   res.status(201).json({ id });
-});
+}));
 
-ebooksRouter.post("/:id/feedback", async (req, res) => {
+ebooksRouter.post("/:id/feedback", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const feedback = String(req.body?.feedback ?? "").trim();
@@ -433,10 +434,10 @@ ebooksRouter.post("/:id/feedback", async (req, res) => {
   }
   await addLearning(feedback, row.id, row.category, grupoDaCategoria(row.category_main || row.theme));
   res.json({ ok: true });
-});
+}));
 
 // Libera a escrita depois que o autor conferiu sumario e elenco.
-ebooksRouter.post("/:id/outline/approve", async (req, res) => {
+ebooksRouter.post("/:id/outline/approve", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "outline_review") {
@@ -451,12 +452,12 @@ ebooksRouter.post("/:id/outline/approve", async (req, res) => {
   );
   await ensureGenerationRunning(row.id);
   res.json({ ok: true });
-});
+}));
 
 // Recusa o planejamento: apaga o sumario para que a proxima tentativa reescreva
 // do zero. O portao vem antes da escrita, entao normalmente nao ha texto a
 // perder -- mas conferimos, porque um ebook pode chegar aqui por outro caminho.
-ebooksRouter.post("/:id/outline/reject", async (req, res) => {
+ebooksRouter.post("/:id/outline/reject", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "outline_review") {
@@ -482,9 +483,9 @@ ebooksRouter.post("/:id/outline/reject", async (req, res) => {
   });
   await ensureGenerationRunning(row.id);
   res.json({ ok: true });
-});
+}));
 
-ebooksRouter.post("/:id/retry", async (req, res) => {
+ebooksRouter.post("/:id/retry", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status === "error") {
@@ -492,7 +493,7 @@ ebooksRouter.post("/:id/retry", async (req, res) => {
   }
   await ensureGenerationRunning(row.id);
   res.json({ ok: true });
-});
+}));
 
 // Regera o ebook inteiro a partir das instrucoes editadas na tela de detalhe.
 //
@@ -500,7 +501,7 @@ ebooksRouter.post("/:id/retry", async (req, res) => {
 // que ja tem conteudo. Aqui as instrucoes mudaram, entao tudo que foi escrito
 // com as instrucoes antigas precisa sair -- senao o job encontraria o outline
 // velho e devolveria o mesmo livro com um briefing novo.
-ebooksRouter.post("/:id/regenerate", async (req, res) => {
+ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status === "generating") {
@@ -570,7 +571,7 @@ ebooksRouter.post("/:id/regenerate", async (req, res) => {
 
   await ensureGenerationRunning(row.id);
   res.json({ ok: true });
-});
+}));
 
 interface ContentChapterUpdate {
   id: string;
@@ -578,7 +579,7 @@ interface ContentChapterUpdate {
   content?: string;
 }
 
-ebooksRouter.put("/:id/content", async (req, res) => {
+ebooksRouter.put("/:id/content", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
@@ -618,9 +619,9 @@ ebooksRouter.put("/:id/content", async (req, res) => {
   }
 
   res.json({ ok: true });
-});
+}));
 
-ebooksRouter.post("/:id/finalize", async (req, res) => {
+ebooksRouter.post("/:id/finalize", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
@@ -658,11 +659,11 @@ ebooksRouter.post("/:id/finalize", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao exportar o ebook." });
   }
-});
+}));
 
 // Avalia sem exportar, para a tela mostrar o que trava a publicacao antes de o
 // usuario clicar em finalizar e receber um erro.
-ebooksRouter.get("/:id/quality", async (req, res) => {
+ebooksRouter.get("/:id/quality", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const gate = await avaliarEbook(row.id);
@@ -670,7 +671,7 @@ ebooksRouter.get("/:id/quality", async (req, res) => {
   // conferindo antes de qualquer finalização, quando metrics_json ainda é nulo.
   const metricas = await medirEbook(row.id).catch(() => null);
   res.json({ ...(gate ?? { liberado: true, achados: [], bloqueadores: [], contagem: {} }), metricas });
-});
+}));
 
 async function loadEbookOr404(id: string, res: import("express").Response): Promise<EbookRow | null> {
   const row = await one<EbookRow>("SELECT * FROM ebooks WHERE id = $1", [id]);
@@ -698,7 +699,7 @@ async function reRenderExports(ebookId: string) {
   ]);
 }
 
-ebooksRouter.post("/:id/layout-preview", async (req, res) => {
+ebooksRouter.post("/:id/layout-preview", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
@@ -715,9 +716,9 @@ ebooksRouter.post("/:id/layout-preview", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao gerar a prévia de diagramação." });
   }
-});
+}));
 
-ebooksRouter.get("/:id/layout-preview/:index", async (req, res) => {
+ebooksRouter.get("/:id/layout-preview/:index", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const index = Number(req.params.index);
@@ -732,9 +733,9 @@ ebooksRouter.get("/:id/layout-preview/:index", async (req, res) => {
   }
   res.set("Cache-Control", "no-store");
   res.sendFile(filePath);
-});
+}));
 
-ebooksRouter.get("/:id", async (req, res) => {
+ebooksRouter.get("/:id", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status === "generating") await ensureGenerationRunning(row.id);
@@ -747,9 +748,9 @@ ebooksRouter.get("/:id", async (req, res) => {
     [row.id]
   );
   res.json({ ...row, chapters, chapter_images: chapterImages });
-});
+}));
 
-ebooksRouter.delete("/:id", async (req, res) => {
+ebooksRouter.delete("/:id", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const chapterImagePaths = (
@@ -760,9 +761,9 @@ ebooksRouter.delete("/:id", async (req, res) => {
   }
   await run("DELETE FROM ebooks WHERE id = $1", [row.id]);
   res.json({ ok: true });
-});
+}));
 
-ebooksRouter.get("/:id/cover", async (req, res) => {
+ebooksRouter.get("/:id/cover", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.cover_path || !fs.existsSync(row.cover_path)) {
@@ -771,9 +772,9 @@ ebooksRouter.get("/:id/cover", async (req, res) => {
   }
   res.set("Cache-Control", "no-store");
   res.sendFile(row.cover_path);
-});
+}));
 
-ebooksRouter.post("/:id/cover/regenerate", async (req, res) => {
+ebooksRouter.post("/:id/cover/regenerate", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
@@ -827,9 +828,9 @@ ebooksRouter.post("/:id/cover/regenerate", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao gerar nova capa." });
   }
-});
+}));
 
-ebooksRouter.get("/:id/chapter-image/:imageId", async (req, res) => {
+ebooksRouter.get("/:id/chapter-image/:imageId", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const img = await one<ChapterImageRow>(
@@ -842,9 +843,9 @@ ebooksRouter.get("/:id/chapter-image/:imageId", async (req, res) => {
   }
   res.set("Cache-Control", "no-store");
   res.sendFile(img.path);
-});
+}));
 
-ebooksRouter.post("/:id/images/:imageId/regenerate", async (req, res) => {
+ebooksRouter.post("/:id/images/:imageId/regenerate", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "review" && row.status !== "ready") {
@@ -909,9 +910,9 @@ ebooksRouter.post("/:id/images/:imageId/regenerate", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao gerar nova imagem." });
   }
-});
+}));
 
-ebooksRouter.get("/:id/pdf", async (req, res) => {
+ebooksRouter.get("/:id/pdf", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.pdf_path || !fs.existsSync(row.pdf_path)) {
@@ -919,9 +920,9 @@ ebooksRouter.get("/:id/pdf", async (req, res) => {
     return;
   }
   res.download(row.pdf_path, `${row.title || "ebook"}.pdf`);
-});
+}));
 
-ebooksRouter.get("/:id/docx", async (req, res) => {
+ebooksRouter.get("/:id/docx", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.docx_path || !fs.existsSync(row.docx_path)) {
@@ -929,9 +930,9 @@ ebooksRouter.get("/:id/docx", async (req, res) => {
     return;
   }
   res.download(row.docx_path, `${row.title || "ebook"}.docx`);
-});
+}));
 
-ebooksRouter.get("/:id/epub", async (req, res) => {
+ebooksRouter.get("/:id/epub", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.epub_path || !fs.existsSync(row.epub_path)) {
@@ -939,9 +940,9 @@ ebooksRouter.get("/:id/epub", async (req, res) => {
     return;
   }
   res.download(row.epub_path, `${row.title || "ebook"}.epub`);
-});
+}));
 
-ebooksRouter.post("/:id/audiobook", async (req, res) => {
+ebooksRouter.post("/:id/audiobook", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "ready") {
@@ -958,9 +959,9 @@ ebooksRouter.post("/:id/audiobook", async (req, res) => {
   }
   await startAudiobookGeneration(row.id);
   res.json({ ok: true });
-});
+}));
 
-ebooksRouter.get("/:id/audiobook", async (req, res) => {
+ebooksRouter.get("/:id/audiobook", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.audio_path || !fs.existsSync(row.audio_path)) {
@@ -968,7 +969,7 @@ ebooksRouter.get("/:id/audiobook", async (req, res) => {
     return;
   }
   res.download(row.audio_path, `${row.title || "ebook"}.mp3`);
-});
+}));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const creativesDir = path.resolve(__dirname, "..", "..", "data", "exports", "criativos");
@@ -978,7 +979,7 @@ function creativeFilePath(ebookId: string, creativeId: string): string {
   return path.join(creativesDir, `${ebookId}-${safeId}.png`);
 }
 
-ebooksRouter.get("/:id/marketing/strategy", async (req, res) => {
+ebooksRouter.get("/:id/marketing/strategy", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.marketing_json) {
@@ -986,9 +987,9 @@ ebooksRouter.get("/:id/marketing/strategy", async (req, res) => {
     return;
   }
   res.json(JSON.parse(row.marketing_json) as MarketingStrategy);
-});
+}));
 
-ebooksRouter.post("/:id/marketing/strategy", async (req, res) => {
+ebooksRouter.post("/:id/marketing/strategy", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (row.status !== "ready") {
@@ -1006,9 +1007,9 @@ ebooksRouter.post("/:id/marketing/strategy", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao gerar estratégia de marketing." });
   }
-});
+}));
 
-ebooksRouter.post("/:id/marketing/render", async (req, res) => {
+ebooksRouter.post("/:id/marketing/render", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   if (!row.marketing_json) {
@@ -1046,9 +1047,9 @@ ebooksRouter.post("/:id/marketing/render", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Falha ao renderizar criativo." });
   }
-});
+}));
 
-ebooksRouter.get("/:id/marketing/creative/:creativeId", async (req, res) => {
+ebooksRouter.get("/:id/marketing/creative/:creativeId", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
   const filePath = creativeFilePath(row.id, req.params.creativeId);
@@ -1058,4 +1059,4 @@ ebooksRouter.get("/:id/marketing/creative/:creativeId", async (req, res) => {
   }
   res.set("Cache-Control", "no-store");
   res.sendFile(filePath);
-});
+}));

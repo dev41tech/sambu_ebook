@@ -183,6 +183,59 @@ function chapterCountFor(palavrasAlvo: number): number {
   return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
 
+/**
+ * Qual parametro de teto de saida este modelo aceita.
+ *
+ * `max_tokens` era o nome antigo; os modelos novos so aceitam
+ * `max_completion_tokens` e recusam a chamada com 400 se receberem o antigo.
+ * Foi isto que manteve o app preso ao gpt-4o -- nao por escolha, por
+ * incompatibilidade: trocar OPENAI_MODEL para um modelo novo fazia toda geracao
+ * morrer no sumario.
+ *
+ * Em vez de manter uma lista de quais modelos aceitam o que -- que envelhece a
+ * cada lancamento e que eu erraria --, a primeira recusa ensina: o proximo
+ * pedido ja vai com o nome certo, e a escolha vale pelo resto do processo.
+ *
+ * `null` = ainda nao se sabe.
+ */
+let campoDeTeto: "max_tokens" | "max_completion_tokens" | null = null;
+
+/**
+ * Folga de tokens para o raciocinio, em valor ABSOLUTO.
+ *
+ * Nos modelos de raciocinio os tokens de pensamento saem do MESMO teto que o
+ * texto. Os tetos deste app foram calibrados para o gpt-4o, que nao pensa: o
+ * sumario pede 2.600 e o gpt-4o gasta ~2.400 escrevendo. O gpt-5.5 gastou os
+ * 2.600 inteiros raciocinando e devolveu conteudo vazio -- finish_reason=length
+ * com zero caractere.
+ *
+ * A primeira versao disto era um MULTIPLICADOR, e foi um erro caro de medir: ao
+ * triplicar o teto para dar folga de pensamento, triplicou junto o teto do
+ * TEXTO, e o modelo preencheu o espaco. O livro saiu com 35.795 palavras para
+ * uma meta de 10.092 -- 3,5x o pedido.
+ *
+ * Reserva absoluta separa as duas coisas: o alvo de texto continua sendo o que
+ * cada chamada pediu, e a folga cobre so o pensamento. O valor se calibra
+ * sozinho pelo que a API reporta em `reasoning_tokens`, com uma margem, porque
+ * o gasto varia entre chamadas -- no mesmo prompt e no mesmo teto, o sumario
+ * estourou numa tentativa e passou na seguinte.
+ */
+let reservaDeRaciocinio = 0;
+const RESERVA_MAXIMA = 8000;
+/** Quanto somar quando a resposta volta vazia por teto. */
+const PASSO_DA_RESERVA = 2500;
+/** Margem sobre o maior gasto de raciocinio ja observado. */
+const MARGEM = 1.5;
+
+/** A mensagem de 400 da OpenAI diz qual dos dois nomes ela queria. */
+function tetoRecusado(err: unknown): "max_tokens" | "max_completion_tokens" | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!/unsupported parameter/i.test(msg)) return null;
+  if (/'max_tokens'/.test(msg) && /max_completion_tokens/.test(msg)) return "max_completion_tokens";
+  if (/'max_completion_tokens'/.test(msg) && /max_tokens/.test(msg)) return "max_tokens";
+  return null;
+}
+
 async function askOpenAI(
   system: string,
   prompt: string,
@@ -191,21 +244,76 @@ async function askOpenAI(
   minChars = 200
 ): Promise<string> {
   const openai = getClient();
-  const response = await withRetry(() =>
+
+  const pedir = (campo: "max_tokens" | "max_completion_tokens", teto: number) =>
     openai.chat.completions.create({
       model: MODEL,
-      max_tokens: maxTokens,
+      [campo]: teto,
       ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
       messages: [
         { role: "system", content: system },
         { role: "user", content: prompt },
       ],
-    })
-  );
+    });
+
+  const response = await withRetry(async () => {
+    const campo = campoDeTeto ?? "max_tokens";
+    let r;
+    try {
+      r = await pedir(campo, maxTokens + reservaDeRaciocinio);
+    } catch (err) {
+      const correto = tetoRecusado(err);
+      // So tenta de novo quando a propria API disse qual e o nome certo.
+      // Qualquer outro erro sobe para o withRetry decidir.
+      if (!correto || correto === campo) throw err;
+      campoDeTeto = correto;
+      console.warn(`[ia] modelo ${MODEL} usa "${correto}" como teto de saida; ajustado para o resto do processo.`);
+      r = await pedir(correto, maxTokens + reservaDeRaciocinio);
+    }
+
+    // Cortado no teto sem produzir texto: o pensamento comeu a verba inteira.
+    // Soma um passo de reserva e refaz -- uma vez so por chamada; se ainda
+    // assim vier vazio, o erro sobe com o diagnostico completo, em vez de
+    // virar um loop caro.
+    const semTexto = !r.choices[0]?.message?.content;
+    if (semTexto && r.choices[0]?.finish_reason === "length" && reservaDeRaciocinio < RESERVA_MAXIMA) {
+      const anterior = reservaDeRaciocinio;
+      reservaDeRaciocinio = Math.min(RESERVA_MAXIMA, reservaDeRaciocinio + PASSO_DA_RESERVA);
+      console.warn(
+        `[ia] modelo ${MODEL} gastou o teto inteiro raciocinando; ` +
+          `reserva de raciocinio ${anterior} -> ${reservaDeRaciocinio} tokens para o resto do processo.`,
+      );
+      r = await pedir(campoDeTeto ?? campo, maxTokens + reservaDeRaciocinio);
+    }
+
+    // Calibra pelo que a API reportou: a reserva converge para o que este
+    // modelo realmente gasta pensando, em vez de ficar num chute.
+    const gasto = r.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+    const desejada = Math.min(RESERVA_MAXIMA, Math.ceil(gasto * MARGEM));
+    if (desejada > reservaDeRaciocinio) {
+      reservaDeRaciocinio = desejada;
+      console.warn(`[ia] reserva de raciocinio ajustada para ${reservaDeRaciocinio} tokens (gasto observado: ${gasto}).`);
+    }
+    return r;
+  });
   const choice = response.choices[0];
   const text = choice?.message?.content;
   if (!text) {
-    throw new Error("Resposta vazia da IA.");
+    // "Resposta vazia da IA" sozinho nao diz nada, e escondeu a causa real na
+    // primeira tentativa de trocar de modelo. O motivo esta sempre no
+    // finish_reason: "length" e teto de saida curto -- em modelo de raciocinio
+    // os tokens de pensamento consomem o mesmo teto e podem nao sobrar nada
+    // para o texto; "content_filter" e recusa da plataforma.
+    const motivo = choice?.finish_reason ?? "desconhecido";
+    const uso = response.usage;
+    const raciocinio = uso?.completion_tokens_details?.reasoning_tokens;
+    const detalhe =
+      uso
+        ? ` (teto ${maxTokens}, saida ${uso.completion_tokens}${
+            raciocinio ? `, sendo ${raciocinio} de raciocinio` : ""
+          })`
+        : "";
+    throw new Error(`Resposta vazia da IA: finish_reason=${motivo}${detalhe}.`);
   }
   // Truncamento por teto de tokens passava em silencio. Em JSON ele e fatal e so
   // aparecia adiante como "Unexpected end of JSON input", sem dizer a causa --
@@ -470,7 +578,9 @@ function elencoBlock(outline: Outline, registrados: Personagem[] = []): string {
   if (elenco.length === 0) return "";
   const linhas = elenco.map((p) => `- ${p.nome} (${p.papel}): ${p.descricao}`).join("\n");
   return `
-ELENCO deste livro — use exatamente estes nomes, sem trocar, encurtar, apelidar nem inventar outro protagonista. Prefira sempre reaproveitar quem já está aqui a criar alguém novo; se a cena exigir mesmo uma pessoa nova, ela precisa ter motivo para voltar depois, e não pode assumir o papel central:
+ELENCO deste livro — são estas as pessoas, e ninguém assume o papel central no lugar delas. Prefira sempre reaproveitar quem já está aqui a criar alguém novo; se a cena exigir mesmo uma pessoa nova, ela precisa ter motivo para voltar depois.
+
+Como escrever os nomes: o nome completo aparece na PRIMEIRA vez que a pessoa entra no livro; da segunda em diante, use só o primeiro nome, que é como gente é chamada em português. Repetir "Teodoro Almeida" em toda linha faz o texto soar como boletim de ocorrência. O que não pode é trocar a pessoa, inventar apelido novo ou grafar o nome de outro jeito:
 ${linhas}
 `;
 }
@@ -504,15 +614,33 @@ ${fatos.map((f) => `- ${f}`).join("\n")}
 `;
 }
 
+/**
+ * A introducao roda DEPOIS dos capitulos, como a conclusao.
+ *
+ * Era a etapa 3, escrita quando nenhum capitulo existia ainda: abria um livro
+ * que nao tinha sido escrito, com os titulos do sumario como unica fonte.
+ * Recebendo os resumos reais, ela fala do livro que existe -- sem entregar o
+ * final, que e o risco novo que a troca de ordem cria.
+ */
 export async function generateIntro(
   ctx: EbookContext,
   outline: Outline,
-  registrados: Personagem[] = []
+  registrados: Personagem[] = [],
+  capitulos: CapituloAnterior[] = []
 ): Promise<string> {
+  const comResumo = capitulos.filter((c) => c.resumo);
+  const blocoLivro =
+    comResumo.length > 0
+      ? `
+O QUE O LIVRO REALMENTE CONTÉM, capítulo a capítulo — material de apoio para você acertar o tom, os nomes e o conflito. NÃO resuma nem liste isto na introdução, e não revele o desfecho:
+${comResumo.map((c) => `${c.idx + 1}. "${c.title}": ${c.resumo}`).join("\n")}
+`
+      : "";
+
   const prompt = `Escreva a introdução do ebook "${outline.title}" (${outline.subtitle}).
 Tema: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${groundingBlock(ctx)}
+${elencoBlock(outline, registrados)}${fatosFixosBlock(outline)}${blocoLivro}${groundingBlock(ctx)}
 A introdução deve criar conexão real com o leitor a partir de uma situação, dúvida ou dificuldade concreta — não anuncie o sumário do livro nem liste os capítulos que virão a seguir. O leitor só precisa sentir que este livro fala com a experiência dele; a estrutura interna do livro não precisa ser explicada aqui.
 
 Escreva de 300 a 450 palavras, em parágrafos corridos, sem repetir o título do livro como cabeçalho. Responda apenas com o texto final da introdução, sem comentários.`;
@@ -534,7 +662,47 @@ export interface CapituloAnterior {
  */
 const JANELA_DE_MEMORIA = 8;
 
-export function memoriaBlock(anteriores: CapituloAnterior[]): string {
+/** De quantos em quantos capitulos a memoria longa ganha um bloco novo. */
+export const CAPITULOS_POR_BLOCO = JANELA_DE_MEMORIA;
+
+/**
+ * Um trecho do livro ja condensado.
+ *
+ * A janela de 8 resolve a trama curta; isto resolve a longa. Num livro de 75
+ * capitulos, o 60 recebia os resumos do 52 ao 59 e tudo antes disso voltava a
+ * entrar so como titulo -- um fio aberto no capitulo 3 e retomado no 70 nao
+ * tinha garantia nenhuma. Mandar os 59 resumos inteiros custaria mais contexto
+ * do que o capitulo que se quer escrever; um paragrafo por bloco de 8, nao.
+ */
+export interface BlocoDeMemoria {
+  /** idx do ultimo capitulo coberto por este bloco. */
+  ate: number;
+  resumo: string;
+}
+
+/**
+ * Qual bloco da memoria longa cobre um capitulo, se algum ja cobre.
+ *
+ * Os blocos sao contiguos e fechados em ordem: o primeiro vai do capitulo 0 ate
+ * o seu `ate`, o seguinte comeca no capitulo logo depois, e assim por diante.
+ * Serve para saber o que precisa ser refeito quando um capitulo antigo e
+ * reescrito -- sem isso o bloco condensado segue descrevendo uma versao do
+ * texto que nao existe mais, e e essa versao velha que viaja para o resto do
+ * livro.
+ *
+ * Pura de proposito, fora do orquestrador, para poder ser testada sem banco.
+ */
+export function blocoQueCobre(
+  memoriaLonga: BlocoDeMemoria[],
+  idx: number,
+): { inicio: number; fim: number } | null {
+  const ordenados = [...memoriaLonga].sort((a, b) => a.ate - b.ate);
+  const posicao = ordenados.findIndex((b) => b.ate >= idx);
+  if (posicao === -1) return null;
+  return { inicio: posicao === 0 ? 0 : ordenados[posicao - 1].ate + 1, fim: ordenados[posicao].ate };
+}
+
+export function memoriaBlock(anteriores: CapituloAnterior[], memoriaLonga: BlocoDeMemoria[] = []): string {
   if (anteriores.length === 0) return "Este é o primeiro capítulo do livro.\n";
 
   const recentes = anteriores.slice(-JANELA_DE_MEMORIA);
@@ -546,17 +714,50 @@ export function memoriaBlock(anteriores: CapituloAnterior[]): string {
       : `- Capítulo ${c.idx + 1} — "${c.title}" (sem resumo registrado)`,
   );
 
-  const antigosLinha =
-    antigos.length > 0
-      ? `
-Capítulos anteriores a esses, apenas pelos títulos: ${antigos.map((c) => `"${c.title}"`).join(", ")}.
+  // A memoria longa cobre do inicio do livro ate um certo capitulo. O que sobra
+  // entre ela e a janela dos recentes ainda entra so como titulo: e um bloco em
+  // formacao, no maximo os 7 capitulos que ainda nao fecharam um bloco.
+  const blocos = memoriaLonga.filter((b) => b.resumo && b.resumo.trim());
+  const cobertoAte = blocos.length > 0 ? Math.max(...blocos.map((b) => b.ate)) : -1;
+  const naoCobertos = antigos.filter((c) => c.idx > cobertoAte);
+
+  const blocoLonga =
+    blocos.length > 0
+      ? `ANTES DISSO, o livro até aqui, em resumo:
+${blocos
+  .slice()
+  .sort((a, b) => a.ate - b.ate)
+  .map((b) => `- ${b.resumo}`)
+  .join("\n")}
+
 `
       : "";
 
-  return `O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
+  const antigosLinha =
+    naoCobertos.length > 0
+      ? `
+Outros capítulos anteriores, apenas pelos títulos: ${naoCobertos.map((c) => `"${c.title}"`).join(", ")}.
+`
+      : "";
+
+  return `${blocoLonga}O QUE JÁ ACONTECEU no livro até aqui — continue daqui, não recomece:
 ${linhas.join("\n")}${antigosLinha}
 Não repita fatos, exemplos, cenas ou conclusões que já apareceram acima. Se algo ficou em aberto, este capítulo pode retomar; o que já foi resolvido não volta a ser problema.
 `;
+}
+
+/**
+ * O que so existe depois que os capitulos comecaram a ser escritos, e por isso
+ * nao cabe no elenco nem na lista de anteriores.
+ */
+export interface ContextoDeEscrita {
+  /** Trechos do livro ja condensados, para alem da janela de 8. */
+  memoriaLonga?: BlocoDeMemoria[];
+  /**
+   * Instrucao corretiva. So chega preenchida quando este capitulo esta sendo
+   * reescrito por ter reprovado numa checagem no meio da geracao.
+   */
+  correcao?: string;
 }
 
 export async function generateChapter(
@@ -564,13 +765,27 @@ export async function generateChapter(
   outline: Outline,
   chapterIndex: number,
   anteriores: CapituloAnterior[],
-  registrados: Personagem[] = []
+  registrados: Personagem[] = [],
+  extra: ContextoDeEscrita = {}
 ): Promise<string> {
   const chapter = outline.chapters[chapterIndex];
   const isLastChapter = chapterIndex === outline.chapters.length - 1;
   const nextChapter = !isLastChapter ? outline.chapters[chapterIndex + 1] : null;
   const alvoTotal = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
   const wordsPerChapter = Math.round(alvoTotal / outline.chapters.length);
+  // Teto por capitulo, e nao so piso.
+  //
+  // O prompt sempre pediu "NO MINIMO N palavras" e mais nada. Com o gpt-4o
+  // isso bastava, porque ele entrega perto do minimo e o teto de tokens
+  // segurava o resto -- ou seja, o controle de tamanho deste app era
+  // acidental, nao projetado. O gpt-5.5 escreveu 2.875 palavras por capitulo
+  // para um pedido de 841: um livro de 34.502 palavras para uma meta de
+  // 10.092, 3,4x o pedido.
+  //
+  // 30% de folga sobre o alvo deixa espaco para uma cena render mais sem
+  // transformar o livro inteiro noutra coisa -- e sem estourar a estimativa de
+  // custo e de paginas que o usuario viu antes de mandar gerar.
+  const tetoDoCapitulo = Math.round(wordsPerChapter * 1.3);
   // Aberturas e fechamentos do modo, nao mais uma lista unica de nao ficcao.
   const voz = vozDe(modoDe(ctx.theme));
   const opening = voz.aberturas[chapterIndex % voz.aberturas.length];
@@ -587,6 +802,12 @@ export async function generateChapter(
   const funcaoLinha = chapter.funcao
     ? `Função deste capítulo na estrutura: ${chapter.funcao}.${chapter.resultado ? ` Ao final dele, isto precisa estar resolvido de forma irreversível: ${chapter.resultado}` : ""}`
     : "";
+  // So chega preenchido numa reescrita: o capitulo ja foi escrito uma vez e
+  // reprovou na checagem de continuidade que roda no meio da geracao.
+  const correcaoBloco = extra.correcao
+    ? `\nATENÇÃO — este capítulo já foi escrito uma vez e foi reprovado na verificação de continuidade. ${extra.correcao}\n`
+    : "";
+
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
     ? `\nEste capítulo revela ou resolve a questão central do livro. Dramatize a revelação em cena — o que aconteceu, dito ou mostrado diretamente — em vez de resumir o conteúdo de uma gravação, carta, diário ou confissão alheia. O leitor precisa saber, no texto, exatamente o que se passou; "ela contou tudo" ou "a gravação revelava a verdade" não é uma resposta, é a ausência de uma.\n`
@@ -598,13 +819,13 @@ O que este capítulo deve cobrir: ${chapter.summary}
 ${funcaoLinha}
 Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: ${ctx.tone}. Idioma: ${ctx.language}.
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
-${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores)}
+${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores, extra.memoriaLonga ?? [])}${correcaoBloco}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
 ${instrucaoClimax}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
-Escreva NO MÍNIMO ${wordsPerChapter} palavras -- "aproximadamente" não é licença para entregar menos, é a meta a alcançar ou passar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
+Escreva entre ${wordsPerChapter} e ${tetoDoCapitulo} palavras. O piso não é sugestão: "aproximadamente" não é licença para entregar menos. O teto também não: passar dele desequilibra o livro em relação aos outros capítulos e estoura a extensão que o autor pediu. Se a cena pedir mais espaço, corte o que for acessório em vez de ultrapassar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
   return askOpenAI(promptDoModo(ctx), prompt, 4000);
 }
 
@@ -624,10 +845,27 @@ export async function expandirCapitulo(
   ctx: EbookContext,
   conteudoAtual: string,
   metaPalavras: number,
+  /**
+   * Trava anti-abstracao, usada quando a expansao vem LOGO DEPOIS de uma
+   * reducao de abstracao.
+   *
+   * Sem ela as duas passadas brigam entre si. Medido no quarto livro de teste:
+   * o capitulo 3 tinha caido de 10.2 para 9.0 de abstracao, a expansao devolveu
+   * o tamanho e a abstracao subiu para 14.1 -- pior que o original. A causa
+   * esta no proprio pedido de "mais detalhe sensorial" e "reacao interna dos
+   * personagens", que e exatamente o que produz comparacao e atmosfera.
+   */
+  semAbstracao = false,
 ): Promise<string> {
+  const comoCrescer = semAbstracao
+    ? `Para crescer, aprofunde SOMENTE com material concreto: mais linhas de diálogo, ações físicas (o que a pessoa faz com as mãos, para onde anda, o que pega ou larga), um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo.
+
+PROIBIDO ao expandir: comparação ("como se", "como um", "tal como"), "parecia", atmosfera e clima emocional, e os substantivos abstratos de ambiente -- silêncio, eco, sombra, reflexo, essência. Este capítulo acabou de passar por uma limpeza dessas construções e a expansão não pode trazê-las de volta. Se a única forma que você achar de crescer for por atmosfera, cresça menos.`
+    : `Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.`;
+
   const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para pelo menos ${metaPalavras} palavras, mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
 
-Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.
+${comoCrescer}
 
 Responda apenas com o texto expandido do capítulo, sem comentários.
 
@@ -655,6 +893,20 @@ export interface ResumoCapitulo {
    * existindo. Vazio em nao ficcao, onde nao ha elenco.
    */
   personagensNovos: Personagem[];
+  /**
+   * O capitulo termina em decisao, custo ou informacao nova (true), ou numa
+   * reflexao abstrata sobre o futuro (false)?
+   *
+   * O vozes.ts ja oferece fechamentos concretos ao modo narrativo -- "uma perda
+   * ou um custo concreto pago por alguem", "uma decisao tomada, com a
+   * consequencia ja visivel" -- e numa leitura de livro real nove dos doze
+   * capitulos terminavam em reflexao abstrata mesmo assim. Isto MEDE a
+   * frequencia, sem agir: agir antes de medir foi o erro que a reescrita de
+   * abstracao ja cometeu, e custou dez chamadas jogadas fora.
+   *
+   * Default true: capitulo sem resposta do modelo nao pode virar alarme falso.
+   */
+  fechamentoConcreto: boolean;
 }
 
 function normalizarPersonagens(v: unknown): Personagem[] {
@@ -673,6 +925,90 @@ function normalizarPersonagens(v: unknown): Personagem[] {
 }
 
 /**
+ * Converte o dialogo de um capitulo para travessao.
+ *
+ * "Coracoes Urbanos" saiu com oito capitulos em travessao e quatro em aspas, e
+ * um deles misturando aspas retas com curvas na mesma cena. E o defeito mais
+ * visivel na pagina: o leitor ve a troca de convencao antes de ler a frase.
+ *
+ * Nao da para converter isto por regex. Naquele mesmo livro, um paragrafo entre
+ * aspas era o texto de um e-mail -- citacao legitima, que viraria fala de
+ * personagem numa conversao automatica. Distinguir os dois casos exige ler o
+ * que esta escrito, entao a conversao pede julgamento ao modelo e o prompt
+ * proibe qualquer outra alteracao.
+ */
+export async function converterDialogoParaTravessao(
+  ctx: EbookContext,
+  conteudo: string,
+): Promise<string> {
+  const prompt = `O capítulo abaixo escreve as falas dos personagens entre aspas. Converta TODAS as falas de personagem para o padrão brasileiro de travessão.
+
+Regras, nesta ordem de prioridade:
+1. NÃO altere nenhuma palavra do texto. Só muda a pontuação que marca a fala.
+2. Cada fala abre o parágrafo com travessão (—). O verbo de elocução que vem depois da fala é separado por outro travessão: — Fala do personagem — respondeu Ana, sem olhar.
+3. NÃO converta aspas que não sejam fala de personagem: texto de e-mail ou mensagem, citação de algo escrito, título de obra, termo destacado, pensamento entre aspas. Essas continuam exatamente como estão.
+4. Não junte nem separe parágrafos, não reordene nada, não corte nem acrescente frase alguma.
+
+Responda apenas com o texto do capítulo, sem comentários.
+
+CAPÍTULO:
+${conteudo}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+}
+
+/**
+ * Reescreve um capitulo abstrato demais, nomeando o que esta sobrando.
+ *
+ * A metrica de abstracao existia desde a migration 0009 e nada agia sobre ela:
+ * "Coracoes Urbanos" mediu 12.20 por mil contra a referencia de 8.9, com 35
+ * ocorrencias da familia de "silencio", 19 de "eco" e 12 de "sombra" -- as tres
+ * ja listadas no proprio RE_ABSTRACAO que produziu o numero.
+ *
+ * Nomear os termos e o ponto. "Reduza a abstracao" e instrucao vaga, do tipo
+ * que este motor ja demonstrou ignorar; "voce usou 'silencio' 9 vezes neste
+ * capitulo" e verificavel.
+ */
+export async function reduzirAbstracao(
+  ctx: EbookContext,
+  conteudo: string,
+  termos: Array<{ termo: string; vezes: number }>,
+): Promise<string> {
+  const lista = termos
+    .slice(0, 8)
+    .map((t) => `"${t.termo}" (${t.vezes}x)`)
+    .join(", ");
+
+  // O piso em numero, e nao "nao encurte".
+  //
+  // A primeira versao pedia qualitativamente para nao encolher, e o modelo
+  // devolvia capitulos 7% a 19% menores -- boa reducao de abstracao, descartada
+  // pela guarda de tamanho. E o mesmo defeito que esta leva inteira diagnosticou
+  // no motor: instrucao vaga nao e obedecida. O expandirCapitulo acerta o
+  // tamanho porque diz o numero, entao este diz tambem.
+  const palavrasAtuais = conteudo.trim().split(/\s+/).filter(Boolean).length;
+
+  const prompt = `O capítulo abaixo está abstrato demais. Estes são os termos que mais pesaram: ${lista}.
+
+Reescreva-o reduzindo esse excesso, mantendo a MESMA história: os mesmos acontecimentos, na mesma ordem, com os mesmos personagens, a mesma abertura e o mesmo fechamento. Não corte cena, não resuma e não mude o resultado do capítulo.
+
+O capítulo tem ${palavrasAtuais} palavras e o texto reescrito precisa ter NO MÍNIMO ${palavrasAtuais} palavras. Isto não é uma sugestão: trocar comparação por ação concreta costuma render MAIS texto, não menos, porque um gesto descrito ocupa mais espaço do que a metáfora que ele substitui. Se o seu texto ficou menor, você cortou cena em vez de trocar abstração por concretude — volte e desenvolva as cenas que já existem.
+
+Como reduzir:
+- Troque a comparação pela coisa. Em vez de "o silêncio pesava como uma sombra", escreva o que a pessoa faz enquanto não fala — olha para a porta, mexe na alça da bolsa, começa uma frase e desiste.
+- Onde o texto diz que algo "parecia" ou é "como se", mostre o fato direto.
+- Corte o que só enfeita: se a frase continua verdadeira sem a comparação, ela sobra.
+- Sensação sem ação vira ação. O leitor precisa ver o gesto, não a atmosfera.
+
+Não substitua um termo abstrato por outro sinônimo abstrato — isso não resolve nada, só troca a palavra.
+
+Responda apenas com o texto reescrito do capítulo, sem comentários.
+
+CAPÍTULO:
+${conteudo}`;
+  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+}
+
+/**
  * Resumo factual do capitulo recem-escrito e, em ficcao, quem ele criou.
  *
  * Os dois saem da MESMA chamada de proposito: extrair o elenco novo em uma
@@ -682,7 +1018,14 @@ function normalizarPersonagens(v: unknown): Personagem[] {
 export async function resumirCapitulo(
   ctx: EbookContext,
   tituloCapitulo: string,
-  conteudo: string
+  conteudo: string,
+  /**
+   * Quem ja faz parte do livro. O prompt sempre mandou "nao repita quem ja
+   * existia antes" -- mas nunca dizia QUEM existia, e o modelo nao tem como
+   * adivinhar. Num livro de teste de 12 capitulos isso registrou Ellie quatro
+   * vezes, mais Lucas, Lucas Almeida e Carlos Silveira, todos ja no elenco.
+   */
+  nomesConhecidos: string[] = []
 ): Promise<ResumoCapitulo> {
   const narrativo = modoDe(ctx.theme) === "narrativo";
   const pedido = narrativo
@@ -698,10 +1041,16 @@ export async function resumirCapitulo(
     ? `,
   "personagensNovos": [
     { "nome": "...", "papel": "apoio | antagonista | ...", "descricao": "quem e, em uma frase" }
-  ]`
+  ],
+  "fechamentoConcreto": true | false`
     : "";
+  const conhecidosLinha =
+    narrativo && nomesConhecidos.length > 0
+      ? `\nJA FAZEM PARTE do livro, nao os liste como novos (nem em versao curta do nome): ${nomesConhecidos.join(", ")}.`
+      : "";
   const instrucaoElenco = narrativo
-    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao repita quem ja existia antes; se ninguem novo apareceu, use uma lista vazia.`
+    ? `\nEm "personagensNovos", liste apenas as pessoas com nome proprio que aparecem neste capitulo pela primeira vez e que fazem parte da historia. Nao liste lugares, empresas, eventos nem produtos -- so gente. Se ninguem novo apareceu, use uma lista vazia.${conhecidosLinha}
+Em "fechamentoConcreto", responda olhando so o ULTIMO paragrafo do capitulo: true se ele termina numa decisao tomada, num custo pago, num gesto, numa fala ou numa informacao nova; false se termina numa reflexao abstrata sobre o futuro, na atmosfera da cidade ou numa frase de efeito sobre o que ainda pode vir. Julgue o que esta escrito, nao o que o capitulo pretendia.`
     : "";
 
   const prompt = `Resuma o capitulo abaixo em ate 80 palavras, em portugues, so com fatos:
@@ -724,7 +1073,42 @@ ${conteudo.slice(0, 12000)}`;
   const parsed = JSON.parse(extractJson(raw)) as Partial<ResumoCapitulo>;
   const resumo = String(parsed.resumo ?? "").trim();
   if (!resumo) throw new Error("Resumo do capitulo veio vazio.");
-  return { resumo, personagensNovos: normalizarPersonagens(parsed.personagensNovos) };
+  return {
+    resumo,
+    personagensNovos: normalizarPersonagens(parsed.personagensNovos),
+    // Ausente vira true de proposito: so conta como fechamento fraco quando o
+    // modelo diz explicitamente que e.
+    fechamentoConcreto: parsed.fechamentoConcreto !== false,
+  };
+}
+
+/**
+ * Condensa um trecho ja escrito do livro numa memoria que viaja ate o fim.
+ *
+ * Uma chamada a cada CAPITULOS_POR_BLOCO capitulos -- num livro de 75 sao 9
+ * chamadas curtas no total, contra as 75 que seria mandar todos os resumos em
+ * todo prompt.
+ */
+export async function condensarBloco(
+  ctx: EbookContext,
+  capitulos: CapituloAnterior[],
+): Promise<string> {
+  const corpo = capitulos
+    .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+    .join("\n");
+  const primeiro = capitulos[0]?.idx ?? 0;
+  const ultimo = capitulos[capitulos.length - 1]?.idx ?? primeiro;
+
+  const prompt = `Abaixo estao os resumos dos capitulos ${primeiro + 1} a ${ultimo + 1} de um livro.
+
+Condense tudo isso em ate 90 palavras, comecando por "Capitulos ${primeiro + 1} a ${ultimo + 1}:". Guarde o que precisa continuar valendo ate o fim do livro: quem entrou na historia, o que mudou de forma irreversivel e o que ficou EM ABERTO. Descarte detalhe de cena. Nao interprete e nao tire licao.
+
+Responda apenas com o texto condensado.
+
+RESUMOS:
+${corpo}`;
+
+  return askOpenAI(SYSTEM_BASE, prompt, 400, false, 40);
 }
 
 export async function generateConclusion(

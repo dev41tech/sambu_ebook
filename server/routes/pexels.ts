@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { searchPhotos } from "../lib/pexels";
+import { rota } from "../lib/rota";
 
 export const pexelsRouter = Router();
 
-pexelsRouter.get("/search", async (req, res) => {
+pexelsRouter.get("/search", rota(async (req, res) => {
   const query = String(req.query.query ?? "").trim();
   const orientation = req.query.orientation === "landscape" ? "landscape" : "portrait";
   if (!query) {
@@ -16,4 +17,4 @@ pexelsRouter.get("/search", async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : "Erro ao buscar fotos." });
   }
-});
+}));
