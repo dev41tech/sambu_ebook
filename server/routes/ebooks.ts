@@ -29,6 +29,7 @@ import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
 import { medirComResumos, type Metricas } from "../lib/metricas";
 import { rota } from "../lib/rota";
+import { paraGuardar, resolverExport, exportadoEmOutroLugar } from "../lib/arquivos";
 
 export const ebooksRouter = Router();
 
@@ -544,7 +545,11 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
   const imagensAntigas = (
     await all<{ path: string }>("SELECT path FROM chapter_images WHERE ebook_id = $1", [row.id])
   ).map((r) => r.path);
-  for (const caminho of [row.pdf_path, row.docx_path, row.epub_path, ...imagensAntigas]) {
+  for (const caminho of [row.pdf_path, row.docx_path, row.epub_path]) {
+    const arquivo = resolverExport(caminho);
+    if (arquivo) fs.rmSync(arquivo, { force: true });
+  }
+  for (const caminho of imagensAntigas) {
     if (caminho && fs.existsSync(caminho)) fs.rmSync(caminho, { force: true });
   }
 
@@ -691,10 +696,11 @@ async function reRenderExports(ebookId: string) {
   const pdfPath = await renderEbookPdf(row, chapters);
   const docxPath = await renderEbookDocx(row, chapters);
   const epubPath = await renderEbookEpub(row, chapters);
+  // So o nome vai para o banco: caminho absoluto so vale na maquina que gerou.
   await run("UPDATE ebooks SET pdf_path = $1, docx_path = $2, epub_path = $3 WHERE id = $4", [
-    pdfPath,
-    docxPath,
-    epubPath,
+    paraGuardar(pdfPath),
+    paraGuardar(docxPath),
+    paraGuardar(epubPath),
     ebookId,
   ]);
 }
@@ -756,7 +762,13 @@ ebooksRouter.delete("/:id", rota(async (req, res) => {
   const chapterImagePaths = (
     await all<{ path: string }>("SELECT path FROM chapter_images WHERE ebook_id = $1", [row.id])
   ).map((r) => r.path);
-  for (const p of [row.pdf_path, row.docx_path, row.epub_path, row.audio_path, row.cover_path, ...chapterImagePaths]) {
+  for (const p of [row.pdf_path, row.docx_path, row.epub_path, row.audio_path]) {
+    const arquivo = resolverExport(p);
+    if (arquivo) fs.rmSync(arquivo, { force: true });
+  }
+  // Capa e imagens de capitulo tem pasta propria e continuam com caminho
+  // absoluto -- nao entram nesta correcao.
+  for (const p of [row.cover_path, ...chapterImagePaths]) {
     if (p && fs.existsSync(p)) fs.rmSync(p, { force: true });
   }
   await run("DELETE FROM ebooks WHERE id = $1", [row.id]);
@@ -915,31 +927,55 @@ ebooksRouter.post("/:id/images/:imageId/regenerate", rota(async (req, res) => {
 ebooksRouter.get("/:id/pdf", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (!row.pdf_path || !fs.existsSync(row.pdf_path)) {
-    res.status(409).json({ error: "PDF ainda não está pronto." });
+  const arquivo = resolverExport(row.pdf_path);
+  if (!arquivo) {
+    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
+    // mandava procurar um problema de geracao que nao existia, quando o livro
+    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
+    res.status(409).json({
+      error: exportadoEmOutroLugar(row.pdf_path)
+        ? "Este PDF foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
+        : "PDF ainda não está pronto.",
+    });
     return;
   }
-  res.download(row.pdf_path, `${row.title || "ebook"}.pdf`);
+  res.download(arquivo, `${row.title || "ebook"}.pdf`);
 }));
 
 ebooksRouter.get("/:id/docx", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (!row.docx_path || !fs.existsSync(row.docx_path)) {
-    res.status(409).json({ error: "DOCX ainda não está pronto." });
+  const arquivo = resolverExport(row.docx_path);
+  if (!arquivo) {
+    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
+    // mandava procurar um problema de geracao que nao existia, quando o livro
+    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
+    res.status(409).json({
+      error: exportadoEmOutroLugar(row.docx_path)
+        ? "Este DOCX foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
+        : "DOCX ainda não está pronto.",
+    });
     return;
   }
-  res.download(row.docx_path, `${row.title || "ebook"}.docx`);
+  res.download(arquivo, `${row.title || "ebook"}.docx`);
 }));
 
 ebooksRouter.get("/:id/epub", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (!row.epub_path || !fs.existsSync(row.epub_path)) {
-    res.status(409).json({ error: "EPUB ainda não está pronto." });
+  const arquivo = resolverExport(row.epub_path);
+  if (!arquivo) {
+    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
+    // mandava procurar um problema de geracao que nao existia, quando o livro
+    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
+    res.status(409).json({
+      error: exportadoEmOutroLugar(row.epub_path)
+        ? "Este EPUB foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
+        : "EPUB ainda não está pronto.",
+    });
     return;
   }
-  res.download(row.epub_path, `${row.title || "ebook"}.epub`);
+  res.download(arquivo, `${row.title || "ebook"}.epub`);
 }));
 
 ebooksRouter.post("/:id/audiobook", rota(async (req, res) => {
@@ -964,11 +1000,19 @@ ebooksRouter.post("/:id/audiobook", rota(async (req, res) => {
 ebooksRouter.get("/:id/audiobook", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (!row.audio_path || !fs.existsSync(row.audio_path)) {
-    res.status(409).json({ error: "Audiobook ainda não está pronto." });
+  const arquivo = resolverExport(row.audio_path);
+  if (!arquivo) {
+    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
+    // mandava procurar um problema de geracao que nao existia, quando o livro
+    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
+    res.status(409).json({
+      error: exportadoEmOutroLugar(row.audio_path)
+        ? "Este Audiobook foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
+        : "Audiobook ainda não está pronto.",
+    });
     return;
   }
-  res.download(row.audio_path, `${row.title || "ebook"}.mp3`);
+  res.download(arquivo, `${row.title || "ebook"}.mp3`);
 }));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

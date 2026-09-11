@@ -5,6 +5,7 @@ import ffmpegPath from "@ffmpeg-installer/ffmpeg";
 import ffmpeg from "fluent-ffmpeg";
 import { all, one, run, type EbookRow } from "./db";
 import { mensagemDeErroParaUsuario } from "./sanitizar";
+import { paraGuardar } from "./arquivos";
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
 
@@ -135,7 +136,8 @@ async function runAudioJob(ebookId: string) {
     await concatMp3(partFiles, outPath);
 
     await run("UPDATE ebooks SET audio_status = 'ready', audio_path = $1, audio_error = NULL WHERE id = $2", [
-      outPath,
+      // So o nome -- ver server/lib/arquivos.ts.
+      paraGuardar(outPath),
       ebookId,
     ]);
   } catch (err) {

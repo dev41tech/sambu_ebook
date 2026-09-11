@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { all, one, run, type EbookRow } from "../lib/db";
+import { paraGuardar } from "../lib/arquivos";
 import { renderEbookPdfValidated } from "../lib/pdf";
 import { renderEbookEpubValidated } from "../lib/epub";
 import { rota } from "../lib/rota";
@@ -120,7 +121,7 @@ renderRouter.post("/pdf", rota(async (req, res) => {
     const ebook = await upsertManuscript(req.body ?? {});
     const chapters = await loadChapters(ebook.id);
     const { path: pdfPath, pageCount, validation } = await renderEbookPdfValidated(ebook, chapters);
-    await run("UPDATE ebooks SET pdf_path = $1 WHERE id = $2", [pdfPath, ebook.id]);
+    await run("UPDATE ebooks SET pdf_path = $1 WHERE id = $2", [paraGuardar(pdfPath), ebook.id]);
 
     const ok = validation.textCoverage >= 0.995 && validation.clippingIssues === 0;
     res.status(ok ? 200 : 422).json({
@@ -146,7 +147,7 @@ renderRouter.post("/epub", rota(async (req, res) => {
     const ebook = await upsertManuscript(req.body ?? {});
     const chapters = await loadChapters(ebook.id);
     const { path: epubPath, validation } = await renderEbookEpubValidated(ebook, chapters);
-    await run("UPDATE ebooks SET epub_path = $1 WHERE id = $2", [epubPath, ebook.id]);
+    await run("UPDATE ebooks SET epub_path = $1 WHERE id = $2", [paraGuardar(epubPath), ebook.id]);
 
     res.status(validation.structureOk ? 200 : 422).json({
       ok: validation.structureOk,

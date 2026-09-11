@@ -32,6 +32,7 @@ import { hasWebSearch, searchWeb, formatResearch } from "./webSearch";
 import { getRecentLearnings, grupoDaCategoria } from "./memory";
 import { startAudiobookGeneration } from "./tts";
 import { mensagemDeErroParaUsuario } from "./sanitizar";
+import { paraGuardar } from "./arquivos";
 import {
   verificarContinuidade,
   contarPorGravidade,
@@ -911,7 +912,9 @@ export async function finalizeEbookExport(ebookId: string): Promise<void> {
 
   await run(
     "UPDATE ebooks SET status = 'ready', current_step = NULL, pdf_path = $1, docx_path = $2, epub_path = $3 WHERE id = $4",
-    [pdfPath, docxPath, epubPath, ebookId]
+    // So o nome: o caminho absoluto so vale na maquina que gerou, e o banco e
+    // compartilhado entre producao e a maquina local.
+    [paraGuardar(pdfPath), paraGuardar(docxPath), paraGuardar(epubPath), ebookId]
   );
 
   // Quando o usuário marcou o audiobook já na criação, a narração dispara sozinha
