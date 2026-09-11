@@ -924,58 +924,84 @@ ebooksRouter.post("/:id/images/:imageId/regenerate", rota(async (req, res) => {
   }
 }));
 
+type Formato = "pdf" | "docx" | "epub";
+
+const NOME_DO_FORMATO = { pdf: "PDF", docx: "DOCX", epub: "EPUB" } as const;
+const COLUNA_DO_FORMATO = { pdf: "pdf_path", docx: "docx_path", epub: "epub_path" } as const;
+const RENDERIZADOR = { pdf: renderEbookPdf, docx: renderEbookDocx, epub: renderEbookEpub } as const;
+// Nome da coluna nunca vem de fora: sai do mapa acima, que so tem estes tres.
+const ATUALIZACAO = {
+  pdf: "UPDATE ebooks SET pdf_path = $1 WHERE id = $2",
+  docx: "UPDATE ebooks SET docx_path = $1 WHERE id = $2",
+  epub: "UPDATE ebooks SET epub_path = $1 WHERE id = $2",
+} as const;
+
+// Entrega o arquivo exportado, refazendo-o quando ele nao esta neste servidor.
+//
+// O banco e compartilhado entre a maquina local e o container, mas a pasta de
+// exports nao e: um livro exportado aqui nao existe la, e vice-versa. Avisar
+// "exporte de novo" era honesto e inutil -- o texto inteiro mora no banco,
+// entao qualquer ambiente consegue reconstruir o arquivo sozinho.
+//
+// So refaz o que ja tinha sido exportado alguma vez. Sem export nenhum no
+// registro, o livro realmente nao esta pronto, e a resposta continua sendo essa.
+//
+// Refaz so o formato pedido, e nao passa por finalizeEbookExport de proposito:
+// aquele caminho dispara a narracao quando audio_requested esta marcado, e
+// narracao gasta cota paga da ElevenLabs. Baixar um EPUB nao pode custar isso.
+//
+// Livro cujo arquivo de capa ficou na outra maquina volta sem capa: cover_path
+// ainda guarda caminho absoluto, e o renderizador ignora imagem que nao acha.
+// O texto sai inteiro, que e o que o download precisa entregar.
+async function enviarExport(res: import("express").Response, row: EbookRow, formato: Formato) {
+  const guardado = row[COLUNA_DO_FORMATO[formato]];
+  let arquivo = resolverExport(guardado);
+
+  if (!arquivo && exportadoEmOutroLugar(guardado)) {
+    const chapters = await all<{ id: string; title: string; content: string }>(
+      "SELECT id, title, content FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+      [row.id]
+    );
+    if (chapters.length > 0) {
+      try {
+        arquivo = await RENDERIZADOR[formato](row, chapters);
+        await run(ATUALIZACAO[formato], [paraGuardar(arquivo), row.id]);
+      } catch (err) {
+        console.error(
+          `[export] falha ao refazer ${formato} de ${row.id}:`,
+          err instanceof Error ? err.message : err
+        );
+        res.status(500).json({
+          error: `Este ${NOME_DO_FORMATO[formato]} foi exportado em outro ambiente e não foi possível refazê-lo aqui.`,
+        });
+        return;
+      }
+    }
+  }
+
+  if (!arquivo) {
+    res.status(409).json({ error: `${NOME_DO_FORMATO[formato]} ainda não está pronto.` });
+    return;
+  }
+  res.download(arquivo, `${row.title || "ebook"}.${formato}`);
+}
+
 ebooksRouter.get("/:id/pdf", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  const arquivo = resolverExport(row.pdf_path);
-  if (!arquivo) {
-    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
-    // mandava procurar um problema de geracao que nao existia, quando o livro
-    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
-    res.status(409).json({
-      error: exportadoEmOutroLugar(row.pdf_path)
-        ? "Este PDF foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
-        : "PDF ainda não está pronto.",
-    });
-    return;
-  }
-  res.download(arquivo, `${row.title || "ebook"}.pdf`);
+  await enviarExport(res, row, "pdf");
 }));
 
 ebooksRouter.get("/:id/docx", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  const arquivo = resolverExport(row.docx_path);
-  if (!arquivo) {
-    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
-    // mandava procurar um problema de geracao que nao existia, quando o livro
-    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
-    res.status(409).json({
-      error: exportadoEmOutroLugar(row.docx_path)
-        ? "Este DOCX foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
-        : "DOCX ainda não está pronto.",
-    });
-    return;
-  }
-  res.download(arquivo, `${row.title || "ebook"}.docx`);
+  await enviarExport(res, row, "docx");
 }));
 
 ebooksRouter.get("/:id/epub", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  const arquivo = resolverExport(row.epub_path);
-  if (!arquivo) {
-    // Duas situacoes diferentes, e dizer a verdade importa: "nao esta pronto"
-    // mandava procurar um problema de geracao que nao existia, quando o livro
-    // estava pronto e o arquivo e que tinha sido exportado noutro ambiente.
-    res.status(409).json({
-      error: exportadoEmOutroLugar(row.epub_path)
-        ? "Este EPUB foi exportado em outro ambiente e não está neste servidor. Exporte de novo aqui."
-        : "EPUB ainda não está pronto.",
-    });
-    return;
-  }
-  res.download(arquivo, `${row.title || "ebook"}.epub`);
+  await enviarExport(res, row, "epub");
 }));
 
 ebooksRouter.post("/:id/audiobook", rota(async (req, res) => {

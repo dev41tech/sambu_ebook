@@ -70,19 +70,24 @@ remoto — a nova máquina enxerga os mesmos 35 ebooks sem copiar nada.
 | `data/lote` | 281 MB | arquivos de geração em lote |
 | `data/images` | 140 MB | capas e imagens de capítulo |
 
-**O banco guarda o caminho absoluto desses arquivos**, e o caminho é da máquina
-que gerou. Hoje há 30 ebooks apontando para `C:\Users\marcos.dias\ebook-forge\...`
-e outros apontando para `/app/data/...`, do container.
+O banco é compartilhado, mas essas pastas não. O que isso causa depende do tipo
+de arquivo, e a diferença é grande:
 
-Na prática, numa máquina nova:
+| | Numa máquina que não gerou o arquivo |
+|---|---|
+| **PDF, EPUB, DOCX** | **Baixam normalmente.** O servidor refaz o arquivo na hora, a partir do texto que está no banco (≈3 s, inclusive o PDF) |
+| **Capas e imagens de capítulo** | **Não aparecem.** São arquivos de imagem, não têm como ser reconstruídos a partir do texto |
+| **Audiobook** | **Não baixa.** Refazer custaria cota paga da ElevenLabs, então o servidor se recusa e avisa |
 
-- A biblioteca lista os 35 ebooks normalmente
-- **Capas não aparecem** e **downloads de PDF/EPUB falham**, porque o arquivo não
-  está lá
+A reconstrução acontece sozinha, no próprio download (`server/routes/ebooks.ts`,
+`enviarExport`), e só para livro que já tinha sido exportado alguma vez. Livro que
+nunca foi exportado continua respondendo "ainda não está pronto", que é a
+verdade. O caminho novo gravado no banco é **só o nome do arquivo** — caminho
+absoluto de registro antigo continua sendo aceito na leitura.
 
-Duas saídas: copiar a pasta `data/` junto (pendrive, rede — é 1 GB), ou aceitar
-que os ebooks antigos ficam sem arquivo e só os novos, gerados na máquina nova,
-terão capa e exportação.
+Consequência prática: **os exports não são mais motivo para copiar `data/`.** Se
+quiser as capas dos livros antigos, aí sim é preciso copiar `data/images` (140 MB)
+— ou regerar a capa pela tela, que é mais rápido do que mover 1 GB.
 
 ## 6. Sambu Online, se for mexer nele também
 
