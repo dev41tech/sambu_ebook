@@ -7,6 +7,7 @@ import ImportIcon from "../components/ImportIcon";
 import ReferenceMaterialPicker from "../components/ReferenceMaterialPicker";
 import ClassificacaoPicker from "../components/ClassificacaoPicker";
 import CustoEstimado from "../components/CustoEstimado";
+import CampoCapitulos from "../components/CampoCapitulos";
 import { perfilDe } from "../lib/modos";
 
 // Os tons vem do modo editorial da categoria escolhida, nao de uma lista fixa.
@@ -52,6 +53,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
 
   const [extensionMode, setExtensionMode] = useState<"pages" | "words">("pages");
   const [wordGoal, setWordGoal] = useState(25000);
+  const [capitulos, setCapitulos] = useState<number | null>(null);
   const [titleMode, setTitleMode] = useState<"ai" | "manual">("ai");
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
@@ -108,6 +110,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         words_per_page: wordsPerPage,
         extension_mode: extensionMode,
         word_goal: wordGoal,
+        chapter_count: capitulos,
         author_name: authorName.trim(),
         author_bio: authorBio.trim(),
         include_copyright: includeCopyright,
@@ -278,6 +281,12 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           </div>
         </div>
 
+        <CampoCapitulos
+          palavras={extensionMode === "words" ? wordGoal : pageCount * wordsPerPage}
+          valor={capitulos}
+          onChange={setCapitulos}
+        />
+
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">
           <p className="text-sm font-medium text-neutral-700">Capa do ebook</p>
           <div className="flex flex-wrap gap-2 text-sm">
@@ -437,6 +446,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           pageCount={pageCount}
           wordsPerPage={wordsPerPage}
         wordGoal={extensionMode === "words" ? wordGoal : 0}
+          capitulos={capitulos ?? 0}
           referenceChars={referenceMaterial.length}
           generateCover={generateCover && coverSource === "ai"}
         />

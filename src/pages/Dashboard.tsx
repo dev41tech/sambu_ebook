@@ -5,7 +5,8 @@ import KindleFrame from "../components/KindleFrame";
 import KindleReader from "../components/KindleReader";
 
 const STATUS_LABEL: Record<EbookSummary["status"], string> = {
-  draft: "Rascunho",
+  // 'draft' so aparece hoje quando o usuario para a geracao (POST /:id/stop).
+  draft: "Interrompido",
   generating: "Gerando",
   review: "Aguardando revisão",
   ready: "Pronto",
@@ -29,7 +30,15 @@ export default function Dashboard() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   async function handleDelete(id: string) {
-    if (!window.confirm("Excluir este ebook e todos os arquivos gerados (PDF, DOCX, EPUB, imagens, áudio)? Essa ação não pode ser desfeita.")) {
+    const alvo = ebooks?.find((e) => e.id === id);
+    const aviso =
+      alvo?.status === "generating"
+        ? `Parar a geração de "${alvo.title || alvo.theme}" e excluir o ebook?\n\n` +
+          (alvo.chapters_done > 0 ? `Os ${alvo.chapters_done} capítulo(s) já escritos serão apagados. ` : "") +
+          "Se um capítulo estiver sendo escrito agora, ele termina (e é cobrado) antes de parar. " +
+          "Essa ação não pode ser desfeita."
+        : "Excluir este ebook e todos os arquivos gerados (PDF, DOCX, EPUB, imagens, áudio)? Essa ação não pode ser desfeita.";
+    if (!window.confirm(aviso)) {
       return;
     }
     setDeletingId(id);
@@ -134,10 +143,10 @@ export default function Dashboard() {
                         handleDelete(e.id);
                       }}
                       disabled={deletingId === e.id}
-                      title="Excluir ebook"
+                      title={e.status === "generating" ? "Parar a geração e excluir o ebook" : "Excluir ebook"}
                       className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
                     >
-                      {deletingId === e.id ? "…" : "Excluir"}
+                      {deletingId === e.id ? "…" : e.status === "generating" ? "Parar e excluir" : "Excluir"}
                     </button>
                   </div>
                 </div>

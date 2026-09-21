@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { regerarEbook, type EbookDetail } from "../lib/api";
 import ClassificacaoPicker from "./ClassificacaoPicker";
 import CustoEstimado from "./CustoEstimado";
+import CampoCapitulos from "./CampoCapitulos";
 
 const TONS = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
 const IDIOMAS = ["Português (Brasil)", "Português (Portugal)", "Inglês", "Espanhol"];
@@ -31,6 +32,7 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
   const [pageCount, setPageCount] = useState(ebook.page_count);
   const [wordsPerPage, setWordsPerPage] = useState(ebook.words_per_page);
   const [extra, setExtra] = useState(ebook.extra_instructions ?? "");
+  const [capitulos, setCapitulos] = useState<number | null>(ebook.chapter_count ?? null);
 
   const [confirmando, setConfirmando] = useState(false);
   const [enviando, setEnviando] = useState(false);
@@ -59,6 +61,7 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
         page_count: pageCount,
         words_per_page: wordsPerPage,
         extra_instructions: extra.trim(),
+        chapter_count: capitulos,
       });
       navigate(`/ebooks/${ebook.id}/gerando`);
     } catch (e) {
@@ -162,9 +165,12 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
         </div>
       </div>
 
+      <CampoCapitulos palavras={pageCount * wordsPerPage} valor={capitulos} onChange={setCapitulos} />
+
       <CustoEstimado
         pageCount={pageCount}
         wordsPerPage={wordsPerPage}
+        capitulos={capitulos ?? 0}
         imageCount={0}
         generateCover={false}
       />

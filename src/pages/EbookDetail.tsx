@@ -284,6 +284,29 @@ export default function EbookDetail() {
         </div>
       )}
 
+      {/* Parado pelo usuario na tela de progresso ("Parar e voltar à instrução").
+          As instrucoes vem logo abaixo, abertas, porque foi para isso que parou. */}
+      {ebook.status === "draft" && (
+        <>
+          <div className="rounded-md border border-neutral-300 bg-neutral-50 p-4 text-sm text-neutral-700">
+            <p className="font-medium">Geração interrompida.</p>
+            <p className="mt-1">
+              {ebook.chapters_done > 0
+                ? `${ebook.chapters_done} de ${ebook.chapters_total} capítulos foram escritos antes da parada. `
+                : ""}
+              Ajuste as instruções abaixo e gere de novo, ou continue de onde parou com as instruções atuais.
+            </p>
+            <button
+              onClick={handleRetry}
+              className="mt-3 rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium hover:bg-neutral-100"
+            >
+              Continuar de onde parou
+            </button>
+          </div>
+          <BriefingEbook ebook={ebook} />
+        </>
+      )}
+
       {ebook.status === "error" && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           <p className="font-medium">A geração deste ebook falhou.</p>

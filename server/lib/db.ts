@@ -87,6 +87,8 @@ export interface EbookRow {
   outline_approval: string;
   outline_approved_at: string | null;
   word_goal: number;
+  /** Capitulos escolhidos na criacao; null = conta automatica pelas palavras. */
+  chapter_count: number | null;
   continuity_json: string | null;
   metrics_json: string | null;
   memoria_longa: string | null;

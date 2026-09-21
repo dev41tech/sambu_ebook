@@ -108,6 +108,7 @@ export default function Generating() {
   const [ebook, setEbook] = useState<EbookDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const pollRef = useRef<number | null>(null);
   const cancelledRef = useRef(false);
 
@@ -118,7 +119,9 @@ export default function Generating() {
         const data = await api.getEbook(id);
         if (cancelledRef.current) return;
         setEbook(data);
-        if (data.status === "review" || data.status === "ready") {
+        // 'draft' = parado (por este botao ou por outra aba): a tela de detalhe
+        // abre com as instrucoes para editar.
+        if (data.status === "review" || data.status === "ready" || data.status === "draft") {
           navigate(`/ebooks/${id}`);
           return;
         }
@@ -159,6 +162,72 @@ export default function Generating() {
     }
   }
 
+  async function handleStopAndDelete() {
+    if (!id) return;
+    const nome = ebook?.title || ebook?.theme || "este ebook";
+    const escritos = ebook?.chapters_done ?? 0;
+    const aviso =
+      `Parar a geração de "${nome}" e excluir o ebook?\n\n` +
+      (escritos > 0 ? `Os ${escritos} capítulo(s) já escritos serão apagados. ` : "") +
+      "Se um capítulo estiver sendo escrito agora, ele termina (e é cobrado) antes de parar. " +
+      "Essa ação não pode ser desfeita.";
+    if (!window.confirm(aviso)) return;
+    setStopping(true);
+    // Para o polling antes de excluir: um GET no meio do caminho devolveria 404
+    // e mostraria erro na tela de um livro que o usuario acabou de apagar.
+    cancelledRef.current = true;
+    if (pollRef.current) window.clearTimeout(pollRef.current);
+    try {
+      await api.deleteEbook(id);
+      navigate("/");
+    } catch (err) {
+      cancelledRef.current = false;
+      setError(err instanceof Error ? err.message : "Não foi possível parar e excluir o ebook.");
+      setStopping(false);
+    }
+  }
+
+  async function handleStopAndEdit() {
+    if (!id) return;
+    const aviso =
+      "Parar a geração e voltar às instruções?\n\n" +
+      "O ebook não é apagado: você ajusta as instruções e gera de novo, ou continua de onde parou. " +
+      "Se um capítulo estiver sendo escrito agora, ele termina (e é cobrado) antes de parar.";
+    if (!window.confirm(aviso)) return;
+    setStopping(true);
+    cancelledRef.current = true;
+    if (pollRef.current) window.clearTimeout(pollRef.current);
+    try {
+      await api.stopEbook(id);
+      navigate(`/ebooks/${id}`);
+    } catch (err) {
+      cancelledRef.current = false;
+      setError(err instanceof Error ? err.message : "Não foi possível parar a geração.");
+      setStopping(false);
+    }
+  }
+
+  const stopButtons = (
+    <div className="flex flex-wrap justify-end gap-2">
+      <button
+        type="button"
+        onClick={handleStopAndEdit}
+        disabled={stopping}
+        className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
+      >
+        {stopping ? "Parando…" : "Parar e voltar à instrução"}
+      </button>
+      <button
+        type="button"
+        onClick={handleStopAndDelete}
+        disabled={stopping}
+        className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+      >
+        {stopping ? "Parando…" : "Parar e excluir"}
+      </button>
+    </div>
+  );
+
   const chaptersTotal = ebook?.chapters_total ?? 0;
   const chaptersDone = ebook?.chapters_done ?? 0;
   const hasCover = !!ebook?.generate_cover;
@@ -191,13 +260,23 @@ export default function Generating() {
         {error ? (
           <div className="space-y-3">
             <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
-            <button
-              onClick={handleRetry}
-              disabled={retrying}
-              className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
-            >
-              {retrying ? "Reiniciando…" : "Tentar novamente"}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleRetry}
+                disabled={retrying || stopping}
+                className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {retrying ? "Reiniciando…" : "Tentar novamente"}
+              </button>
+              <button
+                type="button"
+                onClick={handleStopAndDelete}
+                disabled={stopping}
+                className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+              >
+                {stopping ? "Parando…" : "Excluir ebook"}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-5">
@@ -245,6 +324,8 @@ export default function Generating() {
               A geração completa leva alguns minutos, dependendo do tamanho do ebook. Você pode fechar esta aba — o
               progresso fica salvo e retoma automaticamente ao voltar.
             </p>
+
+            <div className="border-t border-neutral-100 pt-4">{stopButtons}</div>
           </div>
         )}
       </div>

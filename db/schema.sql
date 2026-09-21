@@ -29,6 +29,9 @@ CREATE TABLE ebooks (
   -- da diagramacao -- mas segue disponivel porque e como se pensa um livro.
   extension_mode        text    NOT NULL DEFAULT 'pages',
   word_goal             integer NOT NULL DEFAULT 0,
+  -- Numero de capitulos escolhido na criacao. NULL = conta automatica pelas
+  -- palavras (server/lib/ai.ts:chapterCountFor).
+  chapter_count         integer,
   author_name           text    NOT NULL DEFAULT '',
   author_bio            text    NOT NULL DEFAULT '',
   include_copyright     boolean NOT NULL DEFAULT false,

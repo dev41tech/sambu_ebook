@@ -63,6 +63,10 @@ export interface EbookDetail extends EbookSummary {
   tone: string;
   language: string;
   words_per_page: number;
+  word_goal: number;
+  extension_mode: "pages" | "words";
+  /** Capitulos escolhidos na criacao; null = conta automatica. */
+  chapter_count: number | null;
   title_mode: "ai" | "manual";
   category_main: string;
   /** JSON de string[] -- a coluna guarda texto, nao array. */
@@ -172,6 +176,8 @@ export interface NewEbookPayload {
   /** "pages" (padrão) ou "words" — como a extensão foi pedida. */
   extension_mode?: "pages" | "words";
   word_goal?: number;
+  /** Capitulos escolhidos pelo usuario; null/ausente = conta automatica. */
+  chapter_count?: number | null;
   /** Parar em outline_review para o autor conferir sumario e elenco. */
   review_outline?: boolean;
   author_name?: string;
@@ -271,6 +277,8 @@ export const api = {
   deleteEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}`, { method: "DELETE" }),
   startAudiobook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/audiobook`, { method: "POST" }),
   retryEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/retry`, { method: "POST" }),
+  /** Para a geracao sem apagar nada; o ebook volta para as instrucoes (status 'draft'). */
+  stopEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/stop`, { method: "POST" }),
   regenerateCover: (id: string, payload: RegenerateImagePayload) =>
     request<{ ok: true }>(`/ebooks/${id}/cover/regenerate`, { method: "POST", body: JSON.stringify(payload) }),
   regenerateChapterImage: (id: string, imageId: string, payload: RegenerateImagePayload) =>
@@ -329,6 +337,8 @@ export interface BriefingEbook {
   page_count: number;
   words_per_page: number;
   extra_instructions: string;
+  /** null = conta automatica pelas palavras. */
+  chapter_count: number | null;
 }
 
 /** Apaga o texto gerado e reescreve o ebook com as instrucoes editadas. */

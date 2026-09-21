@@ -24,10 +24,21 @@ const TOKENS_CONTEXTO = 250; // tema, público, tom, idioma
 const TOKENS_POR_PALAVRA = 1.4; // português
 const CHARS_POR_TOKEN = 4;
 
-// Teto observado: mesmo pedindo 4.000 palavras, os capítulos voltam com ~830.
-// É esta a razão de pedir 250 páginas não produzir 250 páginas.
-/** Media medida no acervo: o que um capitulo realmente rende. */
-export const PALAVRAS_POR_CAPITULO = 841;
+/**
+ * O que um capitulo realmente rende, medido no acervo.
+ *
+ * Era 841, a media do gpt-4o -- que devolvia ~830 palavras mesmo quando se
+ * pedia 4.000. O gpt-5.5 (adotado em 10/09) tem outro tamanho natural: nos sete
+ * livros gerados entre 14 e 18/09 o sumario pediu ~833 palavras por capitulo e
+ * recebeu medias de 1.266 a 1.550 (mediana 1.399). "O Pacto das Marés" fechou
+ * com 77 mil palavras para uma meta de 45 mil. O unico livro em que a meta ja
+ * estava perto disso ("Preparando para o Carro Elétrico", meta 1.448) recebeu
+ * 1.330 -- ou seja, pedindo ~1.400 o modelo entrega ~1.400.
+ *
+ * Com 841, a conta dividia o livro em capitulos demais: cada um saia com 70% a
+ * mais que o pedido, e o livro inteiro junto. Remedir se o modelo mudar.
+ */
+export const PALAVRAS_POR_CAPITULO = 1400;
 const PALAVRAS_POR_CAPITULO_NA_PRATICA = PALAVRAS_POR_CAPITULO;
 /**
  * Teto de capitulos por ebook. Exportado porque o servidor (server/lib/ai.ts)
@@ -44,6 +55,8 @@ export interface EntradaCusto {
    * a estimativa exibida -- paginas dependem da diagramacao, palavras nao.
    */
   wordGoal?: number;
+  /** Capitulos escolhidos pelo usuario. Ausente/0 = conta automatica. */
+  capitulos?: number;
   referenceChars?: number;
   generateCover?: boolean;
   imageCount?: number;
@@ -70,6 +83,17 @@ export function capitulosParaPalavras(palavras: number): number {
   return Math.min(MAX_CAPITULOS, Math.max(3, Math.round(palavras / PALAVRAS_POR_CAPITULO)));
 }
 
+/**
+ * Numero de capitulos escolhido pelo usuario, validado. Devolve null quando nao
+ * ha escolha valida -- quem chama cai na conta automatica. Sem o piso de 3 da
+ * conta automatica: um conto em capitulo unico e escolha legitima.
+ */
+export function capitulosEscolhidos(valor: unknown): number | null {
+  const n = Number(valor);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(MAX_CAPITULOS, Math.round(n));
+}
+
 /** @deprecated use capitulosParaPalavras(pageCount * wordsPerPage) */
 export function capitulosPara(pageCount: number, wordsPerPage = 250): number {
   return capitulosParaPalavras(pageCount * wordsPerPage);
@@ -79,7 +103,7 @@ export function estimarCusto(e: EntradaCusto): Estimativa {
   // A meta de palavras, quando existe, e a verdade do pedido; paginas viram uma
   // leitura dela. Sem meta, o pedido continua sendo paginas x palavras/pagina.
   const palavrasPedidas = e.wordGoal && e.wordGoal > 0 ? e.wordGoal : e.pageCount * e.wordsPerPage;
-  const capitulos = capitulosParaPalavras(palavrasPedidas);
+  const capitulos = capitulosEscolhidos(e.capitulos) ?? capitulosParaPalavras(palavrasPedidas);
   const refTokens = Math.round((e.referenceChars ?? 0) / CHARS_POR_TOKEN);
 
   const pedidoPorCapitulo = palavrasPedidas / capitulos;

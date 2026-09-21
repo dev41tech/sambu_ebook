@@ -23,8 +23,11 @@ export default defineConfig({
       // O alvo precisa ser 127.0.0.1, e nao "localhost": no Node 18+ o
       // localhost pode resolver para ::1 e o proxy erra a pilha do servidor
       // da API, que escuta em IPv4.
+      // A porta segue SERVER_PORT, a mesma variavel do servidor: com a 3001
+      // ocupada por outro app, mudar so o servidor deixava o proxy apontando
+      // para o app errado.
       "/api": {
-        target: "http://127.0.0.1:3001",
+        target: `http://127.0.0.1:${process.env.SERVER_PORT || 3001}`,
         changeOrigin: true,
       },
     },

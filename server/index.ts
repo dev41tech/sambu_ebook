@@ -155,8 +155,16 @@ async function iniciar() {
 
   // Livros que estavam sendo escritos quando o processo anterior caiu. Precisa
   // vir depois da checagem de banco acima -- antes dela nao ha de onde ler.
+  //
+  // RETOMAR_GERACOES_NO_BOOT=0 desliga isto. O banco e o mesmo da VPS: sem a
+  // chave, qualquer maquina que subisse o app local retomava os livros que a
+  // producao estava escrevendo naquele momento -- dois processos no mesmo livro.
   try {
-    await retomarGeracoesInterrompidas();
+    if (process.env.RETOMAR_GERACOES_NO_BOOT === "0") {
+      console.warn("[geracao] retomada no boot desligada (RETOMAR_GERACOES_NO_BOOT=0).");
+    } else {
+      await retomarGeracoesInterrompidas();
+    }
   } catch (err) {
     // Nao impede o servidor de subir: um livro parado e pior do que o app fora
     // do ar, mas as duas coisas juntas seriam bem piores.

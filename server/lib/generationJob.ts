@@ -74,6 +74,27 @@ async function setStep(id: string, step: string) {
   await run("UPDATE ebooks SET current_step = $1 WHERE id = $2", [step, id]);
 }
 
+/** O ebook foi excluido ou saiu de "generating" enquanto o job rodava. */
+class GeracaoInterrompida extends Error {}
+
+/**
+ * Ponto de parada da geracao: confere no banco se o ebook ainda existe e segue
+ * em "generating".
+ *
+ * Excluir um ebook em andamento apagava o registro e mais nada. O job continuava
+ * na memoria com a lista de capitulos na mao, chamando a OpenAI ate o ultimo --
+ * cada UPDATE caia no vazio, mas cada chamada era cobrada. E o banco, nao a
+ * memoria, porque a mesma base e usada pela VPS e por qualquer maquina local:
+ * so ele e visto por todos os processos que possam estar escrevendo o livro.
+ *
+ * Nao interrompe uma chamada de IA ja em voo: o capitulo em andamento termina
+ * (e e cobrado), e a parada acontece antes de gravar ou de comecar o proximo.
+ */
+async function continuarOuParar(ebookId: string): Promise<void> {
+  const row = await one<{ status: string }>("SELECT status FROM ebooks WHERE id = $1", [ebookId]);
+  if (!row || row.status !== "generating") throw new GeracaoInterrompida();
+}
+
 // A humanizacao e uma segunda passada sobre um texto que ja esta pronto. Se ela
 // recusar ou devolver lixo, perder o rascunho bom -- ou derrubar o livro inteiro
 // no capitulo 60 -- e pior do que publicar o rascunho sem essa passada.
@@ -113,6 +134,7 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
     pageCount: row.page_count,
     wordsPerPage: row.words_per_page,
     wordGoal: row.extension_mode === "words" ? row.word_goal : 0,
+    chapterCount: row.chapter_count,
     titleMode: row.title_mode as "ai" | "manual",
     referenceMaterial: row.reference_material || null,
     extraInstructions: row.extra_instructions || null,
@@ -151,6 +173,7 @@ async function runJob(ebookId: string) {
     // Etapa 1: outline
     let outline: Outline;
     if (!row.outline_json) {
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "outline");
       outline = await generateOutline({
         ...ctx,
@@ -193,6 +216,7 @@ async function runJob(ebookId: string) {
 
     // Etapa 2: capa (opcional)
     if (row.generate_cover && !row.cover_path) {
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "cover");
       if (row.cover_source === "stock" && row.cover_stock_url) {
         const cover = await downloadPhoto(row.cover_stock_url, "", row.cover_alt_text || outline.title, `${ebookId}-cover`);
@@ -619,6 +643,7 @@ async function runJob(ebookId: string) {
           const alvo = chapters.find((c) => c.idx === idx);
           if (!alvo) continue;
           reescritos.add(idx);
+          await continuarOuParar(ebookId);
           await setStep(ebookId, "chapter");
           const content = await escrever(
             alvo,
@@ -639,6 +664,8 @@ async function runJob(ebookId: string) {
           await regenerarBloco(inicio, fim);
         }
       } catch (err) {
+        // Parada pedida pelo usuario nao e falha da checagem: precisa subir.
+        if (err instanceof GeracaoInterrompida) throw err;
         // A checagem intermediaria e um ganho, nao um requisito: falhar nela nao
         // pode derrubar um livro que ja custou dinheiro ate aqui.
         console.warn(`[continuidade] checagem intermediaria falhou em ${ebookId}:`, err instanceof Error ? err.message : err);
@@ -647,9 +674,13 @@ async function runJob(ebookId: string) {
 
     for (const chapter of chapters) {
       if (chapter.content && chapter.content.trim().length > 0) continue;
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "chapter");
 
       const content = await escrever(chapter);
+      // Escrever um capitulo leva de segundos a minutos; a parada pode ter
+      // chegado no meio. Nao grava nem conta um capitulo de livro cancelado.
+      await continuarOuParar(ebookId);
       await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, chapter.id]);
       chapter.content = content;
       await run("UPDATE ebooks SET chapters_done = chapters_done + 1 WHERE id = $1", [ebookId]);
@@ -685,6 +716,7 @@ async function runJob(ebookId: string) {
       await setStep(ebookId, "images");
       const usedPhotoIds = new Set<number>();
       for (let i = row.images_done; i < row.image_count; i++) {
+        await continuarOuParar(ebookId);
         const chapter = chapters[i % chapters.length];
         let path: string;
         let altText: string;
@@ -752,6 +784,7 @@ async function runJob(ebookId: string) {
     // introdução separada" — só regeramos por IA quando o campo ainda é NULL,
     // nunca escrito).
     if (row.intro === null) {
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "intro");
       const draft = await generateIntro(ctx, outline, registrados, capitulosEscritos);
       const intro = await humanizarOuManter(
@@ -767,6 +800,7 @@ async function runJob(ebookId: string) {
 
     // Etapa 5b: conclusão (mesma lógica da introdução, logo acima)
     if (row.conclusion === null) {
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "conclusion");
       const draft = await generateConclusion(ctx, outline, capitulosEscritos, registrados);
       const conclusion = await humanizarOuManter(
@@ -782,6 +816,7 @@ async function runJob(ebookId: string) {
 
     // Etapa 5c: sobre o autor (opcional)
     if (row.include_about && row.author_name && !row.about_author) {
+      await continuarOuParar(ebookId);
       await setStep(ebookId, "about");
       const about = await generateAboutAuthor(row.author_name, row.author_bio, row.language);
       await run("UPDATE ebooks SET about_author = $1 WHERE id = $2", [about, ebookId]);
@@ -820,8 +855,17 @@ async function runJob(ebookId: string) {
     // Etapa 6: conteúdo pronto — para aqui para revisão, sem exportar ainda.
     // A exportação final (PDF/DOCX/EPUB) só roda quando o usuário confirma pela
     // tela de revisão (ver finalizeEbookExport, chamado por POST /:id/finalize).
+    await continuarOuParar(ebookId);
     await run("UPDATE ebooks SET status = 'review', current_step = NULL WHERE id = $1", [ebookId]);
   } catch (err) {
+    // Parada pedida (ebook excluido, ou tirado de "generating"): nao e erro, e
+    // gravar status 'error' por cima desfaria a decisao de quem parou. O INSERT
+    // de uma imagem num ebook recem-excluido falha por chave estrangeira antes do
+    // proximo ponto de parada -- por isso a checagem da existencia aqui tambem.
+    if (err instanceof GeracaoInterrompida || !(await getEbook(ebookId).catch(() => true))) {
+      console.warn(`[geracao] ${ebookId}: geracao interrompida (ebook excluido ou parado).`);
+      return;
+    }
     const bruta = err instanceof Error ? err.message : "Erro inesperado durante a geração.";
     // A mensagem real fica no log do servidor; a tela recebe a versão sanitizada.
     console.error(`[geracao] ${ebookId}: ${bruta}`);

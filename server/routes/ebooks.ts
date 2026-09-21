@@ -25,6 +25,7 @@ import {
 } from "../lib/importContent";
 import { isCategoriaValida } from "../../src/lib/categorias";
 import { TODOS_OS_TONS } from "../../src/lib/modos";
+import { capitulosEscolhidos } from "../../src/lib/custo";
 import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
 import { medirComResumos, type Metricas } from "../lib/metricas";
@@ -156,6 +157,8 @@ ebooksRouter.post("/", rota(async (req, res) => {
     extensionMode === "words" ? Number(body.word_goal) : Math.round(pageCount * wordsPerPage);
   const audioRequested = !!body.audio_requested;
   const audioVoice = String(body.audio_voice ?? "").trim().slice(0, 80);
+  // Numero de capitulos escolhido na tela; ausente ou invalido = conta automatica.
+  const chapterCount = capitulosEscolhidos(body.chapter_count);
 
   // Categoria criada a mao pelo usuario tambem vale. Sem esta segunda checagem
   // o proprio app cadastraria a categoria e depois recusaria o ebook com ela.
@@ -216,8 +219,8 @@ ebooksRouter.post("/", rota(async (req, res) => {
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, audio_requested, audio_voice,
-       extension_mode, word_goal, outline_approval, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, 'generating')`,
+       extension_mode, word_goal, outline_approval, chapter_count, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, 'generating')`,
     [
     id,
     titleMode === "manual" ? customTitle : "",
@@ -255,6 +258,7 @@ ebooksRouter.post("/", rota(async (req, res) => {
     extensionMode,
     wordGoal,
     outlineApproval,
+    chapterCount,
     ]
   );
 
@@ -489,10 +493,34 @@ ebooksRouter.post("/:id/outline/reject", rota(async (req, res) => {
 ebooksRouter.post("/:id/retry", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;
-  if (row.status === "error") {
+  // 'draft' e o livro parado pelo usuario (POST /:id/stop): retomar dali e
+  // "continuar de onde parou", com os capitulos ja escritos.
+  if (row.status === "error" || row.status === "draft") {
     await run("UPDATE ebooks SET status = 'generating', error_message = NULL WHERE id = $1", [row.id]);
   }
   await ensureGenerationRunning(row.id);
+  res.json({ ok: true });
+}));
+
+// Para a geracao sem apagar nada e devolve o livro para as instrucoes.
+//
+// Sai de "generating" para 'draft'. O job -- neste processo ou em qualquer
+// outro ligado ao mesmo banco -- ve a mudanca no proximo ponto de parada
+// (continuarOuParar, em generationJob.ts) e encerra sem gravar erro por cima.
+// Daqui o usuario edita as instrucoes e gera de novo (/regenerate) ou continua
+// de onde parou (/retry).
+ebooksRouter.post("/:id/stop", rota(async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  const parado = await one<{ id: string }>(
+    `UPDATE ebooks SET status = 'draft', current_step = NULL, error_message = NULL
+      WHERE id = $1 AND status = 'generating' RETURNING id`,
+    [row.id]
+  );
+  if (!parado) {
+    res.status(409).json({ error: "Este ebook não está sendo gerado." });
+    return;
+  }
   res.json({ ok: true });
 }));
 
@@ -522,6 +550,9 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
   const categoriesSecondary = Array.isArray(body.categories_secondary)
     ? limparSecundarias(body.categories_secondary as unknown[], categoryMain)
     : [];
+  // Sem o campo no corpo mantem a escolha anterior (clientes antigos, n8n);
+  // com o campo vazio/0 volta para a conta automatica.
+  const chapterCount = "chapter_count" in body ? capitulosEscolhidos(body.chapter_count) : row.chapter_count;
 
   if (!theme || !audience) {
     res.status(400).json({ error: "Tema e público-alvo são obrigatórios." });
@@ -560,15 +591,15 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
       `UPDATE ebooks SET
          theme = $1, category_main = $2, categories_secondary = $3, audience = $4,
          tone = $5, language = $6, page_count = $7, words_per_page = $8,
-         extra_instructions = $9,
+         extra_instructions = $9, chapter_count = $11,
          outline_json = NULL, intro = NULL, conclusion = NULL, about_author = NULL,
          marketing_json = NULL, pdf_path = NULL, docx_path = NULL, epub_path = NULL,
-         chapters_total = 0, chapters_done = 0, images_done = 0,
+         chapters_total = 0, chapters_done = 0, images_done = 0, memoria_longa = NULL,
          current_step = NULL, error_message = NULL, status = 'generating'
        WHERE id = $10`,
       [
         theme, categoryMain, JSON.stringify(categoriesSecondary), audience,
-        tone, language, pageCount, wordsPerPage, extraInstructions, row.id,
+        tone, language, pageCount, wordsPerPage, extraInstructions, row.id, chapterCount,
       ],
       tx
     );

@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { withRetry } from "./retry";
 import { detectarRecusa } from "./sanitizar";
-import { MAX_CAPITULOS, PALAVRAS_POR_CAPITULO } from "../../src/lib/custo";
+import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { vozDe } from "./vozes";
@@ -34,6 +34,8 @@ export interface EbookContext {
   wordsPerPage: number;
   /** Meta de palavras; quando > 0 manda no lugar de pageCount. */
   wordGoal?: number;
+  /** Capitulos escolhidos pelo usuario na criacao; ausente/null = conta automatica. */
+  chapterCount?: number | null;
   titleMode: "ai" | "manual";
   customTitle?: string | null;
   customSubtitle?: string | null;
@@ -173,12 +175,18 @@ export interface Outline {
 const MAX_CHAPTERS = Number(process.env.MAX_CHAPTERS) || MAX_CAPITULOS;
 
 // Antes esta funcao recebia paginas e dividia por 4 -- com 250 palavras/pagina,
-// isso assumia 1000 palavras por capitulo. A entrega medida real e 841
-// (PALAVRAS_POR_CAPITULO, ver custo.ts): pedir 20.000 palavras virava 20
+// isso assumia 1000 palavras por capitulo. A entrega medida no gpt-4o era 841
+// (hoje PALAVRAS_POR_CAPITULO = 1400, medida do gpt-5.5, ver custo.ts): pedir
+// 20.000 palavras virava 20
 // capitulos x meta de 1000, o modelo entregava ~800 cada, e o livro fechava em
 // 75% do pedido -- nao por o modelo escrever pouco, mas porque o proprio
 // sistema tinha pedido 20% a mais do que ele sabia que ia conseguir.
-function chapterCountFor(palavrasAlvo: number): number {
+//
+// A escolha do usuario, quando existe, manda: e ele quem sabe se o livro pede
+// 12 capitulos longos ou 40 curtos. So o teto continua valendo.
+function chapterCountFor(palavrasAlvo: number, escolhido?: number | null): number {
+  const pedido = capitulosEscolhidos(escolhido);
+  if (pedido !== null) return Math.min(MAX_CHAPTERS, pedido);
   const raw = Math.round(palavrasAlvo / PALAVRAS_POR_CAPITULO);
   return Math.min(MAX_CHAPTERS, Math.max(3, raw));
 }
@@ -447,7 +455,7 @@ ${vozDe(modoDe(ctx.theme)).regras}`;
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
   const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
-  const chapterCount = chapterCountFor(palavrasAlvo);
+  const chapterCount = chapterCountFor(palavrasAlvo, ctx.chapterCount);
   const titleInstruction =
     ctx.titleMode === "manual" && ctx.customTitle
       ? `Use exatamente este título: "${ctx.customTitle}". ${
@@ -523,13 +531,43 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // e funcao/resultado por capitulo tambem consomem uma fatia da resposta, e a
   // lista de personagens por capitulo entrou depois deles.
   const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 110 : 50)) + (ficcao ? 600 : 0);
-  const raw = await askOpenAI(promptDoModo(ctx), prompt, tokensSumario, true);
-  const json = extractJson(raw);
-  const parsed = JSON.parse(json) as Outline;
-  if (!parsed.chapters || parsed.chapters.length === 0) {
-    throw new Error("A IA não retornou capítulos válidos.");
-  }
-  return parsed;
+  const pedirSumario = async (texto: string): Promise<Outline> => {
+    const raw = await askOpenAI(promptDoModo(ctx), texto, tokensSumario, true);
+    const parsed = JSON.parse(extractJson(raw)) as Outline;
+    if (!parsed.chapters || parsed.chapters.length === 0) {
+      throw new Error("A IA não retornou capítulos válidos.");
+    }
+    return parsed;
+  };
+
+  // O prompt pede "exatamente N" e nada conferia a resposta: "Sob o Mesmo Teto"
+  // pediu 100 capitulos e recebeu 92; "O Pacto das Marés" pediu 54 e recebeu 55.
+  // O livro inteiro passava a ter o tamanho que o modelo quis. Cortar o excesso
+  // nao serve -- em ficcao o climax e o desfecho sao os ultimos --, entao pede
+  // de novo uma vez, dizendo o que veio errado. Se errar outra vez, fica com a
+  // resposta mais proxima do pedido: um livro com 1 capitulo a mais e melhor do
+  // que um livro parado no sumario.
+  const primeiro = await pedirSumario(prompt);
+  if (primeiro.chapters.length === chapterCount) return primeiro;
+
+  console.warn(
+    `[sumario] pedidos ${chapterCount} capitulos, vieram ${primeiro.chapters.length}; pedindo de novo.`,
+  );
+  const segundo = await pedirSumario(
+    `${prompt}\n\nATENÇÃO: uma tentativa anterior devolveu ${primeiro.chapters.length} capítulos. ` +
+      `O livro precisa ter EXATAMENTE ${chapterCount} capítulos na lista "chapters" — nem mais, nem menos.`,
+  );
+  if (segundo.chapters.length === chapterCount) return segundo;
+
+  const maisProximo =
+    Math.abs(segundo.chapters.length - chapterCount) <= Math.abs(primeiro.chapters.length - chapterCount)
+      ? segundo
+      : primeiro;
+  console.warn(
+    `[sumario] segunda tentativa tambem errou (${segundo.chapters.length} de ${chapterCount}); ` +
+      `seguindo com ${maisProximo.chapters.length} capitulos.`,
+  );
+  return maisProximo;
 }
 
 /** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
