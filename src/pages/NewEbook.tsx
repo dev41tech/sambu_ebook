@@ -7,6 +7,7 @@ import ImportIcon from "../components/ImportIcon";
 import ClassificacaoPicker from "../components/ClassificacaoPicker";
 import CustoEstimado from "../components/CustoEstimado";
 import CampoCapitulos from "../components/CampoCapitulos";
+import SecoesDoLivro from "../components/SecoesDoLivro";
 import { perfilDe } from "../lib/modos";
 
 // Os tons vem do modo editorial da categoria escolhida, nao de uma lista fixa.
@@ -43,6 +44,8 @@ export default function NewEbook() {
   const [extensionMode, setExtensionMode] = useState<"pages" | "words">("pages");
   const [wordGoal, setWordGoal] = useState(25000);
   const [capitulos, setCapitulos] = useState<number | null>(null);
+  const [incluirIntro, setIncluirIntro] = useState(true);
+  const [incluirConclusao, setIncluirConclusao] = useState(true);
   const [titleMode, setTitleMode] = useState<"ai" | "manual">("ai");
   const [customTitle, setCustomTitle] = useState("");
   const [customSubtitle, setCustomSubtitle] = useState("");
@@ -91,6 +94,8 @@ export default function NewEbook() {
         extension_mode: extensionMode,
         word_goal: wordGoal,
         chapter_count: capitulos,
+        include_intro: incluirIntro,
+        include_conclusion: incluirConclusao,
         author_name: authorName.trim(),
         author_bio: authorBio.trim(),
         include_copyright: includeCopyright,
@@ -264,6 +269,13 @@ export default function NewEbook() {
           onChange={setCapitulos}
         />
 
+        <SecoesDoLivro
+          introducao={incluirIntro}
+          conclusao={incluirConclusao}
+          onIntroducao={setIncluirIntro}
+          onConclusao={setIncluirConclusao}
+        />
+
         <div className="space-y-3 rounded-md border border-neutral-200 p-4">
           <p className="text-sm font-medium text-neutral-700">Capa do ebook</p>
           <div className="flex flex-wrap gap-2 text-sm">
@@ -428,6 +440,8 @@ export default function NewEbook() {
           wordsPerPage={wordsPerPage}
         wordGoal={extensionMode === "words" ? wordGoal : 0}
           capitulos={capitulos ?? 0}
+          incluirIntro={incluirIntro}
+          incluirConclusao={incluirConclusao}
           generateCover={generateCover && coverSource === "ai"}
         />
 

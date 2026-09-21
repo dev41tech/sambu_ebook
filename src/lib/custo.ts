@@ -57,6 +57,9 @@ export interface EntradaCusto {
   wordGoal?: number;
   /** Capitulos escolhidos pelo usuario. Ausente/0 = conta automatica. */
   capitulos?: number;
+  /** Introducao e conclusao sao opcionais; ausente = incluidas. */
+  incluirIntro?: boolean;
+  incluirConclusao?: boolean;
   referenceChars?: number;
   generateCover?: boolean;
   imageCount?: number;
@@ -108,12 +111,17 @@ export function estimarCusto(e: EntradaCusto): Estimativa {
 
   const pedidoPorCapitulo = palavrasPedidas / capitulos;
   const palavrasPorCapitulo = Math.min(pedidoPorCapitulo, PALAVRAS_POR_CAPITULO_NA_PRATICA);
-  const palavrasEstimadas = Math.round(palavrasPorCapitulo * capitulos + 900); // +intro e conclusão
+  const comIntro = e.incluirIntro !== false;
+  const comConclusao = e.incluirConclusao !== false;
+  // ~450 palavras cada (o prompt pede de 300 a 450).
+  const palavrasExtras = (comIntro ? 450 : 0) + (comConclusao ? 450 : 0);
+  const palavrasEstimadas = Math.round(palavrasPorCapitulo * capitulos + palavrasExtras);
 
   // Cada texto é gerado e depois humanizado: a saída conta duas vezes, e o
   // rascunho volta como entrada na segunda passada.
   const saidaTokens = Math.round(palavrasEstimadas * TOKENS_POR_PALAVRA * 2);
-  const chamadas = 1 + 2 + capitulos * 2 + 2 + 1;
+  // sumario + (intro: escrever e humanizar) + capitulos x 2 + (conclusao: idem) + 1
+  const chamadas = 1 + (comIntro ? 2 : 0) + capitulos * 2 + (comConclusao ? 2 : 0) + 1;
   const entradaTokens =
     chamadas * (TOKENS_SYSTEM_PROMPT + TOKENS_CONTEXTO + refTokens) +
     Math.round(palavrasEstimadas * TOKENS_POR_PALAVRA);

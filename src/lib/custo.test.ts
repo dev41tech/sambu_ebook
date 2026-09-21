@@ -46,6 +46,14 @@ test("capitulos escolhidos pelo usuario mandam na estimativa", () => {
   assert.equal(estimarCusto({ pageCount: 80, wordsPerPage: 250, wordGoal: 20000, capitulos: 0 }).capitulos, 14);
 });
 
+test("tirar introducao e conclusao reduz palavras e custo estimados", () => {
+  const completo = estimarCusto({ pageCount: 40, wordsPerPage: 250 });
+  const semNada = estimarCusto({ pageCount: 40, wordsPerPage: 250, incluirIntro: false, incluirConclusao: false });
+  assert.equal(completo.palavrasEstimadas - semNada.palavrasEstimadas, 900);
+  assert.ok(semNada.usdTexto < completo.usdTexto);
+  assert.equal(semNada.capitulos, completo.capitulos);
+});
+
 test("capitulosEscolhidos valida sem impor o piso de 3 da conta automatica", () => {
   assert.equal(capitulosEscolhidos(1), 1);
   assert.equal(capitulosEscolhidos("12"), 12);

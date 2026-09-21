@@ -61,17 +61,23 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
   // era o segundo item da lista porque era o segundo a ser escrito; hoje ela roda
   // no fim, com os resumos reais dos capítulos na mão, e mantê-la aqui em cima
   // deixava um "pendente" parado no topo enquanto tudo abaixo ficava verde.
-  items.push({
-    key: "intro",
-    label: "Introdução",
-    status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
-  });
+  // '' = secao desligada na criacao: nao entra na lista, senao ficaria um
+  // "pendente" que nunca vira verde.
+  if (ebook.intro !== "") {
+    items.push({
+      key: "intro",
+      label: "Introdução",
+      status: ebook.intro ? "done" : step === "intro" ? "current" : "pending",
+    });
+  }
 
-  items.push({
-    key: "conclusion",
-    label: "Conclusão",
-    status: ebook.conclusion ? "done" : step === "conclusion" ? "current" : "pending",
-  });
+  if (ebook.conclusion !== "") {
+    items.push({
+      key: "conclusion",
+      label: "Conclusão",
+      status: ebook.conclusion ? "done" : step === "conclusion" ? "current" : "pending",
+    });
+  }
 
   if (ebook.include_about && ebook.author_name) {
     items.push({
@@ -233,8 +239,10 @@ export default function Generating() {
   const hasCover = !!ebook?.generate_cover;
   const hasImages = !!ebook?.generate_images;
   const hasAbout = !!(ebook?.include_about && ebook?.author_name);
-  const stepsBeforeChapters = 2 + (hasCover ? 1 : 0); // outline + intro (+ capa)
-  const stepsAfterChapters = 1 + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // conclusão (+ imagens + sobre o autor)
+  const hasIntro = ebook?.intro !== "";
+  const hasConclusion = ebook?.conclusion !== "";
+  const stepsBeforeChapters = 1 + (hasIntro ? 1 : 0) + (hasCover ? 1 : 0); // outline (+ intro + capa)
+  const stepsAfterChapters = (hasConclusion ? 1 : 0) + (hasImages ? 1 : 0) + (hasAbout ? 1 : 0); // (conclusão + imagens + sobre o autor)
   const totalSteps = stepsBeforeChapters + Math.max(chaptersTotal, 1) + stepsAfterChapters;
   const imagesFraction = hasImages && ebook && ebook.image_count > 0 ? ebook.images_done / ebook.image_count : 0;
   const doneSteps =

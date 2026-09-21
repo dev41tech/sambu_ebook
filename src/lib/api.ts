@@ -178,6 +178,9 @@ export interface NewEbookPayload {
   word_goal?: number;
   /** Capitulos escolhidos pelo usuario; null/ausente = conta automatica. */
   chapter_count?: number | null;
+  /** false = livro sem introducao / sem conclusao. Ausente = incluir. */
+  include_intro?: boolean;
+  include_conclusion?: boolean;
   /** Parar em outline_review para o autor conferir sumario e elenco. */
   review_outline?: boolean;
   author_name?: string;

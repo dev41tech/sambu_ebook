@@ -159,6 +159,11 @@ ebooksRouter.post("/", rota(async (req, res) => {
   const audioVoice = String(body.audio_voice ?? "").trim().slice(0, 80);
   // Numero de capitulos escolhido na tela; ausente ou invalido = conta automatica.
   const chapterCount = capitulosEscolhidos(body.chapter_count);
+  // Introducao e conclusao opcionais; ausente = incluir (clientes antigos, n8n).
+  // Desligada vira '' -- a mesma convencao do conteudo importado sem introducao:
+  // a geracao so escreve quando o campo e NULL, e todas as exportacoes pulam ''.
+  const introInicial = body.include_intro === false ? "" : null;
+  const conclusaoInicial = body.include_conclusion === false ? "" : null;
 
   // Categoria criada a mao pelo usuario tambem vale. Sem esta segunda checagem
   // o proprio app cadastraria a categoria e depois recusaria o ebook com ela.
@@ -219,8 +224,8 @@ ebooksRouter.post("/", rota(async (req, res) => {
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, audio_requested, audio_voice,
-       extension_mode, word_goal, outline_approval, chapter_count, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, 'generating')`,
+       extension_mode, word_goal, outline_approval, chapter_count, intro, conclusion, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, 'generating')`,
     [
     id,
     titleMode === "manual" ? customTitle : "",
@@ -259,6 +264,8 @@ ebooksRouter.post("/", rota(async (req, res) => {
     wordGoal,
     outlineApproval,
     chapterCount,
+    introInicial,
+    conclusaoInicial,
     ]
   );
 
@@ -592,7 +599,10 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
          theme = $1, category_main = $2, categories_secondary = $3, audience = $4,
          tone = $5, language = $6, page_count = $7, words_per_page = $8,
          extra_instructions = $9, chapter_count = $11,
-         outline_json = NULL, intro = NULL, conclusion = NULL, about_author = NULL,
+         outline_json = NULL, about_author = NULL,
+         -- '' = seção desligada na criação: continua desligada ao regerar.
+         intro = CASE WHEN intro = '' THEN '' ELSE NULL END,
+         conclusion = CASE WHEN conclusion = '' THEN '' ELSE NULL END,
          marketing_json = NULL, pdf_path = NULL, docx_path = NULL, epub_path = NULL,
          chapters_total = 0, chapters_done = 0, images_done = 0, memoria_longa = NULL,
          current_step = NULL, error_message = NULL, status = 'generating'
