@@ -21,7 +21,12 @@ const USD_POR_IMAGEM = 0.04; // gpt-image-1
 
 const TOKENS_SYSTEM_PROMPT = 600; // vai em toda chamada
 const TOKENS_CONTEXTO = 250; // tema, público, tom, idioma
-const TOKENS_POR_PALAVRA = 1.4; // português
+/**
+ * Tokens por palavra em portugues. Exportado porque server/lib/ai.ts deriva o
+ * teto de saida de cada chamada a partir do alvo em palavras -- manter os dois
+ * numeros separados ja produziu estimativa mentindo sobre o que a geracao faz.
+ */
+export const TOKENS_POR_PALAVRA = 1.4;
 const CHARS_POR_TOKEN = 4;
 
 /**
