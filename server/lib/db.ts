@@ -91,6 +91,8 @@ export interface EbookRow {
   chapter_count: number | null;
   continuity_json: string | null;
   metrics_json: string | null;
+  /** Modelo de texto da ultima geracao. NULL em livro anterior a migration 0013. */
+  modelo_texto: string | null;
   memoria_longa: string | null;
   author_name: string;
   author_bio: string;

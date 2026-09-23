@@ -20,7 +20,20 @@ function getClient(): OpenAI {
   return client;
 }
 
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+/**
+ * Modelo de texto em uso. Exportado porque o boot precisa anuncia-lo e cada
+ * ebook precisa gravar com que modelo foi escrito -- e porque esta linha vivia
+ * duplicada aqui e em marketing.ts, entao trocar o default num arquivo deixava
+ * o outro para tras, em silencio.
+ *
+ * O fallback existe para o app subir sem a variavel, mas subir em silencio foi
+ * justamente como ele ficou preso no gpt-4o depois que o .env passou a ter
+ * OPENAI_MODEL vazia: quem avisa e o log de boot (server/index.ts).
+ */
+export const MODELO_PADRAO = "gpt-4o";
+export const MODELO_ATIVO = process.env.OPENAI_MODEL || MODELO_PADRAO;
+export const MODELO_VEIO_DO_AMBIENTE = !!process.env.OPENAI_MODEL;
+const MODEL = MODELO_ATIVO;
 
 export interface EbookContext {
   /** Caminho da categoria principal, ex.: "Romance > Romance historico". */
