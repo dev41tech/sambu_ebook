@@ -10,6 +10,7 @@ import {
   resumirCapitulo,
   expandirCapitulo,
   elencoEfetivo,
+  MODELO_ATIVO,
   condensarBloco,
   converterDialogoParaTravessao,
   reduzirAbstracao,
@@ -148,6 +149,14 @@ async function runJob(ebookId: string) {
   try {
     let row = await getEbook(ebookId);
     if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") return;
+
+    // Registra com que modelo este livro esta sendo escrito, antes da primeira
+    // chamada. Uma regeracao depois de trocar OPENAI_MODEL sobrescreve: o que
+    // vale e o modelo que escreveu o texto que ficou.
+    if (row.modelo_texto !== MODELO_ATIVO) {
+      await run("UPDATE ebooks SET modelo_texto = $1 WHERE id = $2", [MODELO_ATIVO, ebookId]);
+      row.modelo_texto = MODELO_ATIVO;
+    }
 
     // Etapa 0: pesquisa na internet (opcional — só roda se TAVILY_API_KEY estiver
     // configurada, e uma única vez por ebook, reaproveitado em todos os capítulos).

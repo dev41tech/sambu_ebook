@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { withRetry } from "./retry";
 import { detectarRecusa } from "./sanitizar";
-import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO } from "../../src/lib/custo";
+import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO, TOKENS_POR_PALAVRA } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { vozDe } from "./vozes";
@@ -20,7 +20,20 @@ function getClient(): OpenAI {
   return client;
 }
 
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+/**
+ * Modelo de texto em uso. Exportado porque o boot precisa anuncia-lo e cada
+ * ebook precisa gravar com que modelo foi escrito -- e porque esta linha vivia
+ * duplicada aqui e em marketing.ts, entao trocar o default num arquivo deixava
+ * o outro para tras, em silencio.
+ *
+ * O fallback existe para o app subir sem a variavel, mas subir em silencio foi
+ * justamente como ele ficou preso no gpt-4o depois que o .env passou a ter
+ * OPENAI_MODEL vazia: quem avisa e o log de boot (server/index.ts).
+ */
+export const MODELO_PADRAO = "gpt-4o";
+export const MODELO_ATIVO = process.env.OPENAI_MODEL || MODELO_PADRAO;
+export const MODELO_VEIO_DO_AMBIENTE = !!process.env.OPENAI_MODEL;
+const MODEL = MODELO_ATIVO;
 
 export interface EbookContext {
   /** Caminho da categoria principal, ex.: "Romance > Romance historico". */
@@ -244,6 +257,43 @@ function tetoRecusado(err: unknown): "max_tokens" | "max_completion_tokens" | nu
   return null;
 }
 
+/**
+ * Teto de saida em tokens a partir de um teto em palavras.
+ *
+ * O prompt do capitulo sempre pediu o intervalo ("escreva entre X e Y
+ * palavras") e manda explicitamente nao passar do teto. Nao adianta: medindo o
+ * mesmo briefing de 6 capitulos com alvo de 900 palavras e teto de 1.170, o
+ * gpt-5.4-mini entregou 1.722 por capitulo e o gpt-5.5 entregou 1.664 -- os
+ * dois ~45% acima do teto. Pedir nao segura tamanho.
+ *
+ * O que segurava no gpt-4o era o teto de TOKENS, e por acidente: 4.000 fixos
+ * dao espaco para ~2.800 palavras, entao qualquer alvo abaixo disso podia ser
+ * ignorado sem consequencia nenhuma. Derivar o teto do alvo devolve esse freio
+ * de proposito, em vez de por sorte.
+ *
+ * A margem de 20% cobre a variacao de tokenizacao -- o objetivo e que um
+ * capitulo dentro do teto de palavras NUNCA seja cortado, e que um capitulo
+ * que decidiu ignora-lo pare perto do limite em vez de dobrar o livro.
+ *
+ * O piso de 700 existe para livros de capitulo muito curto, onde um teto
+ * proporcional ficaria menor que a propria instrucao.
+ */
+export function tetoDeSaida(palavras: number): number {
+  return Math.max(700, Math.round(palavras * TOKENS_POR_PALAVRA * 1.2));
+}
+
+/**
+ * Corta no ultimo paragrafo completo. So e usado quando a resposta bateu no
+ * teto: entregar o capitulo terminando no meio de uma frase e pior do que
+ * entrega-lo um paragrafo mais curto, e o leitor ve a diferenca.
+ */
+export function cortarNoParagrafo(texto: string): string {
+  const limpo = texto.trimEnd();
+  const corte = limpo.lastIndexOf("\n\n");
+  if (corte < limpo.length * 0.5) return limpo;
+  return limpo.slice(0, corte).trimEnd();
+}
+
 async function askOpenAI(
   system: string,
   prompt: string,
@@ -336,8 +386,12 @@ async function askOpenAI(
       );
     }
     console.warn(
-      `[ia] resposta cortada no limite de ${maxTokens} tokens; o texto pode terminar no meio.`
+      `[ia] resposta cortada no limite de ${maxTokens} tokens; cortando no ultimo paragrafo completo.`
     );
+    const aparado = cortarNoParagrafo(text);
+    const recusaAparada = detectarRecusa(aparado, minChars);
+    if (recusaAparada) throw new Error(`IA nao entregou conteudo: ${recusaAparada.motivo}.`);
+    return aparado;
   }
   // Uma recusa chega em HTTP 200, com texto. Sem esta checagem ela era salva
   // como se fosse o capitulo -- foi o que aconteceu nos capitulos 4 e 10 de
@@ -864,7 +918,7 @@ Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar ante
 Encerre o capítulo com ${closing}.
 
 Escreva entre ${wordsPerChapter} e ${tetoDoCapitulo} palavras. O piso não é sugestão: "aproximadamente" não é licença para entregar menos. O teto também não: passar dele desequilibra o livro em relação aos outros capítulos e estoura a extensão que o autor pediu. Se a cena pedir mais espaço, corte o que for acessório em vez de ultrapassar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
-  return askOpenAI(promptDoModo(ctx), prompt, 4000);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(tetoDoCapitulo));
 }
 
 /**
@@ -909,7 +963,7 @@ Responda apenas com o texto expandido do capítulo, sem comentários.
 
 CAPÍTULO ATUAL:
 ${conteudoAtual}`;
-  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(metaPalavras * 1.3)), false, 200);
 }
 
 /**
@@ -979,6 +1033,9 @@ export async function converterDialogoParaTravessao(
   ctx: EbookContext,
   conteudo: string,
 ): Promise<string> {
+  // Esta passada converte pontuacao, nao reescreve: o teto sai do tamanho do
+  // proprio texto, com a mesma folga das outras, e nao de um numero fixo.
+  const palavrasAtuais = conteudo.trim().split(/\s+/).filter(Boolean).length;
   const prompt = `O capítulo abaixo escreve as falas dos personagens entre aspas. Converta TODAS as falas de personagem para o padrão brasileiro de travessão.
 
 Regras, nesta ordem de prioridade:
@@ -991,7 +1048,7 @@ Responda apenas com o texto do capítulo, sem comentários.
 
 CAPÍTULO:
 ${conteudo}`;
-  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200);
 }
 
 /**
@@ -1043,7 +1100,7 @@ Responda apenas com o texto reescrito do capítulo, sem comentários.
 
 CAPÍTULO:
 ${conteudo}`;
-  return askOpenAI(promptDoModo(ctx), prompt, 4500, false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200);
 }
 
 /**

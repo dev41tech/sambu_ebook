@@ -7,6 +7,7 @@
 import OpenAI from "openai";
 import type { EbookRow, ChapterRow } from "./db";
 import { withRetry } from "./retry";
+import { MODELO_ATIVO } from "./ai";
 
 let client: OpenAI | null = null;
 
@@ -20,7 +21,9 @@ function getClient(): OpenAI {
   return client;
 }
 
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o";
+// Mesma fonte de ai.ts: manter duas leituras da variavel deixava um arquivo
+// para tras quando o default mudava.
+const MODEL = MODELO_ATIVO;
 
 export type CreativeType = "capa" | "post" | "story" | "banner";
 

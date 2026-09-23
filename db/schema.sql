@@ -96,6 +96,10 @@ CREATE TABLE ebooks (
   -- 3 ainda exista para o capitulo 70. JSON:
   -- [{ "ate": <idx do ultimo capitulo coberto>, "resumo": "..." }].
   memoria_longa         text,
+  -- Modelo de texto da ULTIMA geracao deste ebook. NULL em livro anterior a esta
+  -- coluna: o acervo mistura gpt-4o, gpt-5.5 e gpt-5.4-mini, e sem isto o placar
+  -- de qualidade compara livros sem saber quem escreveu cada um.
+  modelo_texto          text,
   version               text    NOT NULL DEFAULT 'v1.0',
   created_at            text    NOT NULL DEFAULT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
 );

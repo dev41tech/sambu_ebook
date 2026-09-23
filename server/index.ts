@@ -17,6 +17,7 @@ import { requireAuth } from "./lib/requireAuth";
 import { sql } from "./lib/db";
 import { retomarGeracoesInterrompidas } from "./lib/generationJob";
 import { mensagemDeErroParaUsuario } from "./lib/sanitizar";
+import { MODELO_ATIVO, MODELO_PADRAO, MODELO_VEIO_DO_AMBIENTE } from "./lib/ai";
 
 // Rede de seguranca do processo, antes de qualquer rota existir.
 //
@@ -117,6 +118,25 @@ async function iniciar() {
       ].join("\n"),
     );
     process.exit(1);
+  }
+
+  // Anuncia o modelo no boot.
+  //
+  // Sem esta linha nao havia como saber, de lugar nenhum, qual modelo o processo
+  // estava usando: nenhuma rota expoe isso e o banco nao guardava. Foi assim que
+  // o app ficou preso no gpt-4o depois que OPENAI_MODEL passou a existir vazia no
+  // ambiente -- a variavel estava la, o codigo caia no fallback, e nada reclamava.
+  //
+  // O aviso e deliberadamente barulhento quando a variavel nao veio do ambiente:
+  // rodar no default e uma escolha legitima, rodar nele sem saber nao e.
+  if (MODELO_VEIO_DO_AMBIENTE) {
+    console.log(`[boot] modelo de texto: ${MODELO_ATIVO} (OPENAI_MODEL)`);
+  } else {
+    console.warn(
+      `[boot] OPENAI_MODEL nao definida — usando o padrao ${MODELO_PADRAO}. ` +
+        "Se a intencao era outro modelo, a variavel nao chegou neste processo " +
+        "(container nao reiniciou depois da mudanca?).",
+    );
   }
 
   // Ultimo elo da corrente de erro: tudo que o `rota()` capturou nas rotas
