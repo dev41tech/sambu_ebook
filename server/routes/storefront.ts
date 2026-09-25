@@ -27,7 +27,7 @@ const GENRE_BY_CATEGORY: Record<string, string> = {
 // A classificação escolhida na criação ("Grupo > Subcategoria") é o que deve
 // governar a busca. O grupo vira o gênero da vitrine e a subcategoria, junto das
 // secundárias, entra como tag — é sobre as tags que a busca do catálogo procura.
-function classificacao(row: EbookRow): { genre: string; tags: string[] } {
+export function classificacao(row: EbookRow): { genre: string; tags: string[] } {
   const principal = (row.category_main || "").trim();
   const tags: string[] = [];
 
@@ -54,7 +54,7 @@ function classificacao(row: EbookRow): { genre: string; tags: string[] } {
 // A sinopse gerada na area de marketing e o texto de vitrine: e o que o leitor le
 // antes de decidir abrir o livro. Sem ela, cai no subtitulo, que e curto demais
 // para essa funcao.
-function sinopseDe(row: EbookRow): string {
+export function sinopseDe(row: EbookRow): string {
   try {
     const m = JSON.parse(row.marketing_json || "{}");
     const s = String(m.sinopse || "").trim();

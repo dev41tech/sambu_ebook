@@ -282,6 +282,9 @@ export const api = {
   retryEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/retry`, { method: "POST" }),
   /** Para a geracao sem apagar nada; o ebook volta para as instrucoes (status 'draft'). */
   stopEbook: (id: string) => request<{ ok: true }>(`/ebooks/${id}/stop`, { method: "POST" }),
+  /** Publica no catalogo publico (Sambu Online). Ja acontece sozinho ao finalizar. */
+  publicarOnline: (id: string) =>
+    request<{ ok: true; slug: string }>(`/ebooks/${id}/publicar-online`, { method: "POST" }),
   regenerateCover: (id: string, payload: RegenerateImagePayload) =>
     request<{ ok: true }>(`/ebooks/${id}/cover/regenerate`, { method: "POST", body: JSON.stringify(payload) }),
   regenerateChapterImage: (id: string, imageId: string, payload: RegenerateImagePayload) =>

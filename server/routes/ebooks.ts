@@ -26,6 +26,7 @@ import {
 import { isCategoriaValida } from "../../src/lib/categorias";
 import { TODOS_OS_TONS } from "../../src/lib/modos";
 import { capitulosEscolhidos } from "../../src/lib/custo";
+import { publicarNoSambuOnline } from "../lib/sambuOnline";
 import { isCategoriaPersonalizada } from "./categorias";
 import { avaliarQualidade } from "../lib/qualityGate";
 import { medirComResumos, type Metricas } from "../lib/metricas";
@@ -709,6 +710,20 @@ ebooksRouter.post("/:id/finalize", rota(async (req, res) => {
 
 // Avalia sem exportar, para a tela mostrar o que trava a publicacao antes de o
 // usuario clicar em finalizar e receber um erro.
+// Publica (ou republica) no Sambu Online. A publicacao ja acontece sozinha ao
+// finalizar; esta rota existe para o livro que ficou de fora -- site fora do ar
+// na hora, credencial faltando, ou acervo antigo, anterior a esta automacao.
+ebooksRouter.post("/:id/publicar-online", rota(async (req, res) => {
+  const row = await loadEbookOr404(req.params.id, res);
+  if (!row) return;
+  const r = await publicarNoSambuOnline(row.id);
+  if (!r.publicado) {
+    res.status(409).json({ error: r.motivo ?? "Não foi possível publicar." });
+    return;
+  }
+  res.json({ ok: true, slug: r.slug });
+}));
+
 ebooksRouter.get("/:id/quality", rota(async (req, res) => {
   const row = await loadEbookOr404(req.params.id, res);
   if (!row) return;

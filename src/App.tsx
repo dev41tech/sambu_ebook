@@ -12,6 +12,13 @@ import Ideias from "./pages/Ideias";
 import KindleReading from "./pages/KindleReading";
 import Conta from "./pages/Conta";
 
+// Endereco publico do catalogo (Sambu Online). Em VITE_VITRINE_URL para trocar
+// sem mexer no codigo -- por exemplo para apontar para a previa local.
+// O cast existe porque este tsconfig nao carrega os tipos do cliente Vite
+// (vite/client) -- sem ele, `import.meta.env` nao compila.
+const ENV = (import.meta as unknown as { env?: Record<string, string> }).env ?? {};
+export const VITRINE_URL = ENV.VITE_VITRINE_URL || "https://ebooks.41tech.cloud/";
+
 function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   async function handleLogout() {
@@ -44,9 +51,15 @@ function Shell({ children }: { children: React.ReactNode }) {
             <Link to="/ideias" className="text-neutral-600 hover:text-neutral-900">
               Ideias de nichos
             </Link>
-            {/* A vitrine roda numa entrada Vite própria (loja.html), por isso é
-                um link normal e não uma rota do react-router. */}
-            <a href="/loja.html" className="font-medium text-amber-700 hover:text-amber-800">
+            {/* A vitrine publica de verdade e o Sambu Online, onde os livros
+                finalizados sao publicados sozinhos. A vitrine local (loja.html)
+                continua servida, agora so como previa interna. */}
+            <a
+              href={VITRINE_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-amber-700 hover:text-amber-800"
+            >
               Vitrine
             </a>
             <Link to="/conta" className="text-neutral-600 hover:text-neutral-900">

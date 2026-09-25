@@ -10,6 +10,7 @@ import ChangeImagePanel from "../components/ChangeImagePanel";
 import MarketingCreativeCard from "../components/MarketingCreativeCard";
 import BriefingEbook from "../components/BriefingEbook";
 import PainelQualidade from "../components/PainelQualidade";
+import { VITRINE_URL } from "../App";
 import { MarkdownBlock, splitBlocks } from "../lib/markdownBlock";
 
 export default function EbookDetail() {
@@ -42,6 +43,8 @@ export default function EbookDetail() {
   const [editChapters, setEditChapters] = useState<{ id: string; title: string; content: string }[]>([]);
   const [contentSaving, setContentSaving] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
+  const [publicando, setPublicando] = useState(false);
+  const [publicacao, setPublicacao] = useState<{ ok: boolean; texto: string } | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [ignorarBloqueios, setIgnorarBloqueios] = useState(false);
@@ -123,6 +126,20 @@ export default function EbookDetail() {
       setError(err instanceof Error ? err.message : "Erro ao iniciar audiobook.");
     } finally {
       setAudioBusy(false);
+    }
+  }
+
+  async function handlePublicarOnline() {
+    if (!id) return;
+    setPublicando(true);
+    setPublicacao(null);
+    try {
+      const r = await api.publicarOnline(id);
+      setPublicacao({ ok: true, texto: `Publicado na comunidade como "${r.slug}".` });
+    } catch (err) {
+      setPublicacao({ ok: false, texto: err instanceof Error ? err.message : "Não foi possível publicar." });
+    } finally {
+      setPublicando(false);
     }
   }
 
@@ -347,6 +364,18 @@ export default function EbookDetail() {
           Baixar EPUB (Kindle)
         </a>
 
+        {/* A publicacao ja roda sozinha ao finalizar; este botao cobre o livro
+            que ficou de fora (site fora do ar, credencial faltando, acervo
+            antigo). Republicar o mesmo livro nao duplica: o site pula slug
+            repetido e a resposta diz isso. */}
+        <button
+          onClick={handlePublicarOnline}
+          disabled={publicando}
+          className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50 disabled:opacity-50"
+        >
+          {publicando ? "Publicando…" : "🌐 Publicar na comunidade"}
+        </button>
+
         {ebook.audio_status === "none" && (
           <button
             onClick={handleGenerateAudiobook}
@@ -378,6 +407,19 @@ export default function EbookDetail() {
           >
             Falha no audiobook — tentar de novo
           </button>
+        )}
+        {publicacao && (
+          <p className={`w-full text-sm ${publicacao.ok ? "text-emerald-700" : "text-amber-700"}`}>
+            {publicacao.texto}
+            {publicacao.ok && (
+              <>
+                {" "}
+                <a href={VITRINE_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+                  Abrir a comunidade
+                </a>
+              </>
+            )}
+          </p>
         )}
         </div>
       )}

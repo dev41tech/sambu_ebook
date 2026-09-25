@@ -45,6 +45,7 @@ import {
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
+import { publicacaoAutomaticaLigada, publicarNoSambuOnline } from "./sambuOnline";
 
 // Limite de jobs de geração rodando ao mesmo tempo — evita que disparar vários ebooks de
 // uma vez (ex.: em lote via n8n) estoure rate limit da OpenAI ou gere custo de imagem
@@ -975,5 +976,22 @@ export async function finalizeEbookExport(ebookId: string): Promise<void> {
   // Sem isso a marcação na tela de criação ficaria guardada e nunca usada.
   if (row.audio_requested && row.audio_status !== "ready" && row.audio_status !== "generating") {
     await startAudiobookGeneration(ebookId);
+  }
+
+  // Publicacao no Sambu Online (ebooks.41tech.cloud). Roda aqui porque e o
+  // primeiro instante em que o EPUB existe. Nunca derruba a exportacao: o livro
+  // ficou pronto neste app de qualquer jeito, e a publicacao pode ser refeita
+  // pelo botao da tela do ebook.
+  if (publicacaoAutomaticaLigada()) {
+    try {
+      const r = await publicarNoSambuOnline(ebookId);
+      console.log(
+        r.publicado
+          ? `[sambu-online] "${row.title}" publicado como ${r.slug}.`
+          : `[sambu-online] "${row.title}" não publicado: ${r.motivo}`,
+      );
+    } catch (err) {
+      console.error(`[sambu-online] falha ao publicar "${row.title}":`, err instanceof Error ? err.message : err);
+    }
   }
 }
