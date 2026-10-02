@@ -52,6 +52,7 @@ import {
   LIMITE_VICIOS_POR_MIL,
   PREFIXO_EDITORIAL,
   correcaoDoFinal,
+  encurtarNomes,
   precisaReescreverFinal,
   tiquesRepetidos,
   trechoFinal,
@@ -467,9 +468,10 @@ async function runJob(ebookId: string) {
       chapter: { id: string; idx: number; title: string },
       conteudo: string,
     ): Promise<string> => {
-      if (!ficcao || reescritos.has(chapter.idx)) return conteudo;
+      // Todo livro, nao so ficcao: cada modo traz as regras do seu guia (guias.ts).
+      if (reescritos.has(chapter.idx)) return conteudo;
       try {
-        const r = await auditarCapitulo(outline, chapter.idx, conteudo, anterioresAte(chapter.idx));
+        const r = await auditarCapitulo(ctx, outline, chapter.idx, conteudo, anterioresAte(chapter.idx));
         if (r.problemas.length > 0) {
           console.warn(
             `[auditoria] ${ebookId} cap. ${chapter.idx + 1}: ${r.problemas.map((p) => `${p.gravidade}:${p.tipo}`).join(", ")}`,
@@ -564,6 +566,8 @@ async function runJob(ebookId: string) {
       }
       content = await padronizarDialogo(content, chapter.idx);
       content = await concretizar(content, chapter.idx);
+      // Nome completo so na primeira mencao do capitulo (editorial.ts).
+      if (narrativo) content = encurtarNomes(content, elencoEfetivo(outline, registrados).map((p) => p.nome));
       return content;
     };
 
@@ -960,7 +964,9 @@ async function runJob(ebookId: string) {
     // Uma chamada, sobre os resumos de todos os capitulos e o fim do ultimo. Vira
     // achado no painel de qualidade -- nunca bloqueia a publicacao (no maximo
     // "major"). As auditorias que levaram a reescrita entram junto.
-    if (ficcao) {
+    // Todo livro: na nao ficcao a leitora pergunta se o livro cumpriu a promessa
+    // do titulo, com as perguntas do guia do genero.
+    if (chapters.length > 0) {
       try {
         await continuarOuParar(ebookId);
         const caps = await all<{ idx: number; title: string; content: string; resumo_fatos: string | null }>(
@@ -981,7 +987,9 @@ async function runJob(ebookId: string) {
         const extras: Achado[] = [];
         const ultimoCap = chapters[chapters.length - 1];
         const correcaoFinal = correcaoDoFinal(leitura, outline.chapters.length);
-        if (ultimoCap && correcaoFinal && precisaReescreverFinal(leitura)) {
+        // So na ficcao: e o ultimo capitulo que decide se a historia terminou. Na
+        // nao ficcao o problema raramente esta no ultimo capitulo.
+        if (ficcao && ultimoCap && correcaoFinal && precisaReescreverFinal(leitura)) {
           const antigo = ultimoCap.content;
           const antes = vereditoDaLeitora(leitura);
           try {

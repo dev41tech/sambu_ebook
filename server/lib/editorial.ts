@@ -192,6 +192,9 @@ const TIPOS_AUDITORIA = new Set([
   "casal-parado",
   "pista-nao-plantada",
   "virada-nao-entregue",
+  "regra-do-genero",
+  "generico",
+  "pergunta-nao-respondida",
 ]);
 
 /** Valida a resposta do auditor. Lixo vira "aprovado" — o auditor é um extra, não pode travar o livro. */
@@ -230,7 +233,7 @@ export const PREFIXO_EDITORIAL = "editorial-";
 const GRAV: Record<string, Gravidade> = { grave: "major", media: "warning", média: "warning", leve: "info" };
 
 /** Aspectos que a leitura de editor pode apontar — viram a categoria no painel. */
-export const ASPECTOS_EDITOR = ["estrutura", "ritmo", "repeticao", "fio-aberto", "contradicao", "personagem", "final", "promessa", "clareza"];
+export const ASPECTOS_EDITOR = ["estrutura", "ritmo", "repeticao", "fio-aberto", "contradicao", "personagem", "final", "promessa", "clareza", "generico"];
 
 function aspectoDe(v: unknown): string {
   const a = String(v ?? "")
@@ -425,6 +428,47 @@ export function correcaoDoFinal(leitura: unknown, totalCapitulos: number): strin
   ];
   if (linhas.length === 0 && !comentario) return "";
   return `Uma leitora do público leu o livro e o final não a satisfez${comentario ? ` ("${comentario}")` : ""}. Reescreva este último capítulo mantendo os fatos já estabelecidos nos capítulos anteriores e a verdade da trama, mas entregando um final que surpreenda e satisfaça:\n${linhas.join("\n")}\nNada de explicação administrativa no lugar de cena: o final é vivido pelos personagens.`;
+}
+
+// ---------------------------------------------------------------------------
+// Nome completo repetido
+// ---------------------------------------------------------------------------
+//
+// O prompt já pedia "nome completo só na primeira vez", e o modelo ignorava: em
+// "Curvas de Setembro" foram 74 "Joana Martins" e 77 "Rafael Duarte" — o
+// parecer editorial apontou o texto soando como boletim de ocorrência. Como o
+// próprio elenco é repetido com nome completo em vários blocos do prompt, a
+// correção confiável é no texto: a partir da segunda menção no capítulo, fica o
+// primeiro nome (ou "Dona Célia", com o tratamento).
+
+const TRATAMENTOS = /^(dona|seu|sr\.?|sra\.?|dr\.?|dra\.?|professor|professora|padre|irmã|tia|tio)$/i;
+
+const escaparRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Troca o nome completo pelo curto a partir da segunda menção no texto. Só para
+ * quem tem o nome curto único no elenco — duas "Anas" continuam por extenso.
+ */
+export function encurtarNomes(texto: string, nomes: string[]): string {
+  const curtoDe = (nome: string): string | null => {
+    const partes = nome.trim().split(/\s+/);
+    if (partes.length < 2) return null;
+    const curto = TRATAMENTOS.test(partes[0]) ? partes.slice(0, 2).join(" ") : partes[0];
+    return curto === nome.trim() ? null : curto;
+  };
+  const curtos = nomes.map(curtoDe);
+  const contagem = new Map<string, number>();
+  for (const c of curtos) if (c) contagem.set(c.toLowerCase(), (contagem.get(c.toLowerCase()) ?? 0) + 1);
+
+  let resultado = texto;
+  nomes.forEach((nome, i) => {
+    const curto = curtos[i];
+    if (!curto || contagem.get(curto.toLowerCase())! > 1) return;
+    let vistos = 0;
+    const re = new RegExp(`(?<![\\p{L}])${escaparRegex(nome.trim())}(?![\\p{L}])`, "gu");
+    resultado = resultado.replace(re, (m) => (vistos++ === 0 ? m : curto));
+  });
+  return resultado;
 }
 
 // ---------------------------------------------------------------------------

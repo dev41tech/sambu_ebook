@@ -37,6 +37,8 @@ import {
   type ResultadoAuditoria,
 } from "./editorial";
 import { vozDe } from "./vozes";
+import { guiaDe, type Guia } from "./guias";
+import { instrucaoTese, perguntasDoCapitulo, problemasDaTese, schemaTese, teseBlock, type PerguntaDoLeitor } from "./naoFiccao";
 
 let client: OpenAI | null = null;
 
@@ -242,6 +244,10 @@ export interface Outline {
   revelacaoNoCapitulo?: number;
   /** "Final inesperado": a virada decidida e plantada antes de escrever. */
   viradaFinal?: ViradaFinal;
+  /** Nao ficcao: a ideia central que todos os capitulos sustentam (naoFiccao.ts). */
+  tese?: string;
+  /** Nao ficcao: o que o leitor traz ao abrir o livro, com o capitulo que responde. */
+  perguntasDoLeitor?: PerguntaDoLeitor[];
   /** Nota do editor do sumario (avaliarSumario) e quantas revisoes levou. */
   avaliacaoDoSumario?: {
     nota: number;
@@ -685,13 +691,23 @@ Evite também: excesso de travessões, sequências de frases muito curtas, exces
 function promptDoModo(ctx: EbookContext): string {
   return `${SYSTEM_BASE}
 
-${vozDe(modoDe(ctx.theme)).regras}`;
+${guiaDe(ctx.theme).escrita}`;
+}
+
+/** Promessa e estrutura do guia do genero, para o sumario e o editor do sumario. */
+function guiaSumarioBlock(guia: Guia): string {
+  const partes = [
+    guia.promessa && `O QUE O LEITOR DESTE GÊNERO ESPERA DO LIVRO:\n${guia.promessa}`,
+    guia.estrutura && `COMO O LIVRO PRECISA SE ESTRUTURAR:\n${guia.estrutura}`,
+  ].filter(Boolean);
+  return partes.length ? `\n\n${partes.join("\n\n")}` : "";
 }
 
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
   const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
   const ficcao = ehFiccao(ctx.theme);
+  const guia = guiaDe(ctx.theme);
   // O que o genero e a instrucao do autor prometem (historia.ts). Na conta
   // automatica de capitulos, uma historia que promete romance, revelacao em
   // camadas e final inesperado ganha os capitulos para caber isso -- 5
@@ -745,7 +761,7 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   "fios": [
     { "fio": "pista, segredo, suspeita ou pergunta que a trama abre", "resposta": "o que ela significa de verdade", "fechaNoCapitulo": 3 }
   ],${promessas ? schemaDasPromessas(promessas) : ""}`
-    : "";
+    : schemaTese();
   const instrucaoElenco = ficcao
     ? `
 Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.
@@ -753,7 +769,7 @@ Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, 
 NENHUM PERSONAGEM SE PERDE: para cada pessoa do elenco, diga em "destino" como a historia dela termina. Quem entra na trama precisa ter a participacao encerrada de forma visivel -- volta na reta final, ou sai da historia num capitulo em que essa saida e mostrada. Ninguem simplesmente desaparece no meio do livro.
 UMA SO VERDADE: decida agora, em "verdadeCentral", a resposta da pergunta que move a trama -- o que aconteceu, quem fez o que, como e por que. Ela vale para o livro inteiro: personagens podem mentir ou esconder, mas a verdade que o leitor descobre e esta, e nenhum capitulo conta outra versao sem que ela seja desmentida depois. Se o autor pediu reviravolta ou final inesperado, a reviravolta mora aqui, decidida de antemao -- surpreende o leitor, nao o livro.
 TODO FIO FECHA: liste em "fios" cada pista, segredo, suspeita, objeto misterioso ou pergunta que a trama vai abrir, com a resposta e o capitulo em que o leitor fica sabendo ("fechaNoCapitulo", de 1 a ${chapterCount}). Nao abra no texto nenhum misterio que nao esteja nesta lista.${promessas ? instrucoesDasPromessas(promessas, chapterCount) : ""}`
-    : "";
+    : instrucaoTese(chapterCount);
 
   // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
   // reabrir uma decisao que o capitulo 3 ja tinha fechado: em "Moveis de
@@ -783,7 +799,7 @@ ${titleInstruction}
 
 O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
-Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}${premissa ? premissaBlock(premissa.escolhida) : ""}
+Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}${premissa ? premissaBlock(premissa.escolhida) : ""}${guiaSumarioBlock(guia)}
 
 Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui. Se o enredo inventar o nome de um evento, negócio, lugar ou apelido que vai se repetir ao longo do livro, inclua o nome exato aqui também ("o evento conjunto se chama 'Sabores da Esquina'") — sem isso o mesmo evento aparece com dois nomes diferentes em capítulos diferentes.
 
@@ -807,7 +823,7 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // Promessas (passo do casal por capitulo, virada com pistas) somam ~40 por
   // capitulo e ~300 fixos.
   const tokensSumario =
-    Math.max(2000, 500 + chapterCount * (ficcao ? 150 : 50)) + (ficcao ? 1000 : 0) + (promessas ? 300 + chapterCount * 40 : 0);
+    Math.max(2000, 500 + chapterCount * (ficcao ? 150 : 50)) + (ficcao ? 1000 : 500) + (promessas ? 300 + chapterCount * 40 : 0);
   const pedirSumario = async (texto: string): Promise<Outline> => {
     const raw = await askOpenAI(promptDoModo(ctx), texto, tokensSumario, true);
     const parsed = JSON.parse(extractJson(raw)) as Outline;
@@ -856,7 +872,22 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
     return sumario;
   };
 
-  if (!ficcao) return sumarioNoTamanho();
+  // Nao ficcao: tese e perguntas do leitor conferidas, com uma correcao.
+  if (!ficcao) {
+    const s = await sumarioNoTamanho();
+    const faltas = problemasDaTese(s);
+    if (faltas.length === 0) return s;
+    try {
+      console.warn(`[sumario] nao ficcao com ${faltas.length} problema(s); pedindo correcao: ${faltas.join(" | ")}`);
+      const c = await pedirSumario(
+        `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${faltas.map((p) => `- ${p}`).join("\n")}`,
+      );
+      if (c.chapters.length === s.chapters.length && problemasDaTese(c).length < faltas.length) return c;
+    } catch (err) {
+      console.warn(`[sumario] correcao da nao ficcao falhou: ${err instanceof Error ? err.message : err}`);
+    }
+    return s;
+  }
 
   // Modo historia: o enredo e conferido antes de escrever um capitulo sequer --
   // ninguem do elenco some, o climax fica na reta final e o ultimo capitulo
@@ -1004,7 +1035,7 @@ async function escolherPremissa(
     .join("; ");
   const pedido = `Classificação: ${ctx.theme}${(ctx.secondaryCategories ?? []).length ? ` (temas: ${(ctx.secondaryCategories ?? []).join(", ")})` : ""}. Público: ${ctx.audience}. Tom: ${ctx.tone}. ${chapterCount} capítulos.
 ${extraInstructionsBlock(ctx)}
-O livro promete: ${promete}.`;
+O livro promete: ${promete}.${guiaSumarioBlock(guiaDe(ctx.theme))}`;
 
   const rawIdeias = await askOpenAI(
     promptDoModo(ctx),
@@ -1056,7 +1087,7 @@ Responda APENAS com JSON: {"notas": [7, 8], "escolhida": 2, "motivo": "uma frase
 export async function avaliarSumario(ctx: EbookContext, outline: Outline, promessas: Promessas | null): Promise<AvaliacaoSumario> {
   const n = outline.chapters.length;
   const prompt = `Avalie o PLANO de um livro antes de ele ser escrito. Classificação: ${ctx.theme}. Público: ${ctx.audience}. Tom: ${ctx.tone}.
-${extraInstructionsBlock(ctx)}
+${extraInstructionsBlock(ctx)}${guiaSumarioBlock(guiaDe(ctx.theme))}
 ${promessas ? `O pedido promete: ${[promessas.romance && "romance (arco do casal)", promessas.revelacao && "traição/segredo revelado em camadas", promessas.viradaFinal && "final inesperado"].filter(Boolean).join("; ") || "uma história"}.` : ""}
 
 O PLANO (JSON):
@@ -1376,7 +1407,9 @@ export async function generateChapter(
   // lista de destinos do elenco como obrigacao de entrega (historia.ts).
   const retaFinal = ehFiccao(ctx.theme) ? retaFinalBlock(outline, chapterIndex) : "";
   // A verdade unica da trama e os fios que fecham neste capitulo (historia.ts).
-  const trama = ehFiccao(ctx.theme) ? `${tramaBlock(outline, chapterIndex)}${promessasBlock(outline, chapterIndex)}` : "";
+  const trama = ehFiccao(ctx.theme)
+    ? `${tramaBlock(outline, chapterIndex)}${promessasBlock(outline, chapterIndex)}`
+    : teseBlock(outline, chapterIndex);
   // Prevencao de vicios de texto de IA e dos tiques que este livro ja repetiu
   // (editorial.ts). So na prosa narrativa, onde eles aparecem.
   const estilo = modoDe(ctx.theme) === "narrativo" ? `${viciosBlock()}${tiquesBlock(extra.tiques ?? [])}` : "";
@@ -1442,7 +1475,7 @@ export async function expandirCapitulo(
 PROIBIDO ao expandir: comparação ("como se", "como um", "tal como"), "parecia", atmosfera e clima emocional, e os substantivos abstratos de ambiente -- silêncio, eco, sombra, reflexo, essência. Este capítulo acabou de passar por uma limpeza dessas construções e a expansão não pode trazê-las de volta. Se a única forma que você achar de crescer for por atmosfera, cresça menos.`
     : `Para crescer, aprofunde: mais detalhe sensorial nas cenas já existentes, mais linhas de diálogo, a reação interna dos personagens ao que estão vivendo, um obstáculo ou momento secundário que caiba na mesma cena sem mudar o resultado do capítulo. Não adicione resumo nem repita a mesma ideia com outras palavras -- some conteúdo novo e concreto.`;
 
-  const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para pelo menos ${metaPalavras} palavras, mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
+  const prompt = `O capítulo abaixo ficou mais curto do que o planejado. Reescreva-o EXPANDINDO-o para cerca de ${metaPalavras} palavras (entre ${metaPalavras} e ${Math.round(metaPalavras * 1.15)}; mais do que isso será descartado), mantendo a mesma história, os mesmos personagens, a mesma abertura e o mesmo fechamento -- não corte, não troque e não resuma nada do que já aconteceu.
 
 ${comoCrescer}
 
@@ -1788,7 +1821,7 @@ TEXTO:
 ${text}`;
   return askOpenAI(`${SYSTEM_BASE}
 
-${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens, false, 200, "falhar");
+${guiaDe(caminhoCategoria).escrita}`, prompt, maxTokens, false, 200, "falhar");
 }
 
 // --- Camada editorial (02/10/2026) ------------------------------------------
@@ -1802,11 +1835,14 @@ const SYSTEM_EDITOR = `Você é um editor de ficção experiente e exigente, rev
  * reescrita ter alvo claro. Uma chamada por capitulo de historia.
  */
 export async function auditarCapitulo(
+  ctx: EbookContext,
   outline: Outline,
   idx: number,
   conteudo: string,
   anteriores: CapituloAnterior[],
 ): Promise<ResultadoAuditoria> {
+  const guia = guiaDe(ctx.theme);
+  if (!ehFiccao(ctx.theme)) return auditarNaoFiccao(guia, outline, idx, conteudo, anteriores);
   const n = outline.chapters.length;
   const cap = outline.chapters[idx];
   const ultimo = idx === n - 1;
@@ -1833,8 +1869,10 @@ ${pistasAqui.length ? `PISTAS que este capítulo precisa plantar (de passagem): 
 ${Number(outline.viradaFinal?.noCapitulo) === idx + 1 ? `A VIRADA FINAL acontece aqui: o leitor acreditava que ${outline.viradaFinal?.leitorAcredita}; a verdade é que ${outline.viradaFinal?.verdade}` : ""}
 ${ultimo && destinos.length ? `É o ÚLTIMO capítulo. Destinos que precisam estar entregues até o fim dele:\n${destinos.map((p) => `- ${p.nome}: ${p.destino}`).join("\n")}` : ""}
 ${resumos ? `\nO QUE OS CAPÍTULOS ANTERIORES JÁ MOSTRARAM:\n${resumos}` : ""}
+${guia.auditoria ? `\nREGRAS DESTE GÊNERO:\n${guia.auditoria}` : ""}
 
 Aponte SOMENTE problemas destes tipos, com evidência do texto:
+- "regra-do-genero": o capítulo viola uma das REGRAS DESTE GÊNERO acima.
 - "fio-nao-fechado": um fio da lista acima não teve a resposta mostrada neste capítulo.
 - "contradiz-verdade": o texto afirma como fato (não como mentira de personagem) algo que contradiz a verdade da trama ou os capítulos anteriores.
 - "funcao-nao-cumprida": o capítulo não entrega a função/resultado do plano.
@@ -1860,6 +1898,52 @@ ${conteudo}`;
   return normalizarAuditoria(JSON.parse(extractJson(raw)));
 }
 
+/** Auditor da nao ficcao: o capitulo contra o plano, a tese, as perguntas e o guia do genero. */
+async function auditarNaoFiccao(
+  guia: Guia,
+  outline: Outline,
+  idx: number,
+  conteudo: string,
+  anteriores: CapituloAnterior[],
+): Promise<ResultadoAuditoria> {
+  const n = outline.chapters.length;
+  const cap = outline.chapters[idx];
+  const perguntas = perguntasDoCapitulo(outline, idx);
+  const resumos = anteriores
+    .filter((a) => a.resumo)
+    .slice(-12)
+    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${a.resumo}`)
+    .join("\n");
+
+  const prompt = `Revise o CAPÍTULO ${idx + 1} de ${n} do livro "${outline.title}".
+
+O PLANO deste capítulo: ${cap.summary}
+${outline.tese ? `TESE DO LIVRO: ${outline.tese}` : ""}
+${perguntas.length ? `PERGUNTAS DO LEITOR QUE ESTE CAPÍTULO PRECISA RESPONDER:\n${perguntas.map((p) => `- ${p}`).join("\n")}` : ""}
+${resumos ? `\nO QUE OS CAPÍTULOS ANTERIORES JÁ COBRIRAM:\n${resumos}` : ""}
+${guia.auditoria ? `\nREGRAS DESTE GÊNERO:\n${guia.auditoria}` : ""}
+
+Aponte SOMENTE problemas destes tipos, com evidência do texto:
+- "regra-do-genero": o capítulo viola uma das REGRAS DESTE GÊNERO acima.
+- "funcao-nao-cumprida": o capítulo não entrega o que o plano promete.
+- "pergunta-nao-respondida": uma pergunta da lista acima fica sem resposta clara.
+- "cena-repetida": o capítulo repete conteúdo, exemplo ou explicação de um capítulo anterior sem acrescentar nada.
+- "contradiz-verdade": o texto contradiz a tese do livro ou o que um capítulo anterior afirmou.
+- "generico": o capítulo fica em generalidades que serviriam a qualquer livro do tema — sem exemplo concreto, número, situação ou passo aplicável.
+- "texto-cortado": o capítulo termina no meio de uma frase ou de uma explicação.
+
+"grave" = o leitor percebe a falha (pergunta sem resposta, contradição, capítulo repetido ou genérico, regra do gênero violada de forma séria). "leve" = incômodo menor. Se o capítulo estiver bom, devolva a lista vazia — não invente problema.
+
+Responda APENAS com JSON:
+{"problemas": [{"tipo": "...", "gravidade": "grave | leve", "evidencia": "trecho curto ou descrição do que está no texto", "correcao": "o que a reescrita precisa fazer, em uma frase"}]}
+
+CAPÍTULO ${idx + 1}:
+${conteudo}`;
+
+  const raw = await askOpenAI(SYSTEM_EDITOR, prompt, 1500, true, 0);
+  return normalizarAuditoria(JSON.parse(extractJson(raw)));
+}
+
 /**
  * Leitura final do livro inteiro (ideia do creative-writing-skills e do
  * "reader panel" do story-skills): um editor olha estrutura, ritmo, repeticao e
@@ -1874,8 +1958,13 @@ export async function leituraEditorial(
   capitulos: Array<{ idx: number; title: string; resumo: string | null }>,
   finalDoUltimo: string,
 ): Promise<unknown> {
+  const ficcao = ehFiccao(ctx.theme);
+  const guia = guiaDe(ctx.theme);
   const prompt = `Leia o livro "${outline.title}" — ${outline.subtitle} (${ctx.theme}; público: ${ctx.audience}).
 ${extraInstructionsBlock(ctx)}
+${guia.promessa ? `O que o leitor deste gênero espera: ${guia.promessa}` : ""}
+${outline.tese ? `Tese planejada do livro: ${outline.tese}` : ""}
+${(outline.perguntasDoLeitor ?? []).length ? `Perguntas do leitor que o livro prometeu responder: ${(outline.perguntasDoLeitor ?? []).map((p) => `${p.pergunta} (cap. ${p.capitulo})`).join("; ")}` : ""}
 ${outline.verdadeCentral ? `Verdade da trama planejada: ${outline.verdadeCentral}` : ""}
 ${(outline.fios ?? []).length ? `Fios planejados: ${(outline.fios ?? []).map((f) => `${f.fio} (fecha no cap. ${f.fechaNoCapitulo})`).join("; ")}` : ""}
 
@@ -1886,8 +1975,8 @@ AS ÚLTIMAS LINHAS DO LIVRO (trecho do fim do último capítulo; o que vem antes
 ${finalDoUltimo}
 
 Faça duas leituras.
-1) EDITOR: até 6 problemas reais do livro como história — estrutura, ritmo, cenas repetidas, fio aberto e não fechado, contradição, personagem que some, final. Para cada um: aspecto (UMA destas palavras: estrutura, ritmo, repeticao, fio-aberto, contradicao, personagem, final, promessa, clareza), gravidade (grave | media | leve), evidencia, sugestao e os números dos capítulos.
-2) LEITORA do público-alvo, sincera: nota de 0 a 10, onde perdeu o interesse, o que não entendeu, se o final satisfez (o que a história prometeu foi entregue? a instrução do autor foi cumprida?) e um comentário de uma frase.
+1) EDITOR: até 6 problemas reais do livro como ${ficcao ? "história — estrutura, ritmo, cenas repetidas, fio aberto e não fechado, contradição, personagem que some, final" : "livro do gênero — estrutura, repetição entre capítulos, promessa do título não cumprida, trecho genérico, contradição, clareza"}. Para cada um: aspecto (UMA destas palavras: estrutura, ritmo, repeticao, fio-aberto, contradicao, personagem, final, promessa, clareza, generico), gravidade (grave | media | leve), evidencia, sugestao e os números dos capítulos.
+2) ${ficcao ? "LEITORA" : "LEITOR(A)"} do público-alvo, sincero: nota de 0 a 10, onde perdeu o interesse, o que não entendeu, se ${ficcao ? "o final satisfez (o que a história prometeu foi entregue? a instrução do autor foi cumprida?)" : "o livro cumpriu o que o título promete (responda em finalSatisfaz)"} e um comentário de uma frase.${guia.leitora ? `\nAo ler, responda para si também estas perguntas, e use as respostas nos campos acima:\n${guia.leitora}` : ""}
 
 Responda APENAS com JSON:
 {"editor": [{"aspecto": "final", "gravidade": "grave | media | leve", "evidencia": "...", "sugestao": "...", "capitulos": [1]}],
