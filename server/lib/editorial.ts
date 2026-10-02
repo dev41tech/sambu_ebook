@@ -443,7 +443,7 @@ export function correcaoDoFinal(leitura: unknown, totalCapitulos: number): strin
 export function resumoParaEditor(resumo: string | null | undefined): string {
   return (resumo ?? "")
     .split(/(?<=[.!?])\s+/)
-    .filter((frase) => !/pendentes?|pend[êe]ncias?|a conferir|não verificad/i.test(frase))
+    .filter((frase) => !/\bpendentes?\b|\bpend[êe]ncias?\b|a conferir|não verificad/i.test(frase))
     .join(" ")
     .trim();
 }
