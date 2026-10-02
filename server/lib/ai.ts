@@ -5,7 +5,8 @@ import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO, TOKENS_POR_P
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
-import { inicioRetaFinal, problemasDoEnredo, retaFinalBlock } from "./historia";
+import { ajustarEstrutura, inicioRetaFinal, problemasDoEnredo, retaFinalBlock, tramaBlock } from "./historia";
+import { faixaPedida, registrarEntrega } from "./calibragem";
 import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
@@ -187,6 +188,28 @@ export interface Outline {
    * lugar nenhum para contradizer.
    */
   fatosFixos?: string[];
+  /**
+   * So no modo historia. A resposta da pergunta central: o que aconteceu, quem
+   * fez o que, como e por que. Em "Depois da Ultima Chave" cada capitulo contou
+   * uma versao diferente de quem roubou o dossie (Sofia sozinha; Sofia a pedido
+   * de Miguel; Miguel sabendo so depois) e nenhuma foi desmentida -- a "grande
+   * traicao" virou tres. Fixada aqui, vale para todos os capitulos.
+   */
+  verdadeCentral?: string;
+  /**
+   * Cada pista, segredo, suspeita ou pergunta que a trama abre, com a resposta
+   * e o capitulo em que fecha. Mesmo livro: o envelope anonimo na casa da mae,
+   * a foto escondida no ateliê e o caso insinuado entre Miguel e Sofia foram
+   * abertos e nunca explicados.
+   */
+  fios?: FioDaTrama[];
+}
+
+export interface FioDaTrama {
+  fio: string;
+  resposta: string;
+  /** Capitulo (1 = primeiro) em que a resposta aparece para o leitor. */
+  fechaNoCapitulo: number;
 }
 
 // Teto de capitulos por ebook. Era 12 fixo, o que fazia qualquer pedido acima de
@@ -302,13 +325,107 @@ export function cortarNoParagrafo(texto: string): string {
   return limpo.slice(0, corte).trimEnd();
 }
 
+/**
+ * O que fazer quando a resposta em prosa bate no teto de tokens.
+ *
+ * - "aparar": corta no ultimo paragrafo completo (comportamento antigo).
+ * - "continuar": pede a continuacao de onde parou, ate fechar o texto. Para a
+ *   ESCRITA do capitulo: em "Depois da Ultima Chave" (02/10/2026) os 5 capitulos
+ *   bateram no teto e foram aparados -- o 5o perdeu exatamente o desfecho e o
+ *   livro terminou em "-- E eu? / Helena virou-se para ela.".
+ * - "falhar": lanca erro. Para as REESCRITAS (humanizacao, expansao, reducao de
+ *   abstracao): uma reescrita cortada perde o fim de um capitulo que estava
+ *   completo; com erro, quem chamou fica com o texto original.
+ */
+type SeCortado = "aparar" | "continuar" | "falhar";
+
+/** Quantas continuacoes no maximo -- cada uma e uma chamada paga. */
+const MAX_CONTINUACOES = 2;
+
+export class RespostaCortadaError extends Error {}
+
 async function askOpenAI(
   system: string,
   prompt: string,
   maxTokens: number,
   jsonMode = false,
-  minChars = 200
+  minChars = 200,
+  seCortado: SeCortado = "aparar",
 ): Promise<string> {
+  const mensagens: Mensagem[] = [
+    { role: "system", content: system },
+    { role: "user", content: prompt },
+  ];
+  const primeira = await chamarModelo(mensagens, maxTokens, jsonMode, minChars);
+  if (!primeira.cortada) return primeira.texto;
+
+  if (seCortado === "falhar") {
+    throw new RespostaCortadaError(`Resposta cortada no limite de ${maxTokens} tokens.`);
+  }
+  if (seCortado === "aparar") {
+    console.warn(`[ia] resposta cortada no limite de ${maxTokens} tokens; cortando no ultimo paragrafo completo.`);
+    return aparar(primeira.texto, minChars);
+  }
+
+  // "continuar": a resposta parcial volta como fala do assistente e o pedido e
+  // seguir dali. O teto de cada continuacao e menor -- falta so o fim da cena.
+  let texto = primeira.texto.trimEnd();
+  for (let i = 1; i <= MAX_CONTINUACOES; i++) {
+    console.warn(`[ia] resposta cortada no limite de tokens; pedindo continuacao ${i}/${MAX_CONTINUACOES}.`);
+    const cont = await chamarModelo(
+      [
+        ...mensagens,
+        { role: "assistant", content: texto },
+        {
+          role: "user",
+          content:
+            "Seu texto foi interrompido pelo limite de tamanho. Continue EXATAMENTE de onde parou — mesma cena, mesma voz, sem repetir nada do que já escreveu e sem recomeçar — e leve a cena e o capítulo até o fim, cumprindo tudo o que foi pedido. Responda só com a continuação.",
+        },
+      ],
+      Math.max(1200, Math.round(maxTokens * 0.6)),
+      false,
+      0,
+    );
+    texto = juntarContinuacao(texto, cont.texto);
+    if (!cont.cortada) {
+      const recusa = detectarRecusa(texto, minChars);
+      if (recusa) throw new Error(`IA nao entregou conteudo: ${recusa.motivo}.`);
+      return texto;
+    }
+  }
+  console.warn(`[ia] ainda cortado depois de ${MAX_CONTINUACOES} continuacoes; cortando no ultimo paragrafo completo.`);
+  return aparar(texto, minChars);
+}
+
+type Mensagem = { role: "system" | "user" | "assistant"; content: string };
+
+/**
+ * Cola a continuacao no texto parcial. O corte pode ter caido no meio de uma
+ * palavra ou de uma frase: se o parcial termina sem pontuacao final, a
+ * continuacao entra colada (com espaco); senao, em paragrafo novo.
+ */
+export function juntarContinuacao(parcial: string, continuacao: string): string {
+  const a = parcial.trimEnd();
+  const b = continuacao.trim();
+  if (!b) return a;
+  if (/[.!?…»"”—]$/.test(a)) return `${a}\n\n${b}`;
+  return /^[a-záéíóúâêôãõçà]/.test(b) || /[a-záéíóúâêôãõçà,;:]$/i.test(a) ? `${a} ${b}` : `${a}\n\n${b}`;
+}
+
+function aparar(texto: string, minChars: number): string {
+  const aparado = cortarNoParagrafo(texto);
+  const recusaAparada = detectarRecusa(aparado, minChars);
+  if (recusaAparada) throw new Error(`IA nao entregou conteudo: ${recusaAparada.motivo}.`);
+  return aparado;
+}
+
+/** Uma chamada ao modelo, com a calibragem de teto/raciocinio. Diz se veio cortada. */
+async function chamarModelo(
+  mensagens: Mensagem[],
+  maxTokens: number,
+  jsonMode: boolean,
+  minChars: number,
+): Promise<{ texto: string; cortada: boolean }> {
   const openai = getClient();
 
   const pedir = (campo: "max_tokens" | "max_completion_tokens", teto: number) =>
@@ -316,10 +433,7 @@ async function askOpenAI(
       model: MODEL,
       [campo]: teto,
       ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: prompt },
-      ],
+      messages: mensagens,
     });
 
   const response = await withRetry(async () => {
@@ -393,13 +507,9 @@ async function askOpenAI(
         `Resposta cortada no limite de ${maxTokens} tokens antes de fechar o JSON.`
       );
     }
-    console.warn(
-      `[ia] resposta cortada no limite de ${maxTokens} tokens; cortando no ultimo paragrafo completo.`
-    );
-    const aparado = cortarNoParagrafo(text);
-    const recusaAparada = detectarRecusa(aparado, minChars);
-    if (recusaAparada) throw new Error(`IA nao entregou conteudo: ${recusaAparada.motivo}.`);
-    return aparado;
+    // O que fazer com o corte (aparar, continuar ou falhar) e decisao de quem
+    // pediu -- ver askOpenAI.
+    return { texto: text, cortada: true };
   }
   // Uma recusa chega em HTTP 200, com texto. Sem esta checagem ela era salva
   // como se fosse o capitulo -- foi o que aconteceu nos capitulos 4 e 10 de
@@ -409,7 +519,7 @@ async function askOpenAI(
   if (recusa) {
     throw new Error(`IA nao entregou conteudo: ${recusa.motivo}.`);
   }
-  return text.trim();
+  return { texto: text.trim(), cortada: false };
 }
 
 function extractJson(text: string): string {
@@ -541,13 +651,19 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
     ? `
   "personagens": [
     { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista | ausente", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase", "destino": "como a historia desta pessoa termina no livro, em uma frase" }
+  ],
+  "verdadeCentral": "o que realmente aconteceu na trama, em 2 a 5 frases: quem fez o que, como e por que",
+  "fios": [
+    { "fio": "pista, segredo, suspeita ou pergunta que a trama abre", "resposta": "o que ela significa de verdade", "fechaNoCapitulo": 3 }
   ],`
     : "";
   const instrucaoElenco = ficcao
     ? `
 Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.
 Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.
-NENHUM PERSONAGEM SE PERDE: para cada pessoa do elenco, diga em "destino" como a historia dela termina. Quem entra na trama precisa ter a participacao encerrada de forma visivel -- volta na reta final, ou sai da historia num capitulo em que essa saida e mostrada. Ninguem simplesmente desaparece no meio do livro.`
+NENHUM PERSONAGEM SE PERDE: para cada pessoa do elenco, diga em "destino" como a historia dela termina. Quem entra na trama precisa ter a participacao encerrada de forma visivel -- volta na reta final, ou sai da historia num capitulo em que essa saida e mostrada. Ninguem simplesmente desaparece no meio do livro.
+UMA SO VERDADE: decida agora, em "verdadeCentral", a resposta da pergunta que move a trama -- o que aconteceu, quem fez o que, como e por que. Ela vale para o livro inteiro: personagens podem mentir ou esconder, mas a verdade que o leitor descobre e esta, e nenhum capitulo conta outra versao sem que ela seja desmentida depois. Se o autor pediu reviravolta ou final inesperado, a reviravolta mora aqui, decidida de antemao -- surpreende o leitor, nao o livro.
+TODO FIO FECHA: liste em "fios" cada pista, segredo, suspeita, objeto misterioso ou pergunta que a trama vai abrir, com a resposta e o capitulo em que o leitor fica sabendo ("fechaNoCapitulo", de 1 a ${chapterCount}). Nao abra no texto nenhum misterio que nao esteja nesta lista.`
     : "";
 
   // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
@@ -597,7 +713,9 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // JSON viria invalido -- falha silenciosa e dificil de diagnosticar. fatosFixos
   // e funcao/resultado por capitulo tambem consomem uma fatia da resposta, e a
   // lista de personagens por capitulo entrou depois deles.
-  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 110 : 50)) + (ficcao ? 600 : 0);
+  // Verdade central e fios (so ficcao) somam ~400 tokens fixos e ~40 por
+  // capitulo, em media um fio a cada capitulo.
+  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 150 : 50)) + (ficcao ? 1000 : 0);
   const pedirSumario = async (texto: string): Promise<Outline> => {
     const raw = await askOpenAI(promptDoModo(ctx), texto, tokensSumario, true);
     const parsed = JSON.parse(extractJson(raw)) as Outline;
@@ -654,19 +772,32 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   const problemas = problemasDoEnredo(sumario);
   if (problemas.length === 0) return sumario;
   console.warn(`[sumario] enredo com ${problemas.length} problema(s); pedindo correcao: ${problemas.join(" | ")}`);
-  const corrigido = await pedirSumario(
-    `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas de enredo. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${problemas.map((p) => `- ${p}`).join("\n")}`,
-  );
-  const problemasCorrigido = problemasDoEnredo(corrigido);
-  const contagemOk = corrigido.chapters.length === chapterCount || corrigido.chapters.length === sumario.chapters.length;
-  if (contagemOk && problemasCorrigido.length < problemas.length) {
-    if (problemasCorrigido.length > 0) {
-      console.warn(`[sumario] correcao ainda com ${problemasCorrigido.length} problema(s): ${problemasCorrigido.join(" | ")}`);
+  let final = sumario;
+  try {
+    const corrigido = await pedirSumario(
+      `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas de enredo. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${problemas.map((p) => `- ${p}`).join("\n")}`,
+    );
+    const problemasCorrigido = problemasDoEnredo(corrigido);
+    const contagemOk = corrigido.chapters.length === chapterCount || corrigido.chapters.length === sumario.chapters.length;
+    if (contagemOk && problemasCorrigido.length < problemas.length) {
+      final = corrigido;
+      if (problemasCorrigido.length > 0) {
+        console.warn(`[sumario] correcao ainda com ${problemasCorrigido.length} problema(s): ${problemasCorrigido.join(" | ")}`);
+      }
+    } else {
+      console.warn(`[sumario] correcao nao melhorou o enredo; seguindo com o sumario anterior.`);
     }
-    return corrigido;
+  } catch (err) {
+    // A correcao e uma tentativa extra: falhar nela nao derruba o livro.
+    console.warn(`[sumario] correcao do enredo falhou: ${err instanceof Error ? err.message : err}`);
   }
-  console.warn(`[sumario] correcao nao melhorou o enredo; seguindo com o sumario anterior.`);
-  return sumario;
+
+  // Ultimo recurso: estrutura de climax/desfecho errada mesmo depois da
+  // correcao e ajustada no proprio sumario -- "Depois da Ultima Chave" seguiu
+  // sem climax porque a correcao nao trouxe um e nada mais impedia.
+  const ajustes = ajustarEstrutura(final);
+  if (ajustes.length > 0) console.warn(`[sumario] estrutura ajustada automaticamente: ${ajustes.join("; ")}`);
+  return final;
 }
 
 /** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
@@ -923,6 +1054,10 @@ export async function generateChapter(
   // transformar o livro inteiro noutra coisa -- e sem estourar a estimativa de
   // custo e de paginas que o usuario viu antes de mandar gerar.
   const tetoDoCapitulo = Math.round(wordsPerChapter * 1.3);
+  // O que se PEDE ao modelo e a meta dividida pelo excesso medido dele
+  // (calibragem.ts); o teto de tokens continua pelo teto real do capitulo, para
+  // que um capitulo dentro da meta nunca seja cortado.
+  const pedido = faixaPedida(MODEL, wordsPerChapter);
   // Aberturas e fechamentos do modo, nao mais uma lista unica de nao ficcao.
   const voz = vozDe(modoDe(ctx.theme));
   const opening = voz.aberturas[chapterIndex % voz.aberturas.length];
@@ -948,6 +1083,8 @@ export async function generateChapter(
   // Modo historia: na reta final nada novo entra, e o ultimo capitulo recebe a
   // lista de destinos do elenco como obrigacao de entrega (historia.ts).
   const retaFinal = ehFiccao(ctx.theme) ? retaFinalBlock(outline, chapterIndex) : "";
+  // A verdade unica da trama e os fios que fecham neste capitulo (historia.ts).
+  const trama = ehFiccao(ctx.theme) ? tramaBlock(outline, chapterIndex) : "";
 
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
@@ -962,12 +1099,18 @@ Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: $
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores, extra.memoriaLonga ?? [])}${correcaoBloco}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-${instrucaoClimax}${retaFinal}${groundingBlock(ctx)}
+${trama}${instrucaoClimax}${retaFinal}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
-Escreva entre ${wordsPerChapter} e ${tetoDoCapitulo} palavras. O piso não é sugestão: "aproximadamente" não é licença para entregar menos. O teto também não: passar dele desequilibra o livro em relação aos outros capítulos e estoura a extensão que o autor pediu. Se a cena pedir mais espaço, corte o que for acessório em vez de ultrapassar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
-  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(tetoDoCapitulo));
+Escreva entre ${pedido.piso} e ${pedido.teto} palavras. O piso não é sugestão: "aproximadamente" não é licença para entregar menos. O teto também não: passar dele desequilibra o livro em relação aos outros capítulos e estoura a extensão que o autor pediu. Se a cena pedir mais espaço, corte o que for acessório em vez de ultrapassar. Com parágrafos de tamanhos variados. Use no máximo uma lista curta ou caixa de destaque, só se fizer sentido — o capítulo não deve virar um formulário de tópicos. Não inclua o título do capítulo no texto (ele já é exibido separadamente). Responda apenas com o corpo do texto.`;
+  const texto = await askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(tetoDoCapitulo), false, 200, "continuar");
+  const entregue = texto.trim().split(/\s+/).filter(Boolean).length;
+  const excesso = registrarEntrega(MODEL, pedido.piso, entregue);
+  console.log(
+    `[tamanho] cap. ${chapterIndex + 1}: pedido ${pedido.piso}-${pedido.teto}, entregue ${entregue} (meta ${wordsPerChapter}); excesso do modelo agora ${excesso.toFixed(2)}x.`,
+  );
+  return texto;
 }
 
 /**
@@ -1012,7 +1155,7 @@ Responda apenas com o texto expandido do capítulo, sem comentários.
 
 CAPÍTULO ATUAL:
 ${conteudoAtual}`;
-  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(metaPalavras * 1.3)), false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(metaPalavras * 1.3)), false, 200, "falhar");
 }
 
 /**
@@ -1097,7 +1240,7 @@ Responda apenas com o texto do capítulo, sem comentários.
 
 CAPÍTULO:
 ${conteudo}`;
-  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200, "falhar");
 }
 
 /**
@@ -1149,7 +1292,7 @@ Responda apenas com o texto reescrito do capítulo, sem comentários.
 
 CAPÍTULO:
 ${conteudo}`;
-  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200);
+  return askOpenAI(promptDoModo(ctx), prompt, tetoDeSaida(Math.round(palavrasAtuais * 1.3)), false, 200, "falhar");
 }
 
 /**
@@ -1350,5 +1493,5 @@ TEXTO:
 ${text}`;
   return askOpenAI(`${SYSTEM_BASE}
 
-${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens);
+${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens, false, 200, "falhar");
 }

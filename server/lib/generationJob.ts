@@ -16,6 +16,7 @@ import {
   reduzirAbstracao,
   blocoQueCobre,
   CAPITULOS_POR_BLOCO,
+  tetoDeSaida,
   type BlocoDeMemoria,
   type CapituloAnterior,
   type EbookContext,
@@ -440,10 +441,14 @@ async function runJob(ebookId: string) {
         correcao,
       });
       const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
+      // Teto da humanizacao acompanha o rascunho: com 4.000 fixos, um capitulo
+      // completo e longo seria cortado e a humanizacao descartada (ela agora
+      // falha em vez de aparar, para nao perder o fim do capitulo).
+      const palavrasDoRascunho = draft.trim().split(/\s+/).filter(Boolean).length;
       let content = await humanizarOuManter(
         draft,
         `Capítulo "${chapter.title}" do ebook "${outline.title}"`,
-        4000,
+        Math.max(4000, tetoDeSaida(Math.round(palavrasDoRascunho * 1.15))),
         ctx.theme,
         nomes,
       );

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inicioRetaFinal, problemasDoEnredo, retaFinalBlock, tamanhoRetaFinal } from "./historia";
+import { ajustarEstrutura, inicioRetaFinal, problemasDoEnredo, retaFinalBlock, tamanhoRetaFinal, tramaBlock } from "./historia";
 import type { Outline, OutlineChapter } from "./ai";
 
 function cap(funcao: OutlineChapter["funcao"], personagens: string[]): OutlineChapter {
@@ -16,6 +16,11 @@ function livroBom(): Outline {
       { nome: "Clara Souza", papel: "protagonista", descricao: "x", destino: "fica com a oficina" },
       { nome: "Íris Monteiro", papel: "apoio", descricao: "x", destino: "vira sócia" },
       { nome: "Seu Antônio", papel: "ausente", descricao: "pai morto" },
+    ],
+    verdadeCentral: "Íris vendeu o rádio do pai de Clara para pagar uma dívida e mentiu que ele quebrou.",
+    fios: [
+      { fio: "o rádio sumido", resposta: "Íris vendeu para pagar a dívida", fechaNoCapitulo: 9 },
+      { fio: "a carta sem remetente", resposta: "foi o comprador do rádio", fechaNoCapitulo: 6 },
     ],
     chapters: [
       cap("apresentacao", ["Clara"]),
