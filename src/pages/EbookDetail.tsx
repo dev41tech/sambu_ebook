@@ -12,6 +12,8 @@ import BriefingEbook from "../components/BriefingEbook";
 import PainelQualidade from "../components/PainelQualidade";
 import { VITRINE_URL } from "../App";
 import { MarkdownBlock, splitBlocks } from "../lib/markdownBlock";
+import { limparTituloCapitulo } from "../lib/tituloCapitulo";
+import { caminhoEfetivo } from "../lib/categorias";
 
 export default function EbookDetail() {
   const { id } = useParams<{ id: string }>();
@@ -79,7 +81,7 @@ export default function EbookDetail() {
       setEditIntro(ebook.intro || "");
       setEditConclusion(ebook.conclusion || "");
       setEditAbout(ebook.about_author || "");
-      setEditChapters(ebook.chapters.map((c) => ({ id: c.id, title: c.title, content: c.content })));
+      setEditChapters(ebook.chapters.map((c) => ({ id: c.id, title: limparTituloCapitulo(c.title), content: c.content })));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ebook?.id, ebook?.status, editMode]);
@@ -498,7 +500,7 @@ export default function EbookDetail() {
                 return (
                   <div key={c.id}>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700">
-                      Capítulo {c.idx + 1}: {c.title}
+                      Capítulo {c.idx + 1}: {limparTituloCapitulo(c.title)}
                     </p>
                     <div className="flex flex-wrap gap-3">
                       {images.map((img) => (
@@ -524,7 +526,7 @@ export default function EbookDetail() {
                     {images.some((img) => img.id === editingImageId) && (
                       <ChangeImagePanel
                         orientation="landscape"
-                        defaultQuery={c.title}
+                        defaultQuery={limparTituloCapitulo(c.title)}
                         busy={imageBusy}
                         error={imageError}
                         onSubmit={(payload) => handleRegenerateImage(editingImageId!, payload)}
@@ -762,7 +764,7 @@ export default function EbookDetail() {
           <div className="border-t border-neutral-100 pt-5">
             <PainelQualidade
               ebookId={ebook.id}
-              caminhoCategoria={ebook.category_main || ebook.theme}
+              caminhoCategoria={caminhoEfetivo(ebook.category_main || ebook.theme, ebook.historia)}
               ignorarBloqueios={ignorarBloqueios}
               onIgnorarBloqueios={setIgnorarBloqueios}
             />
@@ -815,7 +817,7 @@ export default function EbookDetail() {
           {ebook.chapters.map((c) => (
             <section key={c.id}>
               <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Capítulo {c.idx + 1}</p>
-              <h2 className="mt-1 text-lg font-semibold">{c.title}</h2>
+              <h2 className="mt-1 text-lg font-semibold">{limparTituloCapitulo(c.title)}</h2>
               <div lang="pt-BR" className="mt-2 space-y-3 text-justify text-sm leading-relaxed text-neutral-700 [hyphens:auto]">
                 {splitBlocks(c.content).map((block, i) => (
                   <MarkdownBlock key={i} block={block} />

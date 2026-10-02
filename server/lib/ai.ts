@@ -4,6 +4,8 @@ import { detectarRecusa } from "./sanitizar";
 import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO, TOKENS_POR_PALAVRA } from "../../src/lib/custo";
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
+import { inicioRetaFinal, problemasDoEnredo, retaFinalBlock } from "./historia";
 import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
@@ -163,6 +165,12 @@ export interface Personagem {
   nome: string;
   papel: string;
   descricao: string;
+  /**
+   * Como a historia desta pessoa termina. So no modo historia: e a lista que o
+   * ultimo capitulo precisa entregar -- sem ela o elenco de apoio sumia no meio
+   * do livro sem que nada cobrasse o fim da participacao (ver historia.ts).
+   */
+  destino?: string;
 }
 
 export interface Outline {
@@ -526,16 +534,20 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // escrita. Em nao ficcao o bloco nao e pedido: nao ha personagens e o schema
   // extra so gastaria tokens.
   const ficcao = ehFiccao(ctx.theme);
+  const inicioReta = inicioRetaFinal(chapterCount);
+  const faixaRetaFinal =
+    chapterCount - inicioReta === 1 ? `o capitulo ${chapterCount}` : `os capitulos ${inicioReta + 1} a ${chapterCount}`;
   const blocoElencoSchema = ficcao
     ? `
   "personagens": [
-    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista | ausente", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase" }
+    { "nome": "nome completo", "papel": "protagonista | par romantico | apoio | antagonista | ausente", "descricao": "idade, ocupacao e o que define esta pessoa, em uma frase", "destino": "como a historia desta pessoa termina no livro, em uma frase" }
   ],`
     : "";
   const instrucaoElenco = ficcao
     ? `
 Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o par romantico explicitos quando houver. Os nomes escolhidos aqui valem para o livro inteiro -- introducao, todos os capitulos e conclusao usarao exatamente estes.
-Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.`
+Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.
+NENHUM PERSONAGEM SE PERDE: para cada pessoa do elenco, diga em "destino" como a historia dela termina. Quem entra na trama precisa ter a participacao encerrada de forma visivel -- volta na reta final, ou sai da historia num capitulo em que essa saida e mostrada. Ninguem simplesmente desaparece no meio do livro.`
     : "";
 
   // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
@@ -547,7 +559,8 @@ Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, 
     : "";
   const instrucaoFuncao = ficcao
     ? `
-Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada. Exatamente um capitulo deve ter funcao "climax" e ele precisa vir perto do fim; o ultimo capitulo deve ter funcao "desfecho" e seu resultado precisa responder a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta.
+Cada capitulo tem uma FUNCAO na estrutura (apresentacao, complicacao, virada, crise, climax, desfecho) e um RESULTADO -- o que muda de forma irreversivel ao fim dele. Um capitulo posterior nao pode desfazer o resultado de um capitulo anterior nem reabrir uma decisao ja tomada.
+A HISTORIA TERMINA NOS ULTIMOS CAPITULOS: a RETA FINAL deste livro sao ${faixaRetaFinal}. Exatamente um capitulo tem funcao "climax", e ele fica DENTRO da reta final; o capitulo ${chapterCount} (o ultimo) tem funcao "desfecho" e e o unico com essa funcao. O resultado do desfecho responde a pergunta central do livro -- nao deixe a pergunta que move a trama sem resposta, nem termine com gancho para continuacao. Na reta final nao entra personagem novo nem conflito novo: ela so resolve o que ja existe.
 Diga tambem, em "personagens", quais nomes do elenco entram em cena em cada capitulo. Os protagonistas precisam aparecer na maior parte do livro: um capitulo sem nenhum deles so se justifica se a historia realmente pedir. Nao liste quem tem papel "ausente", a menos que a pessoa apareca de fato naquele capitulo.`
     : "";
 
@@ -591,6 +604,9 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
     if (!parsed.chapters || parsed.chapters.length === 0) {
       throw new Error("A IA não retornou capítulos válidos.");
     }
+    // O modelo às vezes numera os títulos ("2. O copo rachado"); o número já é
+    // mostrado à parte, então o título é gravado sem ele.
+    for (const c of parsed.chapters) c.title = limparTituloCapitulo(c.title);
     return parsed;
   };
 
@@ -602,26 +618,55 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // resposta mais proxima do pedido: um livro com 1 capitulo a mais e melhor do
   // que um livro parado no sumario.
   const primeiro = await pedirSumario(prompt);
-  if (primeiro.chapters.length === chapterCount) return primeiro;
+  let sumario: Outline;
+  if (primeiro.chapters.length === chapterCount) {
+    sumario = primeiro;
+  } else {
+    console.warn(
+      `[sumario] pedidos ${chapterCount} capitulos, vieram ${primeiro.chapters.length}; pedindo de novo.`,
+    );
+    const segundo = await pedirSumario(
+      `${prompt}\n\nATENÇÃO: uma tentativa anterior devolveu ${primeiro.chapters.length} capítulos. ` +
+        `O livro precisa ter EXATAMENTE ${chapterCount} capítulos na lista "chapters" — nem mais, nem menos.`,
+    );
+    if (segundo.chapters.length === chapterCount) {
+      sumario = segundo;
+    } else {
+      sumario =
+        Math.abs(segundo.chapters.length - chapterCount) <= Math.abs(primeiro.chapters.length - chapterCount)
+          ? segundo
+          : primeiro;
+      console.warn(
+        `[sumario] segunda tentativa tambem errou (${segundo.chapters.length} de ${chapterCount}); ` +
+          `seguindo com ${sumario.chapters.length} capitulos.`,
+      );
+    }
+  }
 
-  console.warn(
-    `[sumario] pedidos ${chapterCount} capitulos, vieram ${primeiro.chapters.length}; pedindo de novo.`,
-  );
-  const segundo = await pedirSumario(
-    `${prompt}\n\nATENÇÃO: uma tentativa anterior devolveu ${primeiro.chapters.length} capítulos. ` +
-      `O livro precisa ter EXATAMENTE ${chapterCount} capítulos na lista "chapters" — nem mais, nem menos.`,
-  );
-  if (segundo.chapters.length === chapterCount) return segundo;
+  if (!ficcao) return sumario;
 
-  const maisProximo =
-    Math.abs(segundo.chapters.length - chapterCount) <= Math.abs(primeiro.chapters.length - chapterCount)
-      ? segundo
-      : primeiro;
-  console.warn(
-    `[sumario] segunda tentativa tambem errou (${segundo.chapters.length} de ${chapterCount}); ` +
-      `seguindo com ${maisProximo.chapters.length} capitulos.`,
+  // Modo historia: o enredo e conferido antes de escrever um capitulo sequer --
+  // ninguem do elenco some, o climax fica na reta final e o ultimo capitulo
+  // encerra a historia (historia.ts). Uma rodada de correcao, com a lista do
+  // que veio errado; se ainda vier com problema, fica o que tiver menos -- a
+  // escrita da reta final (retaFinalBlock) e a checagem de qualidade continuam
+  // cobrando o resto.
+  const problemas = problemasDoEnredo(sumario);
+  if (problemas.length === 0) return sumario;
+  console.warn(`[sumario] enredo com ${problemas.length} problema(s); pedindo correcao: ${problemas.join(" | ")}`);
+  const corrigido = await pedirSumario(
+    `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas de enredo. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${problemas.map((p) => `- ${p}`).join("\n")}`,
   );
-  return maisProximo;
+  const problemasCorrigido = problemasDoEnredo(corrigido);
+  const contagemOk = corrigido.chapters.length === chapterCount || corrigido.chapters.length === sumario.chapters.length;
+  if (contagemOk && problemasCorrigido.length < problemas.length) {
+    if (problemasCorrigido.length > 0) {
+      console.warn(`[sumario] correcao ainda com ${problemasCorrigido.length} problema(s): ${problemasCorrigido.join(" | ")}`);
+    }
+    return corrigido;
+  }
+  console.warn(`[sumario] correcao nao melhorou o enredo; seguindo com o sumario anterior.`);
+  return sumario;
 }
 
 /** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
@@ -802,8 +847,8 @@ export function memoriaBlock(anteriores: CapituloAnterior[], memoriaLonga: Bloco
 
   const linhas = recentes.map((c) =>
     c.resumo
-      ? `- Capítulo ${c.idx + 1} — "${c.title}": ${c.resumo}`
-      : `- Capítulo ${c.idx + 1} — "${c.title}" (sem resumo registrado)`,
+      ? `- Capítulo ${c.idx + 1} — "${limparTituloCapitulo(c.title)}": ${c.resumo}`
+      : `- Capítulo ${c.idx + 1} — "${limparTituloCapitulo(c.title)}" (sem resumo registrado)`,
   );
 
   // A memoria longa cobre do inicio do livro ate um certo capitulo. O que sobra
@@ -900,6 +945,10 @@ export async function generateChapter(
     ? `\nATENÇÃO — este capítulo já foi escrito uma vez e foi reprovado na verificação de continuidade. ${extra.correcao}\n`
     : "";
 
+  // Modo historia: na reta final nada novo entra, e o ultimo capitulo recebe a
+  // lista de destinos do elenco como obrigacao de entrega (historia.ts).
+  const retaFinal = ehFiccao(ctx.theme) ? retaFinalBlock(outline, chapterIndex) : "";
+
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
     ? `\nEste capítulo revela ou resolve a questão central do livro. Dramatize a revelação em cena — o que aconteceu, dito ou mostrado diretamente — em vez de resumir o conteúdo de uma gravação, carta, diário ou confissão alheia. O leitor precisa saber, no texto, exatamente o que se passou; "ela contou tudo" ou "a gravação revelava a verdade" não é uma resposta, é a ausência de uma.\n`
@@ -913,7 +962,7 @@ Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: $
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores, extra.memoriaLonga ?? [])}${correcaoBloco}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-${instrucaoClimax}${groundingBlock(ctx)}
+${instrucaoClimax}${retaFinal}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
@@ -1189,7 +1238,7 @@ export async function condensarBloco(
   capitulos: CapituloAnterior[],
 ): Promise<string> {
   const corpo = capitulos
-    .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+    .map((c) => `${c.idx + 1}. "${limparTituloCapitulo(c.title)}"${c.resumo ? `: ${c.resumo}` : ""}`)
     .join("\n");
   const primeiro = capitulos[0]?.idx ?? 0;
   const ultimo = capitulos[capitulos.length - 1]?.idx ?? primeiro;
@@ -1223,9 +1272,9 @@ export async function generateConclusion(
 
   const resumoDoLivro = capitulos.length > 0
     ? capitulos
-        .map((c) => `${c.idx + 1}. "${c.title}"${c.resumo ? `: ${c.resumo}` : ""}`)
+        .map((c) => `${c.idx + 1}. "${limparTituloCapitulo(c.title)}"${c.resumo ? `: ${c.resumo}` : ""}`)
         .join("\n")
-    : outline.chapters.map((c, i) => `${i + 1}. ${c.title}`).join("\n");
+    : outline.chapters.map((c, i) => `${i + 1}. ${limparTituloCapitulo(c.title)}`).join("\n");
 
   const instrucaoFinal = ficcao
     ? `Escreva a última cena do livro, ambientada depois dos acontecimentos acima -- não um resumo retrospectivo deles. Mostre o estado final dos personagens através de uma ação, um gesto ou uma fala concreta, não através de uma lista do que "aprenderam" ou de uma frase que amarre a jornada. Não fale com o leitor, não dê conselho, não avalie a história que acabou de contar. Só narre o que existe: não invente um acontecimento que não esteja no resumo acima.`

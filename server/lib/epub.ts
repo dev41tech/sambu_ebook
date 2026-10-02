@@ -6,6 +6,7 @@ import JSZip from "jszip";
 import { all, one, type EbookRow } from "./db";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const exportsDir = path.resolve(__dirname, "..", "..", "data", "exports");
@@ -199,16 +200,16 @@ export async function renderEbookEpub(
         "SELECT credit FROM chapter_images WHERE id = $1",
         [row.id]
       );
-      if (creditRow?.credit) imageCredits.push(`Capítulo ${i + 1} — ${c.title}: ${creditRow.credit}.`);
+      if (creditRow?.credit) imageCredits.push(`Capítulo ${i + 1} — ${limparTituloCapitulo(c.title)}: ${creditRow.credit}.`);
     }
     addTextPage(
       `chapter-${i}`,
       `text/chapter-${i}.xhtml`,
-      c.title,
-      `<p class="eyebrow">Capítulo ${i + 1}</p><h2>${escapeHtml(c.title)}</h2>${imagesHtml}${renderMarkdownToHtml(
+      limparTituloCapitulo(c.title),
+      `<p class="eyebrow">Capítulo ${i + 1}</p><h2>${escapeHtml(limparTituloCapitulo(c.title))}</h2>${imagesHtml}${renderMarkdownToHtml(
         c.content
       )}`,
-      `Capítulo ${i + 1}: ${c.title}`
+      `Capítulo ${i + 1}: ${limparTituloCapitulo(c.title)}`
     );
   }
 

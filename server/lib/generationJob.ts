@@ -42,7 +42,7 @@ import {
   termosDeFatosFixos,
   normalizarTermo,
 } from "./continuidade";
-import { ehFiccao } from "../../src/lib/categorias";
+import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
 import { publicacaoAutomaticaLigada, publicarNoSambuOnline } from "./sambuOnline";
@@ -121,7 +121,9 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
     (l) => l.content
   );
   return {
-    theme: row.theme,
+    // Com o icone "Historia" ligado, o caminho vira "Ficção > ..." e todo o modo
+    // narrativo (elenco, reta final, voz) passa a valer para este livro.
+    theme: caminhoEfetivo(row.theme, row.historia),
     secondaryCategories: (() => {
       try {
         const v = JSON.parse(row.categories_secondary || "[]");
@@ -285,11 +287,11 @@ async function runJob(ebookId: string) {
     // um livro interrompido no capitulo 40 nao pode perder quem foi criado ate la.
     const registrados: Personagem[] = chapters.flatMap((c) => lerPersonagens(c.personagens_json));
 
-    const ficcao = ehFiccao(row.category_main || row.theme);
+    const ficcao = ehFiccao(caminhoEfetivo(row.category_main || row.theme, row.historia));
     // As duas passadas de prosa valem para o modo narrativo, que e onde vive a
     // regra de dialogo e onde a abstracao foi medida. Em nao ficcao o texto nao
     // tem fala de personagem e a comparacao nao significa a mesma coisa.
-    const narrativo = modoDe(row.category_main || row.theme) === "narrativo";
+    const narrativo = modoDe(caminhoEfetivo(row.category_main || row.theme, row.historia)) === "narrativo";
 
     let memoriaLonga: BlocoDeMemoria[] = (() => {
       if (!row.memoria_longa) return [];

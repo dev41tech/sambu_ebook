@@ -93,6 +93,11 @@ export interface EbookRow {
   metrics_json: string | null;
   /** Modelo de texto da ultima geracao. NULL em livro anterior a migration 0013. */
   modelo_texto: string | null;
+  /**
+   * Icone "Historia" (migration 0014). NULL = a categoria decide; true = o autor
+   * marcou que e historia. Use sempre caminhoEfetivo() para ler a categoria.
+   */
+  historia: boolean | null;
   memoria_longa: string | null;
   author_name: string;
   author_bio: string;

@@ -5,6 +5,7 @@ import puppeteer from "puppeteer-core";
 import { all, type EbookRow } from "./db";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { escapeHtml, escapeAttr, renderMarkdownToHtml } from "./markdown";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const exportsDir = path.resolve(__dirname, "..", "..", "data", "exports");
@@ -180,17 +181,19 @@ export async function buildHtml(
 
   const chapterPages = chapters
     .map((c, i) => {
+      const titulo = limparTituloCapitulo(c.title);
       const images = imagesByChapter.get(c.id) ?? [];
       const imagesHtml = images
         .map((img) => {
-          if (img.credit) imageCredits.push(`Capítulo ${i + 1} — ${escapeHtml(c.title)}: ${escapeHtml(img.credit)}.`);
+          if (img.credit) imageCredits.push(`Capítulo ${i + 1} — ${escapeHtml(titulo)}: ${escapeHtml(img.credit)}.`);
           return `<div class="chapter-image-wrap"><img class="chapter-image" src="${img.uri}" alt="${escapeAttr(img.alt)}" /></div>`;
         })
         .join("\n");
       const heading = isProfessional
-        ? `<h2 class="chapter-title chapter-title-plain">${i + 1}. ${escapeHtml(c.title)}</h2>`
+        ? `<p class="chapter-eyebrow">Capítulo ${i + 1}</p>
+        <h2 class="chapter-title chapter-title-plain">${escapeHtml(titulo)}</h2>`
         : `<div class="chapter-badge"><span>${toRoman(i + 1)}</span></div>
-        <h2 class="chapter-title">${escapeHtml(c.title)}</h2>`;
+        <h2 class="chapter-title">${escapeHtml(titulo)}</h2>`;
       return `
       <section class="page chapter">
         ${isProfessional ? "" : decorationHtml(t.decoration)}
