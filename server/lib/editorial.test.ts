@@ -6,6 +6,7 @@ import {
   correcaoDaAuditoria,
   normalizarAuditoria,
   tiquesRepetidos,
+  trechoFinal,
   viciosBlock,
   viciosDeIA,
 } from "./editorial";
@@ -87,4 +88,16 @@ test("painel preserva só os achados editoriais gravados, rebaixando blocker", (
   assert.equal(s[0].gravidade, "major");
   assert.deepEqual(achadosEditoriaisSalvos("não é json"), []);
   assert.deepEqual(achadosEditoriaisSalvos(null), []);
+});
+
+test("trecho final começa em parágrafo ou frase, nunca no meio da palavra", () => {
+  const corpo = "Primeiro parágrafo com bastante texto para ocupar espaço. ".repeat(40);
+  const livro = corpo + "\nClara foi até a porta.\n\n— Agora fica trancada.";
+  const t = trechoFinal(livro, 300);
+  assert.ok(t.length <= 300);
+  assert.match(t, /^(Primeiro|Clara)/);
+  assert.match(t, /Agora fica trancada\.$/);
+  assert.equal(trechoFinal("curto", 300), "curto");
+  const semQuebra = "palavra ".repeat(100);
+  assert.match(trechoFinal(semQuebra, 50), /^palavra/);
 });

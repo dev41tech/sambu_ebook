@@ -5,9 +5,37 @@ import { capitulosEscolhidos, MAX_CAPITULOS, PALAVRAS_POR_CAPITULO, TOKENS_POR_P
 import { ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
-import { ajustarEstrutura, inicioRetaFinal, problemasDoEnredo, retaFinalBlock, tramaBlock } from "./historia";
+import {
+  ajustarEstrutura,
+  capitulosMinimosDaHistoria,
+  inicioRetaFinal,
+  instrucoesDasPromessas,
+  problemasDasPromessas,
+  problemasDoEnredo,
+  promessasBlock,
+  promessasDoPedido,
+  retaFinalBlock,
+  schemaCapituloDasPromessas,
+  schemaDasPromessas,
+  tramaBlock,
+  type Promessas,
+} from "./historia";
 import { faixaPedida, registrarEntrega } from "./calibragem";
-import { normalizarAuditoria, tiquesBlock, viciosBlock, type ResultadoAuditoria } from "./editorial";
+import {
+  CRITERIOS_SUMARIO,
+  correcaoDoSumario,
+  escolhaDaPremissa,
+  NOTA_MINIMA,
+  normalizarAuditoria,
+  normalizarAvaliacaoSumario,
+  normalizarPremissas,
+  premissaBlock,
+  tiquesBlock,
+  viciosBlock,
+  type AvaliacaoSumario,
+  type Premissa,
+  type ResultadoAuditoria,
+} from "./editorial";
 import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
@@ -149,6 +177,8 @@ export interface OutlineChapter {
    * nada no prompt tinha pedido que citassem.
    */
   personagens?: string[];
+  /** So em romance: o que muda entre o casal neste capitulo (historia.ts). */
+  passoDoCasal?: string;
 }
 
 /**
@@ -204,6 +234,31 @@ export interface Outline {
    * abertos e nunca explicados.
    */
   fios?: FioDaTrama[];
+  /**
+   * Traicao, segredo, misterio: capitulo (1 = primeiro) em que o leitor
+   * descobre a verdade central por inteiro. Na 2a versao de "Depois da Ultima
+   * Chave" foi o cap. 3 de 5, e os capitulos 4 e 5 viraram coleta de provas.
+   */
+  revelacaoNoCapitulo?: number;
+  /** "Final inesperado": a virada decidida e plantada antes de escrever. */
+  viradaFinal?: ViradaFinal;
+  /** Nota do editor do sumario (avaliarSumario) e quantas revisoes levou. */
+  avaliacaoDoSumario?: {
+    nota: number;
+    revisoes: number;
+    problemas: string[];
+    /** Quantos sumarios completos foram comparados. */
+    candidatos?: number;
+    /** A premissa escolhida entre as candidatas, com a nota do editor. */
+    premissa?: { texto: string; nota: number | null; entre: number };
+  };
+}
+
+export interface ViradaFinal {
+  leitorAcredita: string;
+  verdade: string;
+  noCapitulo: number;
+  pistas: Array<{ pista: string; capitulo: number }>;
 }
 
 export interface FioDaTrama {
@@ -453,15 +508,23 @@ async function chamarModelo(
     }
 
     // Cortado no teto sem produzir texto: o pensamento comeu a verba inteira.
-    // Soma um passo de reserva e refaz -- uma vez so por chamada; se ainda
-    // assim vier vazio, o erro sobe com o diagnostico completo, em vez de
-    // virar um loop caro.
-    const semTexto = !r.choices[0]?.message?.content;
-    if (semTexto && r.choices[0]?.finish_reason === "length" && reservaDeRaciocinio < RESERVA_MAXIMA) {
+    // Refaz com a reserva no que o modelo de fato gastou (com margem), no
+    // maximo duas vezes; se ainda assim vier vazio, o erro sobe com o
+    // diagnostico completo, em vez de virar um loop caro. Um passo fixo de 2.500
+    // nao bastava: o sumario de 8 capitulos pensou 6.120 tokens, a nova tentativa
+    // tinha exatamente isso de teto e o livro parou no sumario.
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      const semTexto = !r.choices[0]?.message?.content;
+      if (!semTexto || r.choices[0]?.finish_reason !== "length") break;
+      const gastoVazio = r.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
       const anterior = reservaDeRaciocinio;
-      reservaDeRaciocinio = Math.min(RESERVA_MAXIMA, reservaDeRaciocinio + PASSO_DA_RESERVA);
+      reservaDeRaciocinio = Math.min(
+        RESERVA_MAXIMA,
+        Math.max(reservaDeRaciocinio + PASSO_DA_RESERVA, Math.ceil(gastoVazio * MARGEM)),
+      );
+      if (reservaDeRaciocinio === anterior) break;
       console.warn(
-        `[ia] modelo ${MODEL} gastou o teto inteiro raciocinando; ` +
+        `[ia] modelo ${MODEL} gastou o teto inteiro raciocinando (${gastoVazio}); ` +
           `reserva de raciocinio ${anterior} -> ${reservaDeRaciocinio} tokens para o resto do processo.`,
       );
       r = await pedir(campoDeTeto ?? campo, maxTokens + reservaDeRaciocinio);
@@ -628,7 +691,33 @@ ${vozDe(modoDe(ctx.theme)).regras}`;
 export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Palavras e a unidade que a geracao controla; paginas dependem da diagramacao.
   const palavrasAlvo = ctx.wordGoal && ctx.wordGoal > 0 ? ctx.wordGoal : ctx.pageCount * ctx.wordsPerPage;
-  const chapterCount = chapterCountFor(palavrasAlvo, ctx.chapterCount);
+  const ficcao = ehFiccao(ctx.theme);
+  // O que o genero e a instrucao do autor prometem (historia.ts). Na conta
+  // automatica de capitulos, uma historia que promete romance, revelacao em
+  // camadas e final inesperado ganha os capitulos para caber isso -- 5
+  // capitulos de "Depois da Ultima Chave" nao comportavam as tres coisas.
+  const promessas: Promessas | null = ficcao ? promessasDoPedido(ctx) : null;
+  let chapterCount = chapterCountFor(palavrasAlvo, ctx.chapterCount);
+  if (promessas && capitulosEscolhidos(ctx.chapterCount) === null) {
+    const minimo = Math.min(MAX_CHAPTERS, capitulosMinimosDaHistoria(promessas, palavrasAlvo));
+    if (minimo > chapterCount) {
+      console.warn(
+        `[sumario] historia com ${JSON.stringify(promessas)}: capitulos ${chapterCount} -> ${minimo} (mesma extensao total).`,
+      );
+      chapterCount = minimo;
+    }
+  }
+  // Premissa com virada escolhida entre varias (editorial.ts), so quando o
+  // pedido promete revelacao ou final inesperado: a virada boa nao sai de regra,
+  // sai de comparar opcoes. Falhar aqui so deixa o sumario sem premissa fixada.
+  let premissa: { escolhida: Premissa; nota: number | null; entre: number } | null = null;
+  if (promessas && (promessas.viradaFinal || promessas.revelacao)) {
+    try {
+      premissa = await escolherPremissa(ctx, chapterCount, promessas);
+    } catch (err) {
+      console.warn(`[sumario] escolha de premissa falhou: ${err instanceof Error ? err.message : err}`);
+    }
+  }
   const titleInstruction =
     ctx.titleMode === "manual" && ctx.customTitle
       ? `Use exatamente este título: "${ctx.customTitle}". ${
@@ -644,7 +733,6 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   // Em ficcao o elenco e definido aqui, uma vez, e repassado a todas as etapas de
   // escrita. Em nao ficcao o bloco nao e pedido: nao ha personagens e o schema
   // extra so gastaria tokens.
-  const ficcao = ehFiccao(ctx.theme);
   const inicioReta = inicioRetaFinal(chapterCount);
   const faixaRetaFinal =
     chapterCount - inicioReta === 1 ? `o capitulo ${chapterCount}` : `os capitulos ${inicioReta + 1} a ${chapterCount}`;
@@ -656,7 +744,7 @@ export async function generateOutline(ctx: EbookContext): Promise<Outline> {
   "verdadeCentral": "o que realmente aconteceu na trama, em 2 a 5 frases: quem fez o que, como e por que",
   "fios": [
     { "fio": "pista, segredo, suspeita ou pergunta que a trama abre", "resposta": "o que ela significa de verdade", "fechaNoCapitulo": 3 }
-  ],`
+  ],${promessas ? schemaDasPromessas(promessas) : ""}`
     : "";
   const instrucaoElenco = ficcao
     ? `
@@ -664,7 +752,7 @@ Defina tambem o ELENCO do livro: de 3 a 8 personagens, com o protagonista e o pa
 Se a premissa girar em torno de alguem que NAO aparece em cena -- desaparecido, morto, sumido, uma pessoa so mencionada --, inclua essa pessoa no elenco mesmo assim, com papel "ausente". Sem isso o personagem mais citado do livro pode nunca constar do elenco.
 NENHUM PERSONAGEM SE PERDE: para cada pessoa do elenco, diga em "destino" como a historia dela termina. Quem entra na trama precisa ter a participacao encerrada de forma visivel -- volta na reta final, ou sai da historia num capitulo em que essa saida e mostrada. Ninguem simplesmente desaparece no meio do livro.
 UMA SO VERDADE: decida agora, em "verdadeCentral", a resposta da pergunta que move a trama -- o que aconteceu, quem fez o que, como e por que. Ela vale para o livro inteiro: personagens podem mentir ou esconder, mas a verdade que o leitor descobre e esta, e nenhum capitulo conta outra versao sem que ela seja desmentida depois. Se o autor pediu reviravolta ou final inesperado, a reviravolta mora aqui, decidida de antemao -- surpreende o leitor, nao o livro.
-TODO FIO FECHA: liste em "fios" cada pista, segredo, suspeita, objeto misterioso ou pergunta que a trama vai abrir, com a resposta e o capitulo em que o leitor fica sabendo ("fechaNoCapitulo", de 1 a ${chapterCount}). Nao abra no texto nenhum misterio que nao esteja nesta lista.`
+TODO FIO FECHA: liste em "fios" cada pista, segredo, suspeita, objeto misterioso ou pergunta que a trama vai abrir, com a resposta e o capitulo em que o leitor fica sabendo ("fechaNoCapitulo", de 1 a ${chapterCount}). Nao abra no texto nenhum misterio que nao esteja nesta lista.${promessas ? instrucoesDasPromessas(promessas, chapterCount) : ""}`
     : "";
 
   // Funcao dramatica por capitulo -- so ficcao. Sem isto o capitulo 6 podia
@@ -672,7 +760,7 @@ TODO FIO FECHA: liste em "fios" cada pista, segredo, suspeita, objeto misterioso
   // Memorias" a protagonista "decide vender a oficina" no capitulo 3 e volta a
   // "ponderar" a mesma venda no capitulo 6.
   const blocoFuncaoSchema = ficcao
-    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois", "personagens": ["nomes do elenco que entram em cena neste capitulo"]`
+    ? `, "funcao": "apresentacao | complicacao | virada | crise | climax | desfecho", "resultado": "o que fica resolvido ao fim deste capitulo e nao pode ser desfeito depois", "personagens": ["nomes do elenco que entram em cena neste capitulo"]${promessas ? schemaCapituloDasPromessas(promessas) : ""}`
     : "";
   const instrucaoFuncao = ficcao
     ? `
@@ -695,7 +783,7 @@ ${titleInstruction}
 
 O título, o subtítulo e todos os capítulos devem tratar do assunto da classificação principal. Não invente um ângulo ou conceito que não esteja nela nem nas instruções do usuário — se o assunto é produtividade, o livro é sobre produtividade, e não sobre um conceito adjacente inventado para soar original.
 
-Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}
+Cada resumo de capítulo deve indicar um ângulo específico, não uma repetição do tema geral com outras palavras — os capítulos precisam progredir e se diferenciar entre si.${instrucaoElenco}${instrucaoFuncao}${premissa ? premissaBlock(premissa.escolhida) : ""}
 
 Liste também os FATOS FIXOS do livro: de 3 a 10 afirmações curtas com os números, datas, relações e nomes que não podem mudar ao longo do texto — principalmente qualquer prazo, idade ou tempo decorrido ("a irmã desapareceu há 15 anos"), porque é o tipo de detalhe que muda sozinho de um capítulo para outro se não for fixado aqui. Se o enredo inventar o nome de um evento, negócio, lugar ou apelido que vai se repetir ao longo do livro, inclua o nome exato aqui também ("o evento conjunto se chama 'Sabores da Esquina'") — sem isso o mesmo evento aparece com dois nomes diferentes em capítulos diferentes.
 
@@ -716,7 +804,10 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // lista de personagens por capitulo entrou depois deles.
   // Verdade central e fios (so ficcao) somam ~400 tokens fixos e ~40 por
   // capitulo, em media um fio a cada capitulo.
-  const tokensSumario = Math.max(2000, 500 + chapterCount * (ficcao ? 150 : 50)) + (ficcao ? 1000 : 0);
+  // Promessas (passo do casal por capitulo, virada com pistas) somam ~40 por
+  // capitulo e ~300 fixos.
+  const tokensSumario =
+    Math.max(2000, 500 + chapterCount * (ficcao ? 150 : 50)) + (ficcao ? 1000 : 0) + (promessas ? 300 + chapterCount * 40 : 0);
   const pedirSumario = async (texto: string): Promise<Outline> => {
     const raw = await askOpenAI(promptDoModo(ctx), texto, tokensSumario, true);
     const parsed = JSON.parse(extractJson(raw)) as Outline;
@@ -736,33 +827,36 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // de novo uma vez, dizendo o que veio errado. Se errar outra vez, fica com a
   // resposta mais proxima do pedido: um livro com 1 capitulo a mais e melhor do
   // que um livro parado no sumario.
-  const primeiro = await pedirSumario(prompt);
-  let sumario: Outline;
-  if (primeiro.chapters.length === chapterCount) {
-    sumario = primeiro;
-  } else {
-    console.warn(
-      `[sumario] pedidos ${chapterCount} capitulos, vieram ${primeiro.chapters.length}; pedindo de novo.`,
-    );
-    const segundo = await pedirSumario(
-      `${prompt}\n\nATENÇÃO: uma tentativa anterior devolveu ${primeiro.chapters.length} capítulos. ` +
-        `O livro precisa ter EXATAMENTE ${chapterCount} capítulos na lista "chapters" — nem mais, nem menos.`,
-    );
-    if (segundo.chapters.length === chapterCount) {
-      sumario = segundo;
+  const sumarioNoTamanho = async (): Promise<Outline> => {
+    const primeiro = await pedirSumario(prompt);
+    let sumario: Outline;
+    if (primeiro.chapters.length === chapterCount) {
+      sumario = primeiro;
     } else {
-      sumario =
-        Math.abs(segundo.chapters.length - chapterCount) <= Math.abs(primeiro.chapters.length - chapterCount)
-          ? segundo
-          : primeiro;
       console.warn(
-        `[sumario] segunda tentativa tambem errou (${segundo.chapters.length} de ${chapterCount}); ` +
-          `seguindo com ${sumario.chapters.length} capitulos.`,
+        `[sumario] pedidos ${chapterCount} capitulos, vieram ${primeiro.chapters.length}; pedindo de novo.`,
       );
+      const segundo = await pedirSumario(
+        `${prompt}\n\nATENÇÃO: uma tentativa anterior devolveu ${primeiro.chapters.length} capítulos. ` +
+          `O livro precisa ter EXATAMENTE ${chapterCount} capítulos na lista "chapters" — nem mais, nem menos.`,
+      );
+      if (segundo.chapters.length === chapterCount) {
+        sumario = segundo;
+      } else {
+        sumario =
+          Math.abs(segundo.chapters.length - chapterCount) <= Math.abs(primeiro.chapters.length - chapterCount)
+            ? segundo
+            : primeiro;
+        console.warn(
+          `[sumario] segunda tentativa tambem errou (${segundo.chapters.length} de ${chapterCount}); ` +
+            `seguindo com ${sumario.chapters.length} capitulos.`,
+        );
+      }
     }
-  }
+    return sumario;
+  };
 
-  if (!ficcao) return sumario;
+  if (!ficcao) return sumarioNoTamanho();
 
   // Modo historia: o enredo e conferido antes de escrever um capitulo sequer --
   // ninguem do elenco some, o climax fica na reta final e o ultimo capitulo
@@ -770,27 +864,53 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   // que veio errado; se ainda vier com problema, fica o que tiver menos -- a
   // escrita da reta final (retaFinalBlock) e a checagem de qualidade continuam
   // cobrando o resto.
-  const problemas = problemasDoEnredo(sumario);
-  if (problemas.length === 0) return sumario;
-  console.warn(`[sumario] enredo com ${problemas.length} problema(s); pedindo correcao: ${problemas.join(" | ")}`);
-  let final = sumario;
-  try {
-    const corrigido = await pedirSumario(
-      `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas de enredo. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${problemas.map((p) => `- ${p}`).join("\n")}`,
-    );
-    const problemasCorrigido = problemasDoEnredo(corrigido);
-    const contagemOk = corrigido.chapters.length === chapterCount || corrigido.chapters.length === sumario.chapters.length;
-    if (contagemOk && problemasCorrigido.length < problemas.length) {
-      final = corrigido;
-      if (problemasCorrigido.length > 0) {
-        console.warn(`[sumario] correcao ainda com ${problemasCorrigido.length} problema(s): ${problemasCorrigido.join(" | ")}`);
+  const problemasDe = (o: Outline) => [...problemasDoEnredo(o), ...(promessas ? problemasDasPromessas(o, promessas) : [])];
+  const corrigirEnredo = async (sumario: Outline): Promise<Outline> => {
+    const problemas = problemasDe(sumario);
+    let final = sumario;
+    if (problemas.length > 0) {
+      try {
+        console.warn(`[sumario] enredo com ${problemas.length} problema(s); pedindo correcao: ${problemas.join(" | ")}`);
+        const corrigido = await pedirSumario(
+          `${prompt}\n\nATENÇÃO: uma tentativa anterior deste sumário veio com estes problemas de enredo. Corrija TODOS, mantendo exatamente ${chapterCount} capítulos:\n${problemas.map((p) => `- ${p}`).join("\n")}`,
+        );
+        const problemasCorrigido = problemasDe(corrigido);
+        const contagemOk = corrigido.chapters.length === chapterCount || corrigido.chapters.length === sumario.chapters.length;
+        if (contagemOk && problemasCorrigido.length < problemas.length) {
+          final = corrigido;
+          if (problemasCorrigido.length > 0) {
+            console.warn(`[sumario] correcao ainda com ${problemasCorrigido.length} problema(s): ${problemasCorrigido.join(" | ")}`);
+          }
+        } else {
+          console.warn(`[sumario] correcao nao melhorou o enredo; seguindo com o sumario anterior.`);
+        }
+      } catch (err) {
+        // A correcao e uma tentativa extra: falhar nela nao derruba o livro.
+        console.warn(`[sumario] correcao do enredo falhou: ${err instanceof Error ? err.message : err}`);
       }
-    } else {
-      console.warn(`[sumario] correcao nao melhorou o enredo; seguindo com o sumario anterior.`);
     }
-  } catch (err) {
-    // A correcao e uma tentativa extra: falhar nela nao derruba o livro.
-    console.warn(`[sumario] correcao do enredo falhou: ${err instanceof Error ? err.message : err}`);
+    return final;
+  };
+
+  // Varios sumarios completos, em paralelo, e o editor fica com o melhor
+  // (escolherERevisar). Nas versoes 3 e 4 de "Depois da Ultima Chave" revisar
+  // um sumario so travou a nota em 7: corrigir um ponto abria outro.
+  const resultados = await Promise.allSettled(
+    Array.from({ length: SUMARIOS_CANDIDATOS }, async () => corrigirEnredo(await sumarioNoTamanho())),
+  );
+  const candidatos = resultados.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  if (candidatos.length === 0) throw (resultados[0] as PromiseRejectedResult).reason;
+  if (candidatos.length < resultados.length) {
+    console.warn(`[sumario] ${resultados.length - candidatos.length} de ${resultados.length} sumario(s) candidato(s) falharam.`);
+  }
+  const final = await escolherERevisar(ctx, candidatos, chapterCount, promessas, problemasDe, async (correcao) =>
+    pedirSumario(`${prompt}\n\n${correcao}`),
+  );
+  if (premissa) {
+    final.avaliacaoDoSumario = {
+      ...(final.avaliacaoDoSumario ?? { nota: 0, revisoes: 0, problemas: [] }),
+      premissa: { texto: premissa.escolhida.premissa, nota: premissa.nota, entre: premissa.entre },
+    };
   }
 
   // Ultimo recurso: estrutura de climax/desfecho errada mesmo depois da
@@ -799,6 +919,172 @@ Responda em JSON, APENAS com um JSON válido neste formato exato, sem nenhum tex
   const ajustes = ajustarEstrutura(final);
   if (ajustes.length > 0) console.warn(`[sumario] estrutura ajustada automaticamente: ${ajustes.join("; ")}`);
   return final;
+}
+
+/** Sumarios completos comparados por livro de historia. */
+const SUMARIOS_CANDIDATOS = Math.max(1, Number(process.env.SUMARIOS_CANDIDATOS) || 3);
+/** Revisoes do melhor candidato, se ainda abaixo da nota minima. */
+const REVISOES_DO_SUMARIO = 1;
+
+async function escolherERevisar(
+  ctx: EbookContext,
+  candidatos: Outline[],
+  chapterCount: number,
+  promessas: Promessas | null,
+  problemasDe: (o: Outline) => string[],
+  refazer: (correcao: string) => Promise<Outline>,
+): Promise<Outline> {
+  const avaliacoes = await Promise.allSettled(candidatos.map((c) => avaliarSumario(ctx, c, promessas)));
+  // Nota maior vence; problema de estrutura conferivel desempata contra -- um
+  // sumario "mais bonito" sem desfecho ou sem destinos nao serve.
+  const pontuados = candidatos
+    .map((o, i) => {
+      const r = avaliacoes[i];
+      const av: AvaliacaoSumario = r.status === "fulfilled" ? r.value : { nota: null, problemas: [] };
+      return { o, av, fixos: problemasDe(o).length };
+    })
+    .sort((x, y) => (y.av.nota ?? -1) - (x.av.nota ?? -1) || x.fixos - y.fixos);
+  console.warn(
+    `[sumario] editor: ${pontuados.map((p) => `${p.av.nota ?? "?"}/10 (${p.fixos} estr.)`).join(", ")} -- escolhido o primeiro.`,
+  );
+  let { o: melhor, av: melhorAv } = pontuados[0];
+  if (melhorAv.nota === null) return melhor;
+
+  let revisoes = 0;
+  while ((melhorAv.nota ?? 10) < NOTA_MINIMA && revisoes < REVISOES_DO_SUMARIO) {
+    revisoes += 1;
+    try {
+      // Revisao, nao sumario novo: sem ver a versao anterior o modelo inventava
+      // outra historia a cada rodada, com problemas novos.
+      const anterior = { ...melhor, avaliacaoDoSumario: undefined };
+      const candidato = await refazer(
+        `${correcaoDoSumario(melhorAv, problemasDe(melhor))}\n\nA VERSÃO ANTERIOR, que você deve REVISAR — mantenha o que funciona (elenco, verdade central, cenas boas) e mude só o necessário para resolver os pontos acima:\n${JSON.stringify(anterior)}`,
+      );
+      if (candidato.chapters.length !== chapterCount) {
+        console.warn(`[sumario] revisao ${revisoes} veio com ${candidato.chapters.length} de ${chapterCount} capitulos; descartada.`);
+        continue;
+      }
+      const avCandidato = await avaliarSumario(ctx, candidato, promessas);
+      const fixos = problemasDe(candidato).length;
+      console.warn(`[sumario] revisao ${revisoes}: nota ${avCandidato.nota ?? "?"}/10, ${fixos} problema(s) de estrutura.`);
+      if ((avCandidato.nota ?? 0) > (melhorAv.nota ?? 0) && fixos <= problemasDe(melhor).length + 1) {
+        melhor = candidato;
+        melhorAv = avCandidato;
+      }
+    } catch (err) {
+      console.warn(`[sumario] revisao ${revisoes} falhou: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  melhor.avaliacaoDoSumario = {
+    nota: melhorAv.nota ?? 0,
+    revisoes,
+    candidatos: candidatos.length,
+    problemas: melhorAv.problemas.map((p) => `(${p.criterio}) ${p.correcao}`),
+  };
+  return melhor;
+}
+
+const PREMISSAS_CANDIDATAS = 5;
+
+/**
+ * Propoe varias premissas com virada e um editor escolhe a melhor. Duas
+ * chamadas: quem inventa nao julga a propria ideia.
+ */
+async function escolherPremissa(
+  ctx: EbookContext,
+  chapterCount: number,
+  promessas: Promessas,
+): Promise<{ escolhida: Premissa; nota: number | null; entre: number } | null> {
+  const promete = [
+    promessas.romance && "um romance com arco do casal do começo ao fim",
+    promessas.revelacao && "uma traição ou segredo revelado em camadas, perto do fim",
+    promessas.viradaFinal && "um final inesperado",
+  ]
+    .filter(Boolean)
+    .join("; ");
+  const pedido = `Classificação: ${ctx.theme}${(ctx.secondaryCategories ?? []).length ? ` (temas: ${(ctx.secondaryCategories ?? []).join(", ")})` : ""}. Público: ${ctx.audience}. Tom: ${ctx.tone}. ${chapterCount} capítulos.
+${extraInstructionsBlock(ctx)}
+O livro promete: ${promete}.`;
+
+  const rawIdeias = await askOpenAI(
+    promptDoModo(ctx),
+    `${pedido}
+
+Proponha ${PREMISSAS_CANDIDATAS} premissas MUITO DIFERENTES entre si para este livro (cenário, tipo de traição e tipo de virada diferentes). Para cada uma:
+- "premissa": a história em 2 frases;
+- "traicao": quem trai quem, como e por quê;
+- "leitorAcredita": o que o leitor acredita até perto do fim;
+- "verdade": a virada final — o que é verdade de fato. Ela precisa mudar o sentido de algo que o leitor já viu, não ser só punição do vilão, trâmite resolvido ou informação nova;
+- "pistas": 3 pistas que aparecem antes, de passagem, e que relidas tornam a virada inevitável;
+- "porQueSurpreende": em uma frase.
+Evite o óbvio do gênero: a primeira ideia que vier é a que todo leitor adivinha.
+
+Responda APENAS com JSON: {"premissas": [{"premissa": "...", "traicao": "...", "leitorAcredita": "...", "verdade": "...", "pistas": ["...", "...", "..."], "porQueSurpreende": "..."}]}`,
+    3500,
+    true,
+  );
+  const ideias = normalizarPremissas(JSON.parse(extractJson(rawIdeias)));
+  if (ideias.length === 0) return null;
+  if (ideias.length === 1) return { escolhida: ideias[0], nota: null, entre: 1 };
+
+  const rawEscolha = await askOpenAI(
+    SYSTEM_EDITOR,
+    `${pedido}
+
+Premissas propostas:
+${ideias.map((p, i) => `${i + 1}. ${p.premissa}\n   Traição: ${p.traicao}\n   O leitor acredita: ${p.leitorAcredita}\n   Verdade: ${p.verdade}\n   Pistas: ${p.pistas.join("; ")}`).join("\n")}
+
+Dê a cada premissa uma nota de 0 a 10 do que uma leitora exigente do público daria ao livro feito dela, pesando: a virada surpreende E é justa (as pistas a sustentam)? A promessa do gênero é cumprida (num romance, o casal no centro, não uma investigação de documentos)? Cabe em ${chapterCount} capítulos curtos? Escolha a melhor.
+
+Responda APENAS com JSON: {"notas": [7, 8], "escolhida": 2, "motivo": "uma frase"}`,
+    1200,
+    true,
+    0,
+  );
+  const escolha = escolhaDaPremissa(JSON.parse(extractJson(rawEscolha)), ideias.length);
+  console.warn(
+    `[sumario] premissa ${escolha.indice + 1} de ${ideias.length} escolhida (nota ${escolha.nota ?? "?"}): ${escolha.motivo || ideias[escolha.indice].premissa}`,
+  );
+  return { escolhida: ideias[escolha.indice], nota: escolha.nota, entre: ideias.length };
+}
+
+/**
+ * Editor do sumario: le o plano (antes de qualquer capitulo) como leria o livro
+ * pronto e da a nota que uma leitora do publico daria a essa historia bem
+ * escrita. Os criterios sao as reclamacoes que de fato derrubaram a nota.
+ */
+export async function avaliarSumario(ctx: EbookContext, outline: Outline, promessas: Promessas | null): Promise<AvaliacaoSumario> {
+  const n = outline.chapters.length;
+  const prompt = `Avalie o PLANO de um livro antes de ele ser escrito. Classificação: ${ctx.theme}. Público: ${ctx.audience}. Tom: ${ctx.tone}.
+${extraInstructionsBlock(ctx)}
+${promessas ? `O pedido promete: ${[promessas.romance && "romance (arco do casal)", promessas.revelacao && "traição/segredo revelado em camadas", promessas.viradaFinal && "final inesperado"].filter(Boolean).join("; ") || "uma história"}.` : ""}
+
+O PLANO (JSON):
+${JSON.stringify({
+  title: outline.title,
+  personagens: outline.personagens,
+  verdadeCentral: outline.verdadeCentral,
+  revelacaoNoCapitulo: outline.revelacaoNoCapitulo,
+  viradaFinal: outline.viradaFinal,
+  fios: outline.fios,
+  capitulos: outline.chapters.map((c, i) => ({ n: i + 1, titulo: c.title, resumo: c.summary, funcao: c.funcao, resultado: c.resultado, passoDoCasal: c.passoDoCasal, personagens: c.personagens })),
+})}
+
+Imagine este livro de ${n} capítulos escrito com competência e dê a nota (0 a 10) que uma leitora exigente do público daria à HISTÓRIA. Julgue só o plano, com estes critérios (use exatamente estes nomes):
+- promessa: o livro entrega o que o gênero e a instrução do autor prometem? (romance tem arco do casal do começo ao fim; o par romântico tem conflito próprio)
+- revelacao: a verdade central chega tarde e em camadas, com suspeita falsa, ou é entregue cedo e o resto vira confirmação?
+- final: o final é surpreendente E inevitável (plantado antes), ou é o resultado esperado/administrativo?
+- pistas: cada pista tem uma lógica que a leitora entende? Algum enigma parece arbitrário?
+- repeticao: há capítulos com a mesma função ou o mesmo tipo de cena?
+- acerto-de-contas: quem traiu por vínculo íntimo tem um confronto emocional em cena com a protagonista?
+- protagonista: ela decide e age, ou só descobre e reage?
+
+8 = livro que a leitora recomendaria; 6 = correto mas previsível. Seja exigente: não dê 8 a um plano com qualquer problema grave nestes critérios. Para cada problema, diga a correção concreta no plano (o que mudar, em qual capítulo).
+
+Responda APENAS com JSON:
+{"nota": 7, "problemas": [{"criterio": "${CRITERIOS_SUMARIO.join(" | ")}", "correcao": "..."}]}`;
+  const raw = await askOpenAI(SYSTEM_EDITOR, prompt, 1500, true, 0);
+  return normalizarAvaliacaoSumario(JSON.parse(extractJson(raw)));
 }
 
 /** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
@@ -1083,14 +1369,14 @@ export async function generateChapter(
   // So chega preenchido numa reescrita: o capitulo ja foi escrito uma vez e
   // reprovou na checagem de continuidade que roda no meio da geracao.
   const correcaoBloco = extra.correcao
-    ? `\nATENÇÃO — este capítulo já foi escrito uma vez e foi reprovado na verificação de continuidade. ${extra.correcao}\n`
+    ? `\nATENÇÃO — este capítulo já foi escrito uma vez e foi reprovado na revisão. ${extra.correcao}\n`
     : "";
 
   // Modo historia: na reta final nada novo entra, e o ultimo capitulo recebe a
   // lista de destinos do elenco como obrigacao de entrega (historia.ts).
   const retaFinal = ehFiccao(ctx.theme) ? retaFinalBlock(outline, chapterIndex) : "";
   // A verdade unica da trama e os fios que fecham neste capitulo (historia.ts).
-  const trama = ehFiccao(ctx.theme) ? tramaBlock(outline, chapterIndex) : "";
+  const trama = ehFiccao(ctx.theme) ? `${tramaBlock(outline, chapterIndex)}${promessasBlock(outline, chapterIndex)}` : "";
   // Prevencao de vicios de texto de IA e dos tiques que este livro ja repetiu
   // (editorial.ts). So na prosa narrativa, onde eles aparecem.
   const estilo = modoDe(ctx.theme) === "narrativo" ? `${viciosBlock()}${tiquesBlock(extra.tiques ?? [])}` : "";
@@ -1527,6 +1813,7 @@ export async function auditarCapitulo(
   const naReta = idx >= inicioRetaFinal(n);
   const fios = (outline.fios ?? []).filter((f) => Number(f.fechaNoCapitulo) === idx + 1 || (ultimo && Number(f.fechaNoCapitulo) > n));
   const destinos = (outline.personagens ?? []).filter((p) => (p.destino || "").trim());
+  const pistasAqui = (outline.viradaFinal?.pistas ?? []).filter((p) => Number(p?.capitulo) === idx + 1).map((p) => p.pista);
   const resumos = anteriores
     .filter((a) => a.resumo)
     .slice(-12)
@@ -1540,6 +1827,10 @@ ${cap.funcao ? `Função na estrutura: ${cap.funcao}.` : ""}${cap.resultado ? ` 
 ${outline.verdadeCentral ? `VERDADE DA TRAMA (a única versão do que aconteceu): ${outline.verdadeCentral}` : ""}
 ${fios.length ? `FIOS QUE PRECISAM FECHAR NESTE CAPÍTULO (o leitor termina sabendo a resposta, em cena):\n${fios.map((f) => `- ${f.fio} → ${f.resposta}`).join("\n")}` : ""}
 ${naReta ? "Este capítulo está na RETA FINAL: não pode introduzir personagem novo nem conflito ou subtrama nova." : ""}
+${cap.passoDoCasal ? `O CASAL, neste capítulo, precisa: ${cap.passoDoCasal}` : ""}
+${Number(outline.revelacaoNoCapitulo) > idx + 1 ? `A verdade central só pode ser revelada por inteiro no capítulo ${outline.revelacaoNoCapitulo}.` : ""}
+${pistasAqui.length ? `PISTAS que este capítulo precisa plantar (de passagem): ${pistasAqui.join("; ")}` : ""}
+${Number(outline.viradaFinal?.noCapitulo) === idx + 1 ? `A VIRADA FINAL acontece aqui: o leitor acreditava que ${outline.viradaFinal?.leitorAcredita}; a verdade é que ${outline.viradaFinal?.verdade}` : ""}
 ${ultimo && destinos.length ? `É o ÚLTIMO capítulo. Destinos que precisam estar entregues até o fim dele:\n${destinos.map((p) => `- ${p.nome}: ${p.destino}`).join("\n")}` : ""}
 ${resumos ? `\nO QUE OS CAPÍTULOS ANTERIORES JÁ MOSTRARAM:\n${resumos}` : ""}
 
@@ -1552,6 +1843,10 @@ Aponte SOMENTE problemas destes tipos, com evidência do texto:
 - "final-aberto": (só no último capítulo) a pergunta central fica sem resposta, termina com gancho, ou a última cena fica sem desfecho.
 - "destino-nao-entregue": (só no último capítulo) algum destino da lista não aparece resolvido.
 - "texto-cortado": o capítulo termina no meio de uma cena ou de uma fala sem resposta.
+- "revelacao-antecipada": o capítulo revela por inteiro a verdade central antes do capítulo previsto.
+- "casal-parado": (só se houver passo do casal acima) a relação do casal não muda neste capítulo como o plano pede.
+- "pista-nao-plantada": uma pista da lista acima não aparece no texto.
+- "virada-nao-entregue": (só no capítulo da virada) a virada final não acontece ou é contada em resumo.
 
 "grave" = o leitor percebe que a história falhou ali (fio sem resposta, final aberto, contradição, cena repetida inteira, texto cortado). "leve" = incômodo menor. Se o capítulo estiver bom, devolva a lista vazia — não invente problema.
 
@@ -1587,7 +1882,7 @@ ${(outline.fios ?? []).length ? `Fios planejados: ${(outline.fios ?? []).map((f)
 CAPÍTULO A CAPÍTULO, o que de fato foi escrito:
 ${capitulos.map((c) => `- Cap. ${c.idx + 1} "${limparTituloCapitulo(c.title)}": ${c.resumo || "(sem resumo)"}`).join("\n")}
 
-AS ÚLTIMAS LINHAS DO LIVRO:
+AS ÚLTIMAS LINHAS DO LIVRO (trecho do fim do último capítulo; o que vem antes foi omitido de propósito, não é corte do texto):
 ${finalDoUltimo}
 
 Faça duas leituras.

@@ -51,7 +51,11 @@ import {
   correcaoDaAuditoria,
   LIMITE_VICIOS_POR_MIL,
   PREFIXO_EDITORIAL,
+  correcaoDoFinal,
+  precisaReescreverFinal,
   tiquesRepetidos,
+  trechoFinal,
+  vereditoDaLeitora,
   viciosDeIA,
 } from "./editorial";
 import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
@@ -542,7 +546,16 @@ async function runJob(ebookId: string) {
           // So aceita se realmente cresceu. Uma reescrita que saiu do mesmo
           // tamanho ou menor nao ajuda e ainda troca um texto bom por um novo,
           // sem necessidade.
-          if (palavrasExpandidas > palavrasEscritas) content = expandido;
+          // E so se nao estourou: no 3o "Depois da Ultima Chave" um capitulo de
+          // 795 palavras (meta 938) voltou da expansao com 3.177 e foi aceito,
+          // porque so se conferia se tinha crescido.
+          if (palavrasExpandidas > palavrasEscritas && palavrasExpandidas <= metaCapitulo * 1.4) {
+            content = expandido;
+          } else if (palavrasExpandidas > metaCapitulo * 1.4) {
+            console.warn(
+              `[geracao] expansao do capitulo ${chapter.idx + 1} descartada: ${palavrasExpandidas} palavras para meta ${metaCapitulo}.`,
+            );
+          }
         } catch (err) {
           // Expandir e uma tentativa extra, nao uma etapa obrigatoria -- se
           // falhar, o capitulo mais curto (mas ja valido) segue em frente.
@@ -959,9 +972,64 @@ async function runJob(ebookId: string) {
           ctx,
           outline,
           caps.map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos })),
-          ultimo.slice(-2500),
+          trechoFinal(ultimo),
         );
-        const achadosEditoriais = [...auditorias, ...achadosDaLeitura(leitura)];
+        // Segunda chance do final: leitora abaixo da nota minima ou final que
+        // nao satisfez -> o ultimo capitulo e reescrito UMA vez com o que ela e
+        // o editor apontaram, e relido. Fica a versao com a nota maior.
+        let leituraFinal: unknown = leitura;
+        const extras: Achado[] = [];
+        const ultimoCap = chapters[chapters.length - 1];
+        const correcaoFinal = correcaoDoFinal(leitura, outline.chapters.length);
+        if (ultimoCap && correcaoFinal && precisaReescreverFinal(leitura)) {
+          const antigo = ultimoCap.content;
+          const antes = vereditoDaLeitora(leitura);
+          try {
+            await continuarOuParar(ebookId);
+            const novo = await escrever(ultimoCap, correcaoFinal);
+            await continuarOuParar(ebookId);
+            await run("UPDATE chapters SET content = $1 WHERE id = $2", [novo, ultimoCap.id]);
+            ultimoCap.content = novo;
+            await registrar(ultimoCap, novo);
+            const releitura = await leituraEditorial(
+              ctx,
+              outline,
+              chapters.map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos })),
+              trechoFinal(novo),
+            );
+            const depois = vereditoDaLeitora(releitura);
+            if ((depois.nota ?? 0) >= (antes.nota ?? 0)) {
+              leituraFinal = releitura;
+              extras.push({
+                categoria: `${PREFIXO_EDITORIAL}final`,
+                gravidade: "info",
+                local: `capítulo ${ultimoCap.idx + 1}`,
+                evidencia: `Último capítulo reescrito pela leitura da leitora: nota ${antes.nota ?? "?"} -> ${depois.nota ?? "?"}.`,
+                sugestao: "Conferir o novo final.",
+                capitulosAfetados: [ultimoCap.idx],
+              });
+            } else {
+              await run("UPDATE chapters SET content = $1 WHERE id = $2", [antigo, ultimoCap.id]);
+              ultimoCap.content = antigo;
+              await registrar(ultimoCap, antigo);
+              console.warn(`[editorial] ${ebookId}: final reescrito piorou (${antes.nota} -> ${depois.nota}); mantido o anterior.`);
+            }
+          } catch (err) {
+            if (err instanceof GeracaoInterrompida) throw err;
+            console.warn(`[editorial] reescrita do final falhou:`, err instanceof Error ? err.message : err);
+          }
+        }
+        const av = outline.avaliacaoDoSumario;
+        if (av) {
+          extras.push({
+            categoria: `${PREFIXO_EDITORIAL}sumario`,
+            gravidade: "info",
+            local: "sumário",
+            evidencia: `Editor do sumário: nota ${av.nota}/10${av.candidatos ? `, melhor de ${av.candidatos} sumários` : ""}, ${av.revisoes} revisão(ões).${av.premissa ? ` Premissa escolhida entre ${av.premissa.entre} (nota ${av.premissa.nota ?? "?"}): ${av.premissa.texto}` : ""}${av.problemas.length ? ` Pendências: ${av.problemas.join("; ")}` : ""}`,
+            sugestao: "Sem ação obrigatória.",
+          });
+        }
+        const achadosEditoriais = [...auditorias, ...extras, ...achadosDaLeitura(leituraFinal)];
         const atual = await one<{ continuity_json: string | null }>("SELECT continuity_json FROM ebooks WHERE id = $1", [ebookId]);
         let existentes: Achado[] = [];
         try {
