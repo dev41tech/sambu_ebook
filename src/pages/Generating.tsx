@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type EbookDetail } from "../lib/api";
+import { limparTituloCapitulo } from "../lib/tituloCapitulo";
 
 const STEP_LABEL: Record<string, string> = {
   research: "Pesquisando na internet…",
@@ -39,7 +40,7 @@ function buildChecklist(ebook: EbookDetail | null): ChecklistItem[] {
   const chaptersDone = ebook.chapters_done;
   for (let i = 0; i < ebook.chapters_total; i++) {
     const chapter = ebook.chapters[i];
-    const title = chapter?.title || `Capítulo ${i + 1}`;
+    const title = (chapter?.title && limparTituloCapitulo(chapter.title)) || `Capítulo ${i + 1}`;
     const isDone = !!chapter?.content && chapter.content.trim().length > 0;
     const isCurrent = !isDone && step === "chapter" && chaptersDone === i;
     items.push({

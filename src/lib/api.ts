@@ -67,6 +67,8 @@ export interface EbookDetail extends EbookSummary {
   extension_mode: "pages" | "words";
   /** Capitulos escolhidos na criacao; null = conta automatica. */
   chapter_count: number | null;
+  /** Icone "Historia": true = marcado; null = a categoria decide. */
+  historia: boolean | null;
   title_mode: "ai" | "manual";
   category_main: string;
   /** JSON de string[] -- a coluna guarda texto, nao array. */
@@ -183,6 +185,8 @@ export interface NewEbookPayload {
   include_conclusion?: boolean;
   /** Parar em outline_review para o autor conferir sumario e elenco. */
   review_outline?: boolean;
+  /** Icone "Historia": liga o modo de escrita de historia mesmo em categoria que nao parece ficcao. */
+  historia?: boolean;
   author_name?: string;
   author_bio?: string;
   include_copyright?: boolean;
@@ -345,6 +349,8 @@ export interface BriefingEbook {
   extra_instructions: string;
   /** null = conta automatica pelas palavras. */
   chapter_count: number | null;
+  /** Icone "Historia". Ausente = mantem o que o livro ja tinha. */
+  historia?: boolean;
 }
 
 /** Apaga o texto gerado e reescreve o ebook com as instrucoes editadas. */

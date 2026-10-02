@@ -7,6 +7,7 @@
 import OpenAI from "openai";
 import type { EbookRow, ChapterRow } from "./db";
 import { withRetry } from "./retry";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 import { MODELO_ATIVO } from "./ai";
 
 let client: OpenAI | null = null;
@@ -84,7 +85,7 @@ export async function generateMarketingStrategy(
   ebook: EbookRow,
   chapters: Pick<ChapterRow, "title" | "summary">[]
 ): Promise<MarketingStrategy> {
-  const chapterList = chapters.map((c, i) => `${i + 1}. ${c.title} — ${c.summary}`).join("\n");
+  const chapterList = chapters.map((c, i) => `${i + 1}. ${limparTituloCapitulo(c.title)} — ${c.summary}`).join("\n");
   const prompt = `Título: ${ebook.title}
 Subtítulo: ${ebook.subtitle}
 Tema: ${ebook.theme}

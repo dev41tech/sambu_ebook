@@ -9,6 +9,7 @@ import { paraGuardar } from "../lib/arquivos";
 import { renderEbookPdfValidated } from "../lib/pdf";
 import { renderEbookEpubValidated } from "../lib/epub";
 import { rota } from "../lib/rota";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 
 export const renderRouter = Router();
 
@@ -97,7 +98,7 @@ async function upsertManuscript(body: Record<string, unknown>): Promise<EbookRow
   for (const [i, c] of core.entries()) {
     await run(
       "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES ($1, $2, $3, $4, '', $5)",
-      [randomUUID(), ebookId, i, c.title, c.content_markdown]
+      [randomUUID(), ebookId, i, limparTituloCapitulo(c.title), c.content_markdown]
     );
   }
   await run("UPDATE ebooks SET chapters_total = $1, chapters_done = $2 WHERE id = $3", [

@@ -181,6 +181,24 @@ const GRUPOS_FICCAO = new Set([
   "Ficção científica",
 ]);
 
+/**
+ * Caminho de categoria que a geracao deve usar, levando em conta o icone
+ * "Historia" do ebook (coluna `historia`, migration 0014).
+ *
+ * O modo narrativo inteiro -- elenco, funcao por capitulo, reta final, voz --
+ * sai de ehFiccao/modoDe sobre este caminho, que viaja como texto por dezenas
+ * de funcoes. Com o icone ligado numa categoria que nao parece ficcao ("Minhas
+ * categorias > Drama Familiar"), o livro passa a ser tratado como "Ficção >
+ * Drama Familiar": todo o resto segue igual, e o modelo ainda le a
+ * classificacao certa no prompt. Icone desligado/NULL = a categoria decide,
+ * como sempre foi.
+ */
+export function caminhoEfetivo(caminho: string, historia?: boolean | null): string {
+  if (historia !== true || ehFiccao(caminho)) return caminho;
+  const item = (caminho || "").split(SEPARADOR).pop()?.trim() || "História";
+  return `Ficção${SEPARADOR}${item}`;
+}
+
 /** Reconhece ficcao pelo grupo do caminho "Grupo > Item". */
 export function ehFiccao(caminho: string): boolean {
   const grupo = (caminho || "").split(SEPARADOR)[0].trim();

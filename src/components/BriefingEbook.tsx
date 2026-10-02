@@ -4,8 +4,9 @@ import { regerarEbook, type EbookDetail } from "../lib/api";
 import ClassificacaoPicker from "./ClassificacaoPicker";
 import CustoEstimado from "./CustoEstimado";
 import CampoCapitulos from "./CampoCapitulos";
-
-const TONS = ["Motivador", "Técnico e direto", "Descontraído", "Formal"];
+import BotaoHistoria from "./BotaoHistoria";
+import { caminhoEfetivo } from "../lib/categorias";
+import { perfilDe } from "../lib/modos";
 const IDIOMAS = ["Português (Brasil)", "Português (Portugal)", "Inglês", "Espanhol"];
 
 function lerSecundarias(bruto: string): string[] {
@@ -33,6 +34,10 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
   const [wordsPerPage, setWordsPerPage] = useState(ebook.words_per_page);
   const [extra, setExtra] = useState(ebook.extra_instructions ?? "");
   const [capitulos, setCapitulos] = useState<number | null>(ebook.chapter_count ?? null);
+  const [historia, setHistoria] = useState(ebook.historia === true);
+  // Tons do modo editorial efetivo, como na criacao: a lista fixa antiga era de
+  // antes dos modos e nao tinha os tons de historia ("Intimista", "Sombrio"...).
+  const TONS = perfilDe(caminhoEfetivo(theme, historia)).tons;
 
   const [confirmando, setConfirmando] = useState(false);
   const [enviando, setEnviando] = useState(false);
@@ -62,6 +67,7 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
         words_per_page: wordsPerPage,
         extra_instructions: extra.trim(),
         chapter_count: capitulos,
+        historia,
       });
       navigate(`/ebooks/${ebook.id}/gerando`);
     } catch (e) {
@@ -87,6 +93,8 @@ export default function BriefingEbook({ ebook }: { ebook: EbookDetail }) {
         secundarias={secundarias}
         onSecundarias={setSecundarias}
       />
+
+      <BotaoHistoria categoria={theme} ativo={historia} onChange={setHistoria} />
 
       <div className="space-y-2">
         <label className="text-sm font-medium text-neutral-700">Público-alvo *</label>

@@ -10,6 +10,8 @@ import CustoEstimado from "../components/CustoEstimado";
 import CampoCapitulos from "../components/CampoCapitulos";
 import SecoesDoLivro from "../components/SecoesDoLivro";
 import { perfilDe } from "../lib/modos";
+import { caminhoEfetivo } from "../lib/categorias";
+import BotaoHistoria from "../components/BotaoHistoria";
 
 // Os tons vem do modo editorial da categoria escolhida, nao de uma lista fixa.
 // A lista antiga tinha quatro opcoes escritas para livro pratico, e "Motivador"
@@ -45,7 +47,10 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
 
   // O modo editorial sai da categoria escolhida -- nunca e perguntado. Um campo
   // a mais no formulario seria um campo que ninguem preenche.
-  const perfil = perfilDe(theme);
+  // Icone "Historia": liga o modo narrativo mesmo em categoria que nao parece
+  // ficcao -- e com ele os tons de historia.
+  const [historia, setHistoria] = useState(false);
+  const perfil = perfilDe(caminhoEfetivo(theme, historia));
   // Trocar de categoria pode invalidar o tom selecionado ("Intimista" nao existe
   // em livro de financas). Sem isto o select mostraria um item e enviaria outro.
   useEffect(() => {
@@ -133,6 +138,7 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
         category_main: theme,
         categories_secondary: secundarias,
         audio_requested: audioRequested,
+        historia,
       });
       navigate(`/ebooks/${id}/gerando`);
     } catch (err) {
@@ -159,6 +165,8 @@ export default function NewEbookGrounded({ category }: { category: "tecnico" | "
           secundarias={secundarias}
           onSecundarias={setSecundarias}
         />
+
+        <BotaoHistoria categoria={theme} ativo={historia} onChange={setHistoria} />
 
         <div className="space-y-2">
           <label className="text-sm font-medium text-neutral-700">Público-alvo</label>

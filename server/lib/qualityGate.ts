@@ -4,7 +4,7 @@ import type { EbookRow } from "./db";
 import { detectarRecusa } from "./sanitizar";
 import { verificarContinuidade, type Achado, type Gravidade } from "./continuidade";
 import { verificarFatosNumericos } from "./fatosNumericos";
-import { ehFiccao } from "../../src/lib/categorias";
+import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
 import type { Outline } from "./ai";
 
 // Portão entre "escrito" e "publicável".
@@ -159,7 +159,7 @@ export function avaliarQualidade(e: EntradaGate): ResultadoGate {
       intro: ebook.intro,
       conclusao: ebook.conclusion,
       capitulos,
-      ficcao: ehFiccao(ebook.category_main || ebook.theme),
+      ficcao: ehFiccao(caminhoEfetivo(ebook.category_main || ebook.theme, ebook.historia)),
       elencoRegistrado,
     }),
   );

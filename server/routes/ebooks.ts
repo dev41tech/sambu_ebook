@@ -23,7 +23,7 @@ import {
   extractEpubManuscript,
   prettifyFilenameTitle,
 } from "../lib/importContent";
-import { isCategoriaValida } from "../../src/lib/categorias";
+import { caminhoEfetivo, isCategoriaValida } from "../../src/lib/categorias";
 import { TODOS_OS_TONS } from "../../src/lib/modos";
 import { capitulosEscolhidos } from "../../src/lib/custo";
 import { publicarNoSambuOnline } from "../lib/sambuOnline";
@@ -32,6 +32,7 @@ import { avaliarQualidade } from "../lib/qualityGate";
 import { medirComResumos, type Metricas } from "../lib/metricas";
 import { rota } from "../lib/rota";
 import { paraGuardar, resolverExport, exportadoEmOutroLugar } from "../lib/arquivos";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 
 export const ebooksRouter = Router();
 
@@ -69,7 +70,7 @@ async function medirEbook(ebookId: string): Promise<Metricas | null> {
     }
   }
   return medirComResumos(
-    ebook.category_main || ebook.theme,
+    caminhoEfetivo(ebook.category_main || ebook.theme, ebook.historia),
     capitulos.map((c) => ({ idx: c.idx, content: c.content, resumoFatos: c.resumo_fatos })),
     elenco
   );
@@ -164,6 +165,9 @@ ebooksRouter.post("/", rota(async (req, res) => {
   // Desligada vira '' -- a mesma convencao do conteudo importado sem introducao:
   // a geracao so escreve quando o campo e NULL, e todas as exportacoes pulam ''.
   const introInicial = body.include_intro === false ? "" : null;
+  // Icone "Historia": so grava true quando marcado. Desmarcado = NULL, e a
+  // categoria decide como sempre (ver caminhoEfetivo em src/lib/categorias.ts).
+  const historia = body.historia === true ? true : null;
   const conclusaoInicial = body.include_conclusion === false ? "" : null;
 
   // Categoria criada a mao pelo usuario tambem vale. Sem esta segunda checagem
@@ -225,8 +229,8 @@ ebooksRouter.post("/", rota(async (req, res) => {
        cover_local_file,
        generate_images, image_count, image_suggestion, image_source, category, reference_material,
        extra_instructions, category_main, categories_secondary, audio_requested, audio_voice,
-       extension_mode, word_goal, outline_approval, chapter_count, intro, conclusion, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, 'generating')`,
+       extension_mode, word_goal, outline_approval, chapter_count, intro, conclusion, historia, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, 'generating')`,
     [
     id,
     titleMode === "manual" ? customTitle : "",
@@ -267,6 +271,7 @@ ebooksRouter.post("/", rota(async (req, res) => {
     chapterCount,
     introInicial,
     conclusaoInicial,
+    historia,
     ]
   );
 
@@ -429,7 +434,7 @@ ebooksRouter.post("/import", importUpload.single("file"), rota(async (req, res) 
   for (const [i, c] of manuscript.chapters.entries()) {
     await run(
       "INSERT INTO chapters (id, ebook_id, idx, title, summary, content) VALUES ($1, $2, $3, $4, $5, $6)",
-      [randomUUID(), id, i, c.title, c.content.slice(0, 200), c.content]
+      [randomUUID(), id, i, limparTituloCapitulo(c.title), c.content.slice(0, 200), c.content]
     );
   }
 
@@ -599,7 +604,7 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
       `UPDATE ebooks SET
          theme = $1, category_main = $2, categories_secondary = $3, audience = $4,
          tone = $5, language = $6, page_count = $7, words_per_page = $8,
-         extra_instructions = $9, chapter_count = $11,
+         extra_instructions = $9, chapter_count = $11, historia = $12,
          outline_json = NULL, about_author = NULL,
          -- '' = seção desligada na criação: continua desligada ao regerar.
          intro = CASE WHEN intro = '' THEN '' ELSE NULL END,
@@ -611,6 +616,7 @@ ebooksRouter.post("/:id/regenerate", rota(async (req, res) => {
       [
         theme, categoryMain, JSON.stringify(categoriesSecondary), audience,
         tone, language, pageCount, wordsPerPage, extraInstructions, row.id, chapterCount,
+        typeof body.historia === "boolean" ? (body.historia ? true : null) : row.historia,
       ],
       tx
     );

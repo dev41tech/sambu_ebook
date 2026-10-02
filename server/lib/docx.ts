@@ -13,6 +13,7 @@ import {
   BorderStyle,
 } from "docx";
 import { all, type EbookRow } from "./db";
+import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 import { BOOK_TEMPLATE } from "../templates/index";
 import { parseBlocks, parseInlineSegments } from "./markdown";
 
@@ -224,7 +225,7 @@ export async function renderEbookDocx(
   // entao o await das imagens seria silenciosamente ignorado.
   for (const [i, c] of chapters.entries()) {
     for (const credit of await chapterImageCredits(c.id)) {
-      imageCredits.push(`Capítulo ${i + 1} — ${c.title}: ${credit}.`);
+      imageCredits.push(`Capítulo ${i + 1} — ${limparTituloCapitulo(c.title)}: ${credit}.`);
     }
     children.push(
       new Paragraph({
@@ -236,7 +237,7 @@ export async function renderEbookDocx(
       new Paragraph({
         heading: HeadingLevel.HEADING_1,
         spacing: { after: 300 },
-        children: [new TextRun({ text: c.title, color: heading, bold: true })],
+        children: [new TextRun({ text: limparTituloCapitulo(c.title), color: heading, bold: true })],
       }),
       ...(await chapterImageParagraphs(c.id)),
       ...bodyParagraphs(c.content, text, heading, accent),

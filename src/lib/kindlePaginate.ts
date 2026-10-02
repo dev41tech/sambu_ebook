@@ -1,4 +1,5 @@
 import type { EbookDetail } from "./api";
+import { limparTituloCapitulo } from "./tituloCapitulo";
 
 export interface KindlePage {
   type: "cover" | "section";
@@ -25,7 +26,7 @@ export function buildKindlePages(ebook: EbookDetail): KindlePage[] {
   const sections: { label: string; title: string; text: string }[] = [];
   if (ebook.intro) sections.push({ label: "Introdução", title: "Introdução", text: ebook.intro });
   ebook.chapters.forEach((c, i) => {
-    sections.push({ label: `Capítulo ${i + 1}`, title: c.title, text: c.content });
+    sections.push({ label: `Capítulo ${i + 1}`, title: limparTituloCapitulo(c.title), text: c.content });
   });
   if (ebook.conclusion) sections.push({ label: "Conclusão", title: "Conclusão", text: ebook.conclusion });
   if (ebook.about_author) sections.push({ label: "Sobre o Autor", title: "Sobre o Autor", text: ebook.about_author });
