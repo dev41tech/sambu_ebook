@@ -51,7 +51,12 @@ import {
   correcaoDaAuditoria,
   LIMITE_VICIOS_POR_MIL,
   PREFIXO_EDITORIAL,
+  correcaoDoFinal,
+  encurtarNomes,
+  precisaReescreverFinal,
   tiquesRepetidos,
+  trechoFinal,
+  vereditoDaLeitora,
   viciosDeIA,
 } from "./editorial";
 import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
@@ -160,7 +165,50 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   };
 }
 
+/**
+ * Trava entre processos: so um servidor gera cada livro.
+ *
+ * As travas de cima (activeJobs, fila, reservados) sao da memoria do processo.
+ * O servidor local e o da VPS usam o MESMO banco, e a rota de detalhe chama
+ * ensureGenerationRunning a cada consulta: abrir no app local um livro que a
+ * VPS (ou um script) ja estava gerando comecava uma segunda geracao do mesmo
+ * livro. Em 03/10/2026 "Sair das Dividas Sem Milagre" chegou a "5 de 3
+ * capitulos", com capitulos escritos duas vezes e pagos duas vezes.
+ *
+ * pg_try_advisory_lock vale para a sessao do banco: fica com uma conexao
+ * reservada durante a geracao e cai sozinho se o processo morrer. Nao precisa
+ * de migration.
+ */
 async function runJob(ebookId: string) {
+  const chave = `sambu-geracao:${ebookId}`;
+  let trava: Awaited<ReturnType<typeof sql.reserve>> | null = null;
+  try {
+    trava = await sql.reserve();
+    const [r] = await trava`SELECT pg_try_advisory_lock(hashtext(${chave})) AS ok`;
+    if (!r?.ok) {
+      console.warn(`[geracao] ${ebookId}: ja esta sendo gerado por outro processo no mesmo banco; este nao entra.`);
+      trava.release();
+      activeJobs.delete(ebookId);
+      await startNextQueuedJob();
+      return;
+    }
+  } catch (err) {
+    // Sem trava, segue como antes: melhor gerar do que travar o livro.
+    console.warn(`[geracao] ${ebookId}: trava entre processos indisponivel:`, err instanceof Error ? err.message : err);
+    trava?.release();
+    trava = null;
+  }
+  try {
+    await executarJob(ebookId);
+  } finally {
+    if (trava) {
+      await trava`SELECT pg_advisory_unlock(hashtext(${chave}))`.catch(() => {});
+      trava.release();
+    }
+  }
+}
+
+async function executarJob(ebookId: string) {
   try {
     let row = await getEbook(ebookId);
     if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") return;
@@ -463,9 +511,10 @@ async function runJob(ebookId: string) {
       chapter: { id: string; idx: number; title: string },
       conteudo: string,
     ): Promise<string> => {
-      if (!ficcao || reescritos.has(chapter.idx)) return conteudo;
+      // Todo livro, nao so ficcao: cada modo traz as regras do seu guia (guias.ts).
+      if (reescritos.has(chapter.idx)) return conteudo;
       try {
-        const r = await auditarCapitulo(outline, chapter.idx, conteudo, anterioresAte(chapter.idx));
+        const r = await auditarCapitulo(ctx, outline, chapter.idx, conteudo, anterioresAte(chapter.idx));
         if (r.problemas.length > 0) {
           console.warn(
             `[auditoria] ${ebookId} cap. ${chapter.idx + 1}: ${r.problemas.map((p) => `${p.gravidade}:${p.tipo}`).join(", ")}`,
@@ -542,7 +591,16 @@ async function runJob(ebookId: string) {
           // So aceita se realmente cresceu. Uma reescrita que saiu do mesmo
           // tamanho ou menor nao ajuda e ainda troca um texto bom por um novo,
           // sem necessidade.
-          if (palavrasExpandidas > palavrasEscritas) content = expandido;
+          // E so se nao estourou: no 3o "Depois da Ultima Chave" um capitulo de
+          // 795 palavras (meta 938) voltou da expansao com 3.177 e foi aceito,
+          // porque so se conferia se tinha crescido.
+          if (palavrasExpandidas > palavrasEscritas && palavrasExpandidas <= metaCapitulo * 1.4) {
+            content = expandido;
+          } else if (palavrasExpandidas > metaCapitulo * 1.4) {
+            console.warn(
+              `[geracao] expansao do capitulo ${chapter.idx + 1} descartada: ${palavrasExpandidas} palavras para meta ${metaCapitulo}.`,
+            );
+          }
         } catch (err) {
           // Expandir e uma tentativa extra, nao uma etapa obrigatoria -- se
           // falhar, o capitulo mais curto (mas ja valido) segue em frente.
@@ -551,6 +609,8 @@ async function runJob(ebookId: string) {
       }
       content = await padronizarDialogo(content, chapter.idx);
       content = await concretizar(content, chapter.idx);
+      // Nome completo so na primeira mencao do capitulo (editorial.ts).
+      if (narrativo) content = encurtarNomes(content, elencoEfetivo(outline, registrados).map((p) => p.nome));
       return content;
     };
 
@@ -947,7 +1007,9 @@ async function runJob(ebookId: string) {
     // Uma chamada, sobre os resumos de todos os capitulos e o fim do ultimo. Vira
     // achado no painel de qualidade -- nunca bloqueia a publicacao (no maximo
     // "major"). As auditorias que levaram a reescrita entram junto.
-    if (ficcao) {
+    // Todo livro: na nao ficcao a leitora pergunta se o livro cumpriu a promessa
+    // do titulo, com as perguntas do guia do genero.
+    if (chapters.length > 0) {
       try {
         await continuarOuParar(ebookId);
         const caps = await all<{ idx: number; title: string; content: string; resumo_fatos: string | null }>(
@@ -959,9 +1021,66 @@ async function runJob(ebookId: string) {
           ctx,
           outline,
           caps.map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos })),
-          ultimo.slice(-2500),
+          trechoFinal(ultimo),
         );
-        const achadosEditoriais = [...auditorias, ...achadosDaLeitura(leitura)];
+        // Segunda chance do final: leitora abaixo da nota minima ou final que
+        // nao satisfez -> o ultimo capitulo e reescrito UMA vez com o que ela e
+        // o editor apontaram, e relido. Fica a versao com a nota maior.
+        let leituraFinal: unknown = leitura;
+        const extras: Achado[] = [];
+        const ultimoCap = chapters[chapters.length - 1];
+        const correcaoFinal = correcaoDoFinal(leitura, outline.chapters.length);
+        // So na ficcao: e o ultimo capitulo que decide se a historia terminou. Na
+        // nao ficcao o problema raramente esta no ultimo capitulo.
+        if (ficcao && ultimoCap && correcaoFinal && precisaReescreverFinal(leitura)) {
+          const antigo = ultimoCap.content;
+          const antes = vereditoDaLeitora(leitura);
+          try {
+            await continuarOuParar(ebookId);
+            const novo = await escrever(ultimoCap, correcaoFinal);
+            await continuarOuParar(ebookId);
+            await run("UPDATE chapters SET content = $1 WHERE id = $2", [novo, ultimoCap.id]);
+            ultimoCap.content = novo;
+            await registrar(ultimoCap, novo);
+            const releitura = await leituraEditorial(
+              ctx,
+              outline,
+              chapters.map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos })),
+              trechoFinal(novo),
+            );
+            const depois = vereditoDaLeitora(releitura);
+            if ((depois.nota ?? 0) >= (antes.nota ?? 0)) {
+              leituraFinal = releitura;
+              extras.push({
+                categoria: `${PREFIXO_EDITORIAL}final`,
+                gravidade: "info",
+                local: `capítulo ${ultimoCap.idx + 1}`,
+                evidencia: `Último capítulo reescrito pela leitura da leitora: nota ${antes.nota ?? "?"} -> ${depois.nota ?? "?"}.`,
+                sugestao: "Conferir o novo final.",
+                capitulosAfetados: [ultimoCap.idx],
+              });
+            } else {
+              await run("UPDATE chapters SET content = $1 WHERE id = $2", [antigo, ultimoCap.id]);
+              ultimoCap.content = antigo;
+              await registrar(ultimoCap, antigo);
+              console.warn(`[editorial] ${ebookId}: final reescrito piorou (${antes.nota} -> ${depois.nota}); mantido o anterior.`);
+            }
+          } catch (err) {
+            if (err instanceof GeracaoInterrompida) throw err;
+            console.warn(`[editorial] reescrita do final falhou:`, err instanceof Error ? err.message : err);
+          }
+        }
+        const av = outline.avaliacaoDoSumario;
+        if (av) {
+          extras.push({
+            categoria: `${PREFIXO_EDITORIAL}sumario`,
+            gravidade: "info",
+            local: "sumário",
+            evidencia: `Editor do sumário: nota ${av.nota}/10${av.candidatos ? `, melhor de ${av.candidatos} sumários` : ""}, ${av.revisoes} revisão(ões).${av.premissa ? ` Premissa escolhida entre ${av.premissa.entre} (nota ${av.premissa.nota ?? "?"}): ${av.premissa.texto}` : ""}${av.problemas.length ? ` Pendências: ${av.problemas.join("; ")}` : ""}`,
+            sugestao: "Sem ação obrigatória.",
+          });
+        }
+        const achadosEditoriais = [...auditorias, ...extras, ...achadosDaLeitura(leituraFinal)];
         const atual = await one<{ continuity_json: string | null }>("SELECT continuity_json FROM ebooks WHERE id = $1", [ebookId]);
         let existentes: Achado[] = [];
         try {

@@ -188,6 +188,13 @@ const TIPOS_AUDITORIA = new Set([
   "final-aberto",
   "destino-nao-entregue",
   "texto-cortado",
+  "revelacao-antecipada",
+  "casal-parado",
+  "pista-nao-plantada",
+  "virada-nao-entregue",
+  "regra-do-genero",
+  "generico",
+  "pergunta-nao-respondida",
 ]);
 
 /** Valida a resposta do auditor. Lixo vira "aprovado" — o auditor é um extra, não pode travar o livro. */
@@ -226,7 +233,7 @@ export const PREFIXO_EDITORIAL = "editorial-";
 const GRAV: Record<string, Gravidade> = { grave: "major", media: "warning", média: "warning", leve: "info" };
 
 /** Aspectos que a leitura de editor pode apontar — viram a categoria no painel. */
-export const ASPECTOS_EDITOR = ["estrutura", "ritmo", "repeticao", "fio-aberto", "contradicao", "personagem", "final", "promessa", "clareza"];
+export const ASPECTOS_EDITOR = ["estrutura", "ritmo", "repeticao", "fio-aberto", "contradicao", "personagem", "final", "promessa", "clareza", "generico"];
 
 function aspectoDe(v: unknown): string {
   const a = String(v ?? "")
@@ -304,4 +311,248 @@ export function achadosEditoriaisSalvos(continuityJson: string | null | undefine
   } catch {
     return [];
   }
+}
+
+/**
+ * Fim do capítulo para a leitura editorial, começando num início de parágrafo
+ * (ou de frase). O corte cru por caracteres começava no meio de uma palavra, e o
+ * editor apontava o pedaço como "erro material grave" num texto que estava inteiro.
+ */
+export function trechoFinal(texto: string, max = 2500): string {
+  const t = texto.trim();
+  if (t.length <= max) return t;
+  const cauda = t.slice(-max);
+  const paragrafo = cauda.indexOf("\n");
+  if (paragrafo >= 0 && paragrafo < max / 2) return cauda.slice(paragrafo).trim();
+  const frase = cauda.search(/[.!?…]["”»]?\s+(?=\S)/);
+  if (frase >= 0 && frase < max / 2) return cauda.slice(frase + 1).trim();
+  return cauda.slice(cauda.indexOf(" ") + 1).trim();
+}
+
+// ---------------------------------------------------------------------------
+// Editor do sumário e segunda chance do final (parte pura)
+// ---------------------------------------------------------------------------
+//
+// A leitura final só apontava: na 2ª versão de "Depois da Última Chave" ela
+// achou a traição cedo, o romance tardio e o final previsível — tudo decidido
+// no sumário, que ninguém tinha lido como história antes de escrever.
+
+/** Nota abaixo da qual o sumário é refeito e o último capítulo reescrito. */
+export const NOTA_MINIMA = 8;
+
+/** Critérios do editor do sumário — os mesmos que derrubaram a nota da leitora. */
+export const CRITERIOS_SUMARIO = [
+  "promessa",
+  "revelacao",
+  "final",
+  "pistas",
+  "repeticao",
+  "acerto-de-contas",
+  "protagonista",
+] as const;
+
+export interface AvaliacaoSumario {
+  /** null = resposta ilegível; quem chama segue sem revisar. */
+  nota: number | null;
+  problemas: Array<{ criterio: string; correcao: string }>;
+}
+
+export function normalizarAvaliacaoSumario(v: unknown): AvaliacaoSumario {
+  if (!v || typeof v !== "object") return { nota: null, problemas: [] };
+  const o = v as Record<string, unknown>;
+  const n = Number(o.nota);
+  const nota = Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : null;
+  const brutos = Array.isArray(o.problemas) ? o.problemas : [];
+  const problemas = brutos
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
+    .map((p) => {
+      const c = String(p.criterio ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+      return {
+        criterio: CRITERIOS_SUMARIO.find((x) => c === x || c.startsWith(x)) ?? "outro",
+        correcao: String(p.correcao ?? "").trim().slice(0, 500),
+      };
+    })
+    .filter((p) => p.correcao.length > 0)
+    .slice(0, 8);
+  return { nota, problemas };
+}
+
+/** Instrução de refazer o sumário a partir da avaliação do editor. */
+export function correcaoDoSumario(av: AvaliacaoSumario, problemasFixos: string[] = []): string {
+  const linhas = [...av.problemas.map((p) => `- (${p.criterio}) ${p.correcao}`), ...problemasFixos.map((p) => `- ${p}`)];
+  if (linhas.length === 0) return "";
+  return `ATENÇÃO: um editor de ficção leu a versão anterior deste sumário e deu nota ${av.nota ?? "?"}/10 para o que ela renderia como livro. Refaça o sumário corrigindo TODOS estes pontos (pode mudar a trama, a ordem das revelações e o elenco; mantenha o número de capítulos):\n${linhas.join("\n")}`;
+}
+
+/** Leitura da leitora, só o que decide a segunda chance do final. */
+export function vereditoDaLeitora(leitura: unknown): { nota: number | null; finalSatisfaz: boolean } {
+  const l =
+    leitura && typeof leitura === "object" && (leitura as Record<string, unknown>).leitora && typeof (leitura as Record<string, unknown>).leitora === "object"
+      ? ((leitura as Record<string, unknown>).leitora as Record<string, unknown>)
+      : null;
+  if (!l) return { nota: null, finalSatisfaz: true };
+  const n = Number(l.nota);
+  return { nota: Number.isFinite(n) ? Math.max(0, Math.min(10, n)) : null, finalSatisfaz: l.finalSatisfaz !== false };
+}
+
+/** Reescrever o último capítulo? Só com veredito legível abaixo da nota mínima, ou final que não satisfez. */
+export function precisaReescreverFinal(leitura: unknown): boolean {
+  const v = vereditoDaLeitora(leitura);
+  return !v.finalSatisfaz || (v.nota !== null && v.nota < NOTA_MINIMA);
+}
+
+/**
+ * Instrução de reescrita do último capítulo: o que o editor apontou sobre o
+ * final (ou sobre o último capítulo) e o que a leitora não entendeu. Problemas
+ * de capítulos do meio ficam de fora — reescrever o fim não os conserta.
+ */
+export function correcaoDoFinal(leitura: unknown, totalCapitulos: number): string {
+  if (!leitura || typeof leitura !== "object") return "";
+  const o = leitura as Record<string, unknown>;
+  const editor = Array.isArray(o.editor) ? o.editor : [];
+  const doFinal = editor
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+    .filter((e) => {
+      const a = aspectoDe(e.aspecto);
+      const caps = Array.isArray(e.capitulos) ? e.capitulos.map(Number) : [];
+      return a === "final" || a === "promessa" || caps.includes(totalCapitulos);
+    })
+    .map((e) => String(e.sugestao ?? "").trim())
+    .filter(Boolean);
+  const l = o.leitora && typeof o.leitora === "object" ? (o.leitora as Record<string, unknown>) : {};
+  const naoEntendeu = Array.isArray(l.naoEntendeu) ? l.naoEntendeu.map(String).filter(Boolean).slice(0, 4) : [];
+  const comentario = String(l.comentario ?? "").trim();
+  const linhas = [
+    ...doFinal.map((s) => `- ${s}`),
+    ...naoEntendeu.map((s) => `- Deixe claro, em cena: ${s}`),
+  ];
+  if (linhas.length === 0 && !comentario) return "";
+  return `Uma leitora do público leu o livro e o final não a satisfez${comentario ? ` ("${comentario}")` : ""}. Reescreva este último capítulo mantendo os fatos já estabelecidos nos capítulos anteriores e a verdade da trama, mas entregando um final que surpreenda e satisfaça:\n${linhas.join("\n")}\nNada de explicação administrativa no lugar de cena: o final é vivido pelos personagens.`;
+}
+
+// ---------------------------------------------------------------------------
+// Resumo interno lido pelo editor
+// ---------------------------------------------------------------------------
+//
+// O resumo de cada capítulo (resumirCapitulo) anota o que ficou por conferir:
+// "Ficou pendente conferir salário mínimo e regras oficiais atualizadas". Isso
+// é nota de trabalho, não está no livro — e o editor da leitura final tratou
+// como texto, marcando "GRAVE" em "Sair das Dívidas Sem Milagre" duas vezes.
+
+/** Tira do resumo as anotações de pendência, que não fazem parte do texto do livro. */
+export function resumoParaEditor(resumo: string | null | undefined): string {
+  return (resumo ?? "")
+    .split(/(?<=[.!?])\s+/)
+    .filter((frase) => !/\bpendentes?\b|\bpend[êe]ncias?\b|a conferir|não verificad/i.test(frase))
+    .join(" ")
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
+// Nome completo repetido
+// ---------------------------------------------------------------------------
+//
+// O prompt já pedia "nome completo só na primeira vez", e o modelo ignorava: em
+// "Curvas de Setembro" foram 74 "Joana Martins" e 77 "Rafael Duarte" — o
+// parecer editorial apontou o texto soando como boletim de ocorrência. Como o
+// próprio elenco é repetido com nome completo em vários blocos do prompt, a
+// correção confiável é no texto: a partir da segunda menção no capítulo, fica o
+// primeiro nome (ou "Dona Célia", com o tratamento).
+
+const TRATAMENTOS = /^(dona|seu|sr\.?|sra\.?|dr\.?|dra\.?|professor|professora|padre|irmã|tia|tio)$/i;
+
+const escaparRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Troca o nome completo pelo curto a partir da segunda menção no texto. Só para
+ * quem tem o nome curto único no elenco — duas "Anas" continuam por extenso.
+ */
+export function encurtarNomes(texto: string, nomes: string[]): string {
+  const curtoDe = (nome: string): string | null => {
+    const partes = nome.trim().split(/\s+/);
+    if (partes.length < 2) return null;
+    const curto = TRATAMENTOS.test(partes[0]) ? partes.slice(0, 2).join(" ") : partes[0];
+    return curto === nome.trim() ? null : curto;
+  };
+  const curtos = nomes.map(curtoDe);
+  const contagem = new Map<string, number>();
+  for (const c of curtos) if (c) contagem.set(c.toLowerCase(), (contagem.get(c.toLowerCase()) ?? 0) + 1);
+
+  let resultado = texto;
+  nomes.forEach((nome, i) => {
+    const curto = curtos[i];
+    if (!curto || contagem.get(curto.toLowerCase())! > 1) return;
+    let vistos = 0;
+    const re = new RegExp(`(?<![\\p{L}])${escaparRegex(nome.trim())}(?![\\p{L}])`, "gu");
+    resultado = resultado.replace(re, (m) => (vistos++ === 0 ? m : curto));
+  });
+  return resultado;
+}
+
+// ---------------------------------------------------------------------------
+// Premissas candidatas: escolher a virada antes de planejar o livro
+// ---------------------------------------------------------------------------
+//
+// Nas versões 3 e 4 de "Depois da Última Chave" o sumário planejava uma virada,
+// mas ela saía "bonita e previsível" (doar a casa, mudar a loja de lugar), e
+// revisar o sumário não subia a nota do editor (7 -> 7). Regra não gera ideia
+// boa; comparar várias gera. Aqui várias premissas com virada são propostas e um
+// editor escolhe a mais surpreendente E inevitável antes de o sumário existir.
+
+export interface Premissa {
+  premissa: string;
+  traicao: string;
+  leitorAcredita: string;
+  verdade: string;
+  pistas: string[];
+  porQueSurpreende: string;
+}
+
+/** Valida as premissas propostas; descarta as que não têm virada (acredita/verdade) ou pistas. */
+export function normalizarPremissas(v: unknown): Premissa[] {
+  const lista = v && typeof v === "object" && Array.isArray((v as { premissas?: unknown }).premissas)
+    ? ((v as { premissas: unknown[] }).premissas)
+    : [];
+  const txt = (x: unknown, max = 600) => String(x ?? "").trim().slice(0, max);
+  return lista
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === "object")
+    .map((p) => ({
+      premissa: txt(p.premissa),
+      traicao: txt(p.traicao),
+      leitorAcredita: txt(p.leitorAcredita),
+      verdade: txt(p.verdade),
+      pistas: (Array.isArray(p.pistas) ? p.pistas : []).map((x) => txt(x, 300)).filter(Boolean).slice(0, 4),
+      porQueSurpreende: txt(p.porQueSurpreende, 400),
+    }))
+    .filter((p) => p.premissa && p.leitorAcredita && p.verdade && p.pistas.length >= 2)
+    .slice(0, 6);
+}
+
+/**
+ * Índice da premissa escolhida pelo editor (1 = primeira, como no prompt).
+ * Resposta ilegível ou fora da faixa cai na de maior nota informada; sem notas, na primeira.
+ */
+export function escolhaDaPremissa(v: unknown, total: number): { indice: number; nota: number | null; motivo: string } {
+  if (total <= 0) return { indice: -1, nota: null, motivo: "" };
+  const o = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  const notas = Array.isArray(o.notas) ? o.notas.map(Number) : [];
+  let indice = Number(o.escolhida) - 1;
+  if (!Number.isInteger(indice) || indice < 0 || indice >= total) {
+    const validas = notas.slice(0, total).map((n, i) => [Number.isFinite(n) ? n : -1, i] as const);
+    indice = validas.length ? validas.reduce((a, b) => (b[0] > a[0] ? b : a))[1] : 0;
+  }
+  const nota = Number.isFinite(notas[indice]) ? Math.max(0, Math.min(10, notas[indice])) : null;
+  return { indice, nota, motivo: String(o.motivo ?? "").trim().slice(0, 400) };
+}
+
+/** A premissa escolhida, como ordem para o sumário. */
+export function premissaBlock(p: Premissa): string {
+  return `
+PREMISSA ESCOLHIDA PELO EDITOR — construa o livro inteiro em volta dela (nomes, lugares e detalhes podem ser criados por você):
+- Premissa: ${p.premissa}
+${p.traicao ? `- A traição: ${p.traicao}\n` : ""}- O que o leitor acredita até perto do fim: ${p.leitorAcredita}
+- A verdade (virada final): ${p.verdade}
+- Pistas a plantar antes da virada: ${p.pistas.join("; ")}
+- Por que surpreende: ${p.porQueSurpreende}
+A "verdadeCentral" e a "viradaFinal" do sumário são estas; não as troque por outras.`;
 }

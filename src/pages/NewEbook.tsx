@@ -7,6 +7,7 @@ import ImportIcon from "../components/ImportIcon";
 import ClassificacaoPicker from "../components/ClassificacaoPicker";
 import CustoEstimado from "../components/CustoEstimado";
 import CampoCapitulos from "../components/CampoCapitulos";
+import AvisoExtensao from "../components/AvisoExtensao";
 import SecoesDoLivro from "../components/SecoesDoLivro";
 import { perfilDe } from "../lib/modos";
 import { caminhoEfetivo } from "../lib/categorias";
@@ -275,6 +276,20 @@ export default function NewEbook() {
           palavras={extensionMode === "words" ? wordGoal : pageCount * wordsPerPage}
           valor={capitulos}
           onChange={setCapitulos}
+        />
+
+        <AvisoExtensao
+          caminho={caminhoEfetivo(theme, historia)}
+          secundarias={secundarias}
+          instrucao={extraInstructions}
+          palavras={extensionMode === "words" ? wordGoal : pageCount * wordsPerPage}
+          palavrasPorPagina={wordsPerPage}
+          capitulosEscolhidos={capitulos}
+          onUsar={(palavras) =>
+            extensionMode === "words"
+              ? setWordGoal(Math.ceil(palavras / 1000) * 1000)
+              : setPageCount(Math.ceil(palavras / Math.max(1, wordsPerPage)))
+          }
         />
 
         <SecoesDoLivro
