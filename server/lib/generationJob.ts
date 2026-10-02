@@ -14,6 +14,8 @@ import {
   condensarBloco,
   converterDialogoParaTravessao,
   reduzirAbstracao,
+  auditarCapitulo,
+  leituraEditorial,
   blocoQueCobre,
   CAPITULOS_POR_BLOCO,
   tetoDeSaida,
@@ -42,7 +44,16 @@ import {
   nomesAutorizados,
   termosDeFatosFixos,
   normalizarTermo,
+  type Achado,
 } from "./continuidade";
+import {
+  achadosDaLeitura,
+  correcaoDaAuditoria,
+  LIMITE_VICIOS_POR_MIL,
+  PREFIXO_EDITORIAL,
+  tiquesRepetidos,
+  viciosDeIA,
+} from "./editorial";
 import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
@@ -360,13 +371,20 @@ async function runJob(ebookId: string) {
      * padrao do expandirCapitulo -- mede contra um alvo, reescreve so quando
      * esta fora, e so aceita a reescrita se o numero melhorou.
      */
+    // Abstracao + vicios de texto de IA (editorial.ts) medidos juntos: a mesma
+    // passada limpa os dois, e so e aceita se a soma cair.
+    const medirProsa = (texto: string) => {
+      const a = abstracoesDe(texto);
+      const v = viciosDeIA(texto);
+      return { porMil: Math.round((a.porMil + v.porMil) * 10) / 10, abstracao: a, vicios: v };
+    };
     const concretizar = async (conteudo: string, idx: number): Promise<string> => {
       if (!narrativo) return conteudo;
-      const antes = abstracoesDe(conteudo);
-      if (antes.porMil <= LIMITE_ABSTRACAO_POR_MIL) return conteudo;
+      const antes = medirProsa(conteudo);
+      if (antes.abstracao.porMil <= LIMITE_ABSTRACAO_POR_MIL && antes.vicios.porMil <= LIMITE_VICIOS_POR_MIL) return conteudo;
       try {
-        const reescrito = await reduzirAbstracao(ctx, conteudo, antes.termos);
-        const depois = abstracoesDe(reescrito);
+        const reescrito = await reduzirAbstracao(ctx, conteudo, [...antes.vicios.termos, ...antes.abstracao.termos]);
+        const depois = medirProsa(reescrito);
         const palavrasAntes = conteudo.trim().split(/\s+/).filter(Boolean).length;
         const palavrasDepois = reescrito.trim().split(/\s+/).filter(Boolean).length;
 
@@ -393,7 +411,7 @@ async function runJob(ebookId: string) {
             // brigam, e a expansao devolve exatamente a atmosfera que a reducao
             // acabou de tirar.
             const expandido = await expandirCapitulo(ctx, reescrito, palavrasAntes, true);
-            const finalAbs = abstracoesDe(expandido);
+            const finalAbs = medirProsa(expandido);
             const finalPalavras = expandido.trim().split(/\s+/).filter(Boolean).length;
 
             // Expandir pode reintroduzir a abstracao que a passada anterior
@@ -432,13 +450,69 @@ async function runJob(ebookId: string) {
       return conteudo;
     };
 
+    // Auditorias que levaram a reescrita, para o painel de qualidade.
+    const auditorias: Achado[] = [];
+
+    /**
+     * Auditor por capitulo (editorial.ts / ai.ts auditarCapitulo): reprovado com
+     * problema grave, o capitulo e reescrito UMA vez com a correcao nomeada. Nao
+     * re-audita a reescrita -- cada auditoria e uma chamada, e a reescrita ja
+     * recebe o defeito por escrito.
+     */
+    const auditarEReescrever = async (
+      chapter: { id: string; idx: number; title: string },
+      conteudo: string,
+    ): Promise<string> => {
+      if (!ficcao || reescritos.has(chapter.idx)) return conteudo;
+      try {
+        const r = await auditarCapitulo(outline, chapter.idx, conteudo, anterioresAte(chapter.idx));
+        if (r.problemas.length > 0) {
+          console.warn(
+            `[auditoria] ${ebookId} cap. ${chapter.idx + 1}: ${r.problemas.map((p) => `${p.gravidade}:${p.tipo}`).join(", ")}`,
+          );
+        }
+        if (r.aprovado) return conteudo;
+        reescritos.add(chapter.idx);
+        await continuarOuParar(ebookId);
+        const reescrito = await escrever(chapter, correcaoDaAuditoria(r));
+        auditorias.push({
+          categoria: `${PREFIXO_EDITORIAL}auditoria`,
+          gravidade: "info",
+          local: `capítulo ${chapter.idx + 1}`,
+          evidencia: `Reprovado pelo auditor e reescrito: ${r.problemas
+            .filter((p) => p.gravidade === "grave")
+            .map((p) => `${p.tipo} — ${p.evidencia || p.correcao}`)
+            .join("; ")}.`,
+          sugestao: "Conferir se a versão reescrita resolveu.",
+          capitulosAfetados: [chapter.idx],
+        });
+        return reescrito;
+      } catch (err) {
+        if (err instanceof GeracaoInterrompida) throw err;
+        // O auditor e um ganho, nao um requisito: falhar nele mantem o capitulo.
+        console.warn(`[auditoria] capitulo ${chapter.idx + 1} falhou:`, err instanceof Error ? err.message : err);
+        return conteudo;
+      }
+    };
+
     const escrever = async (
       chapter: { id: string; idx: number; title: string },
       correcao?: string,
     ): Promise<string> => {
+      // Gestos e frases que ja se repetiram em 3+ capitulos anteriores viram
+      // proibicao no prompt (editorial.ts) -- so faz sentido com amostra.
+      const escritosAntes = chapters.filter((c) => c.idx < chapter.idx && c.content && c.content.trim());
+      const tiques =
+        narrativo && escritosAntes.length >= 3
+          ? tiquesRepetidos(
+              escritosAntes.map((c) => ({ idx: c.idx, content: c.content })),
+              elencoEfetivo(outline, registrados).map((p) => p.nome),
+            )
+          : [];
       const draft = await generateChapter(ctx, outline, chapter.idx, anterioresAte(chapter.idx), registrados, {
         memoriaLonga,
         correcao,
+        tiques,
       });
       const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
       // Teto da humanizacao acompanha o rascunho: com 4.000 fixos, um capitulo
@@ -694,7 +768,7 @@ async function runJob(ebookId: string) {
       await continuarOuParar(ebookId);
       await setStep(ebookId, "chapter");
 
-      const content = await escrever(chapter);
+      const content = await auditarEReescrever(chapter, await escrever(chapter));
       // Escrever um capitulo leva de segundos a minutos; a parada pode ter
       // chegado no meio. Nao grava nem conta um capitulo de livro cancelado.
       await continuarOuParar(ebookId);
@@ -867,6 +941,44 @@ async function runJob(ebookId: string) {
       // A verificacao e um extra. Falhar aqui nao pode perder um livro inteiro
       // que acabou de custar dinheiro para ser escrito.
       console.warn(`[continuidade] falhou para ${ebookId}:`, err);
+    }
+
+    // Etapa 5e: leitura final de editor e de leitora do publico (editorial.ts).
+    // Uma chamada, sobre os resumos de todos os capitulos e o fim do ultimo. Vira
+    // achado no painel de qualidade -- nunca bloqueia a publicacao (no maximo
+    // "major"). As auditorias que levaram a reescrita entram junto.
+    if (ficcao) {
+      try {
+        await continuarOuParar(ebookId);
+        const caps = await all<{ idx: number; title: string; content: string; resumo_fatos: string | null }>(
+          "SELECT idx, title, content, resumo_fatos FROM chapters WHERE ebook_id = $1 ORDER BY idx ASC",
+          [ebookId],
+        );
+        const ultimo = caps[caps.length - 1]?.content ?? "";
+        const leitura = await leituraEditorial(
+          ctx,
+          outline,
+          caps.map((c) => ({ idx: c.idx, title: c.title, resumo: c.resumo_fatos })),
+          ultimo.slice(-2500),
+        );
+        const achadosEditoriais = [...auditorias, ...achadosDaLeitura(leitura)];
+        const atual = await one<{ continuity_json: string | null }>("SELECT continuity_json FROM ebooks WHERE id = $1", [ebookId]);
+        let existentes: Achado[] = [];
+        try {
+          const v = JSON.parse(atual?.continuity_json || "[]");
+          existentes = Array.isArray(v) ? v.filter((a: Achado) => !String(a.categoria).startsWith(PREFIXO_EDITORIAL)) : [];
+        } catch {
+          existentes = [];
+        }
+        await run("UPDATE ebooks SET continuity_json = $1 WHERE id = $2", [
+          JSON.stringify([...existentes, ...achadosEditoriais]),
+          ebookId,
+        ]);
+        console.warn(`[editorial] ${ebookId}: ${achadosEditoriais.length} achado(s) da leitura de editor/leitora.`);
+      } catch (err) {
+        if (err instanceof GeracaoInterrompida) throw err;
+        console.warn(`[editorial] leitura final falhou para ${ebookId}:`, err instanceof Error ? err.message : err);
+      }
     }
 
     // Etapa 6: conteúdo pronto — para aqui para revisão, sem exportar ainda.

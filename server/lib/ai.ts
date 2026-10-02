@@ -7,6 +7,7 @@ import { modoDe } from "../../src/lib/modos";
 import { limparTituloCapitulo } from "../../src/lib/tituloCapitulo";
 import { ajustarEstrutura, inicioRetaFinal, problemasDoEnredo, retaFinalBlock, tramaBlock } from "./historia";
 import { faixaPedida, registrarEntrega } from "./calibragem";
+import { normalizarAuditoria, tiquesBlock, viciosBlock, type ResultadoAuditoria } from "./editorial";
 import { vozDe } from "./vozes";
 
 let client: OpenAI | null = null;
@@ -1026,6 +1027,11 @@ export interface ContextoDeEscrita {
    * reescrito por ter reprovado numa checagem no meio da geracao.
    */
   correcao?: string;
+  /**
+   * Frases e gestos que ja se repetiram em varios capitulos deste livro
+   * (editorial.ts, tiquesRepetidos) -- proibidos daqui em diante.
+   */
+  tiques?: Array<{ frase: string }>;
 }
 
 export async function generateChapter(
@@ -1085,6 +1091,9 @@ export async function generateChapter(
   const retaFinal = ehFiccao(ctx.theme) ? retaFinalBlock(outline, chapterIndex) : "";
   // A verdade unica da trama e os fios que fecham neste capitulo (historia.ts).
   const trama = ehFiccao(ctx.theme) ? tramaBlock(outline, chapterIndex) : "";
+  // Prevencao de vicios de texto de IA e dos tiques que este livro ja repetiu
+  // (editorial.ts). So na prosa narrativa, onde eles aparecem.
+  const estilo = modoDe(ctx.theme) === "narrativo" ? `${viciosBlock()}${tiquesBlock(extra.tiques ?? [])}` : "";
 
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
@@ -1099,7 +1108,7 @@ Tema geral do livro: ${ctx.theme}. Público-alvo: ${ctx.audience}. Tom de voz: $
 ${ctx.authorContext ? `Contexto/voz do autor: ${ctx.authorContext}` : ""}
 ${elencoBlock(outline, registrados)}${presencaBlock(chapter)}${fatosFixosBlock(outline)}${memoriaBlock(anteriores, extra.memoriaLonga ?? [])}${correcaoBloco}
 ${isLastChapter ? "Este é o ÚLTIMO capítulo do livro — não faça nenhuma referência a um próximo capítulo, pois não existe." : nextChapter ? `O próximo capítulo vai tratar de: "${nextChapter.title}".` : ""}
-${trama}${instrucaoClimax}${retaFinal}${groundingBlock(ctx)}
+${trama}${instrucaoClimax}${retaFinal}${estilo}${groundingBlock(ctx)}
 Abra o capítulo com ${opening}. Não anuncie o que o capítulo vai abordar antes de começar — vá direto ao ponto escolhido para a abertura.
 Encerre o capítulo com ${closing}.
 
@@ -1494,4 +1503,100 @@ ${text}`;
   return askOpenAI(`${SYSTEM_BASE}
 
 ${vozDe(modoDe(caminhoCategoria)).regras}`, prompt, maxTokens, false, 200, "falhar");
+}
+
+// --- Camada editorial (02/10/2026) ------------------------------------------
+
+const SYSTEM_EDITOR = `Você é um editor de ficção experiente e exigente, revisando um livro escrito por IA antes da publicação. Você não reescreve: aponta, com evidência do texto, o que impede o capítulo ou o livro de funcionar como história. Responda sempre em JSON válido.`;
+
+/**
+ * Auditor por capitulo (ideia do InkOS e do novel-creator-skill): le o capitulo
+ * recem-escrito contra o plano e reprova, com motivo, o que um editor reprovaria.
+ * So o que e verificavel contra o sumario -- nao gosto pessoal --, para a
+ * reescrita ter alvo claro. Uma chamada por capitulo de historia.
+ */
+export async function auditarCapitulo(
+  outline: Outline,
+  idx: number,
+  conteudo: string,
+  anteriores: CapituloAnterior[],
+): Promise<ResultadoAuditoria> {
+  const n = outline.chapters.length;
+  const cap = outline.chapters[idx];
+  const ultimo = idx === n - 1;
+  const naReta = idx >= inicioRetaFinal(n);
+  const fios = (outline.fios ?? []).filter((f) => Number(f.fechaNoCapitulo) === idx + 1 || (ultimo && Number(f.fechaNoCapitulo) > n));
+  const destinos = (outline.personagens ?? []).filter((p) => (p.destino || "").trim());
+  const resumos = anteriores
+    .filter((a) => a.resumo)
+    .slice(-12)
+    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${a.resumo}`)
+    .join("\n");
+
+  const prompt = `Revise o CAPÍTULO ${idx + 1} de ${n} do livro "${outline.title}".
+
+O PLANO deste capítulo: ${cap.summary}
+${cap.funcao ? `Função na estrutura: ${cap.funcao}.` : ""}${cap.resultado ? ` Ao final, precisa estar resolvido: ${cap.resultado}` : ""}
+${outline.verdadeCentral ? `VERDADE DA TRAMA (a única versão do que aconteceu): ${outline.verdadeCentral}` : ""}
+${fios.length ? `FIOS QUE PRECISAM FECHAR NESTE CAPÍTULO (o leitor termina sabendo a resposta, em cena):\n${fios.map((f) => `- ${f.fio} → ${f.resposta}`).join("\n")}` : ""}
+${naReta ? "Este capítulo está na RETA FINAL: não pode introduzir personagem novo nem conflito ou subtrama nova." : ""}
+${ultimo && destinos.length ? `É o ÚLTIMO capítulo. Destinos que precisam estar entregues até o fim dele:\n${destinos.map((p) => `- ${p.nome}: ${p.destino}`).join("\n")}` : ""}
+${resumos ? `\nO QUE OS CAPÍTULOS ANTERIORES JÁ MOSTRARAM:\n${resumos}` : ""}
+
+Aponte SOMENTE problemas destes tipos, com evidência do texto:
+- "fio-nao-fechado": um fio da lista acima não teve a resposta mostrada neste capítulo.
+- "contradiz-verdade": o texto afirma como fato (não como mentira de personagem) algo que contradiz a verdade da trama ou os capítulos anteriores.
+- "funcao-nao-cumprida": o capítulo não entrega a função/resultado do plano.
+- "cena-repetida": o capítulo repete a mesma cena, discussão ou estrutura de um capítulo anterior (mesmo confronto, mesmas falas, mesma revelação contada de novo) sem avançar a história.
+- "novidade-na-reta-final": personagem, conflito ou mistério novo aberto na reta final.
+- "final-aberto": (só no último capítulo) a pergunta central fica sem resposta, termina com gancho, ou a última cena fica sem desfecho.
+- "destino-nao-entregue": (só no último capítulo) algum destino da lista não aparece resolvido.
+- "texto-cortado": o capítulo termina no meio de uma cena ou de uma fala sem resposta.
+
+"grave" = o leitor percebe que a história falhou ali (fio sem resposta, final aberto, contradição, cena repetida inteira, texto cortado). "leve" = incômodo menor. Se o capítulo estiver bom, devolva a lista vazia — não invente problema.
+
+Responda APENAS com JSON:
+{"problemas": [{"tipo": "...", "gravidade": "grave | leve", "evidencia": "trecho curto ou descrição do que está no texto", "correcao": "o que a reescrita precisa fazer, em uma frase"}]}
+
+CAPÍTULO ${idx + 1}:
+${conteudo}`;
+
+  const raw = await askOpenAI(SYSTEM_EDITOR, prompt, 1500, true, 0);
+  return normalizarAuditoria(JSON.parse(extractJson(raw)));
+}
+
+/**
+ * Leitura final do livro inteiro (ideia do creative-writing-skills e do
+ * "reader panel" do story-skills): um editor olha estrutura, ritmo, repeticao e
+ * fios; uma leitora do publico-alvo diz onde perdeu o interesse, o que nao
+ * entendeu e se o final satisfez. Le os resumos de todos os capitulos e o fim
+ * do ultimo -- o livro inteiro nao caberia, e e o ultimo capitulo que decide se
+ * a historia terminou.
+ */
+export async function leituraEditorial(
+  ctx: EbookContext,
+  outline: Outline,
+  capitulos: Array<{ idx: number; title: string; resumo: string | null }>,
+  finalDoUltimo: string,
+): Promise<unknown> {
+  const prompt = `Leia o livro "${outline.title}" — ${outline.subtitle} (${ctx.theme}; público: ${ctx.audience}).
+${extraInstructionsBlock(ctx)}
+${outline.verdadeCentral ? `Verdade da trama planejada: ${outline.verdadeCentral}` : ""}
+${(outline.fios ?? []).length ? `Fios planejados: ${(outline.fios ?? []).map((f) => `${f.fio} (fecha no cap. ${f.fechaNoCapitulo})`).join("; ")}` : ""}
+
+CAPÍTULO A CAPÍTULO, o que de fato foi escrito:
+${capitulos.map((c) => `- Cap. ${c.idx + 1} "${limparTituloCapitulo(c.title)}": ${c.resumo || "(sem resumo)"}`).join("\n")}
+
+AS ÚLTIMAS LINHAS DO LIVRO:
+${finalDoUltimo}
+
+Faça duas leituras.
+1) EDITOR: até 6 problemas reais do livro como história — estrutura, ritmo, cenas repetidas, fio aberto e não fechado, contradição, personagem que some, final. Para cada um: aspecto (UMA destas palavras: estrutura, ritmo, repeticao, fio-aberto, contradicao, personagem, final, promessa, clareza), gravidade (grave | media | leve), evidencia, sugestao e os números dos capítulos.
+2) LEITORA do público-alvo, sincera: nota de 0 a 10, onde perdeu o interesse, o que não entendeu, se o final satisfez (o que a história prometeu foi entregue? a instrução do autor foi cumprida?) e um comentário de uma frase.
+
+Responda APENAS com JSON:
+{"editor": [{"aspecto": "final", "gravidade": "grave | media | leve", "evidencia": "...", "sugestao": "...", "capitulos": [1]}],
+ "leitora": {"nota": 7, "perdeuInteresseEm": ["..."], "naoEntendeu": ["..."], "finalSatisfaz": true, "comentario": "..."}}`;
+  const raw = await askOpenAI(SYSTEM_EDITOR, prompt, 2000, true, 0);
+  return JSON.parse(extractJson(raw));
 }

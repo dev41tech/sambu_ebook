@@ -4,6 +4,7 @@ import type { EbookRow } from "./db";
 import { detectarRecusa } from "./sanitizar";
 import { verificarContinuidade, type Achado, type Gravidade } from "./continuidade";
 import { verificarFatosNumericos } from "./fatosNumericos";
+import { achadosEditoriaisSalvos } from "./editorial";
 import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
 import type { Outline } from "./ai";
 
@@ -176,6 +177,11 @@ export function avaliarQualidade(e: EntradaGate): ResultadoGate {
         .map(([local, texto]) => ({ local, texto })),
     ),
   );
+
+  // 6. Leitura de editor/leitora e auditorias feitas na geração (editorial.ts).
+  // Custaram chamada de IA e não são recalculáveis aqui, então vêm do que foi
+  // gravado. Nunca bloqueiam: no máximo "major".
+  achados.push(...achadosEditoriaisSalvos(ebook.continuity_json));
 
   const contagem: Record<Gravidade, number> = { info: 0, warning: 0, major: 0, blocker: 0 };
   for (const a of achados) contagem[a.gravidade] += 1;
