@@ -16,11 +16,31 @@ const ROTULOS: Record<GravidadeAchado, string> = {
   info: "Nota",
 };
 
+// Leitura de editor e leitora (categorias "editorial-*"): opinião de uma IA
+// sobre a história, não erro verificável. Com os mesmos rótulos e cores dos
+// erros ("GRAVE"), o painel de um livro melhor parecia pior que o de um livro
+// antigo, que nunca tinha sido lido por ninguém (03/10/2026).
+const ROTULOS_EDITOR: Record<GravidadeAchado, string> = {
+  blocker: "Importante",
+  major: "Importante",
+  warning: "Sugestão",
+  info: "Nota",
+};
+const CORES_EDITOR: Record<GravidadeAchado, string> = {
+  blocker: "border-sky-200 bg-sky-50 text-sky-950",
+  major: "border-sky-200 bg-sky-50 text-sky-950",
+  warning: "border-neutral-200 bg-neutral-50 text-neutral-700",
+  info: "border-neutral-200 bg-white text-neutral-600",
+};
+
+const ehEditorial = (a: AchadoEditorial) => a.categoria.startsWith("editorial-");
+
 function Achado({ a }: { a: AchadoEditorial }) {
+  const editorial = ehEditorial(a);
   return (
-    <div className={`rounded-md border p-3 text-xs ${CORES[a.gravidade]}`}>
+    <div className={`rounded-md border p-3 text-xs ${(editorial ? CORES_EDITOR : CORES)[a.gravidade]}`}>
       <div className="flex items-baseline justify-between gap-3">
-        <span className="font-semibold uppercase tracking-wide">{ROTULOS[a.gravidade]}</span>
+        <span className="font-semibold uppercase tracking-wide">{(editorial ? ROTULOS_EDITOR : ROTULOS)[a.gravidade]}</span>
         <span className="text-[0.7rem] opacity-70">{a.local}</span>
       </div>
       <p className="mt-1">{a.evidencia}</p>
@@ -116,7 +136,13 @@ export default function PainelQualidade({
   if (!r) return null;
 
   const ordem: GravidadeAchado[] = ["blocker", "major", "warning", "info"];
-  const ordenados = [...r.achados].sort((a, b) => ordem.indexOf(a.gravidade) - ordem.indexOf(b.gravidade));
+  const ordenar = (lista: AchadoEditorial[]) =>
+    [...lista].sort((a, b) => ordem.indexOf(a.gravidade) - ordem.indexOf(b.gravidade));
+  const ordenados = ordenar(r.achados.filter((a) => !ehEditorial(a)));
+  const editoriais = ordenar(r.achados.filter(ehEditorial));
+  const notaLeitora = editoriais
+    .map((a) => a.evidencia.match(/nota (\d+(?:[.,]\d)?)\/10/)?.[1])
+    .find(Boolean);
   const ficcao = ehFiccao(caminhoCategoria);
 
   return (
@@ -132,7 +158,7 @@ export default function PainelQualidade({
 
       {ordenados.length === 0 ? (
         <p className="text-xs text-emerald-700">
-          ✓ Nenhum problema encontrado nas verificações automáticas.
+          ✓ Nenhum erro encontrado nas verificações automáticas.
         </p>
       ) : (
         <div className="space-y-2">
@@ -140,6 +166,24 @@ export default function PainelQualidade({
             <Achado key={`${a.categoria}-${i}`} a={a} />
           ))}
         </div>
+      )}
+
+      {editoriais.length > 0 && (
+        <details className="rounded-md border border-sky-200 bg-white p-3">
+          <summary className="cursor-pointer text-xs font-medium text-sky-900">
+            Leitura do editor (IA) — {editoriais.filter((a) => a.gravidade !== "info").length} sugestão(ões)
+            {notaLeitora ? ` · nota da leitora ${notaLeitora}/10` : ""}
+          </summary>
+          <p className="mt-2 text-xs text-neutral-500">
+            Opinião de um editor e de uma leitora simulados por IA sobre o livro como um todo: sugestões para
+            melhorar, não erros. Nada aqui impede publicar.
+          </p>
+          <div className="mt-2 space-y-2">
+            {editoriais.map((a, i) => (
+              <Achado key={`${a.categoria}-${i}`} a={a} />
+            ))}
+          </div>
+        </details>
       )}
 
       {!r.liberado && (

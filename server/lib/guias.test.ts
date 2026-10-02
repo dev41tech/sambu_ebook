@@ -2,7 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { guiaDe, guiaDoModo, juntarGuias, parseGuia, SECOES, slugDoGenero } from "./guias";
 import { problemasDaTese, teseBlock, perguntasDoCapitulo } from "./naoFiccao";
-import { encurtarNomes } from "./editorial";
+import { encurtarNomes, resumoParaEditor } from "./editorial";
+
+test("resumo para o editor perde as anotações de pendência, que não estão no livro", () => {
+  const r = resumoParaEditor(
+    "Usa Ana, com R$ 2.400 líquidos e sobra de R$ 510. Ficou pendente conferir salário mínimo e regras oficiais atualizadas. Define limite de R$ 300.",
+  );
+  assert.equal(r, "Usa Ana, com R$ 2.400 líquidos e sobra de R$ 510. Define limite de R$ 300.");
+  assert.equal(resumoParaEditor("Ficaram pendentes juros exatos, CET e tarifas."), "");
+  assert.equal(resumoParaEditor(null), "");
+});
 import type { Outline } from "./ai";
 
 test("todo modo tem guia com as 5 seções preenchidas (o deploy não pode perder regras)", () => {

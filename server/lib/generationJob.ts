@@ -165,7 +165,50 @@ async function ctxFromRow(row: EbookRow): Promise<EbookContext> {
   };
 }
 
+/**
+ * Trava entre processos: so um servidor gera cada livro.
+ *
+ * As travas de cima (activeJobs, fila, reservados) sao da memoria do processo.
+ * O servidor local e o da VPS usam o MESMO banco, e a rota de detalhe chama
+ * ensureGenerationRunning a cada consulta: abrir no app local um livro que a
+ * VPS (ou um script) ja estava gerando comecava uma segunda geracao do mesmo
+ * livro. Em 03/10/2026 "Sair das Dividas Sem Milagre" chegou a "5 de 3
+ * capitulos", com capitulos escritos duas vezes e pagos duas vezes.
+ *
+ * pg_try_advisory_lock vale para a sessao do banco: fica com uma conexao
+ * reservada durante a geracao e cai sozinho se o processo morrer. Nao precisa
+ * de migration.
+ */
 async function runJob(ebookId: string) {
+  const chave = `sambu-geracao:${ebookId}`;
+  let trava: Awaited<ReturnType<typeof sql.reserve>> | null = null;
+  try {
+    trava = await sql.reserve();
+    const [r] = await trava`SELECT pg_try_advisory_lock(hashtext(${chave})) AS ok`;
+    if (!r?.ok) {
+      console.warn(`[geracao] ${ebookId}: ja esta sendo gerado por outro processo no mesmo banco; este nao entra.`);
+      trava.release();
+      activeJobs.delete(ebookId);
+      await startNextQueuedJob();
+      return;
+    }
+  } catch (err) {
+    // Sem trava, segue como antes: melhor gerar do que travar o livro.
+    console.warn(`[geracao] ${ebookId}: trava entre processos indisponivel:`, err instanceof Error ? err.message : err);
+    trava?.release();
+    trava = null;
+  }
+  try {
+    await executarJob(ebookId);
+  } finally {
+    if (trava) {
+      await trava`SELECT pg_advisory_unlock(hashtext(${chave}))`.catch(() => {});
+      trava.release();
+    }
+  }
+}
+
+async function executarJob(ebookId: string) {
   try {
     let row = await getEbook(ebookId);
     if (!row || row.status === "review" || row.status === "ready" || row.status === "outline_review") return;

@@ -431,6 +431,24 @@ export function correcaoDoFinal(leitura: unknown, totalCapitulos: number): strin
 }
 
 // ---------------------------------------------------------------------------
+// Resumo interno lido pelo editor
+// ---------------------------------------------------------------------------
+//
+// O resumo de cada capítulo (resumirCapitulo) anota o que ficou por conferir:
+// "Ficou pendente conferir salário mínimo e regras oficiais atualizadas". Isso
+// é nota de trabalho, não está no livro — e o editor da leitura final tratou
+// como texto, marcando "GRAVE" em "Sair das Dívidas Sem Milagre" duas vezes.
+
+/** Tira do resumo as anotações de pendência, que não fazem parte do texto do livro. */
+export function resumoParaEditor(resumo: string | null | undefined): string {
+  return (resumo ?? "")
+    .split(/(?<=[.!?])\s+/)
+    .filter((frase) => !/pendentes?|pend[êe]ncias?|a conferir|não verificad/i.test(frase))
+    .join(" ")
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Nome completo repetido
 // ---------------------------------------------------------------------------
 //

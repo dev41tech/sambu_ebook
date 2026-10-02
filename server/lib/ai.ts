@@ -30,6 +30,7 @@ import {
   normalizarAvaliacaoSumario,
   normalizarPremissas,
   premissaBlock,
+  resumoParaEditor,
   tiquesBlock,
   viciosBlock,
   type AvaliacaoSumario,
@@ -1853,7 +1854,7 @@ export async function auditarCapitulo(
   const resumos = anteriores
     .filter((a) => a.resumo)
     .slice(-12)
-    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${a.resumo}`)
+    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${resumoParaEditor(a.resumo)}`)
     .join("\n");
 
   const prompt = `Revise o CAPÍTULO ${idx + 1} de ${n} do livro "${outline.title}".
@@ -1912,7 +1913,7 @@ async function auditarNaoFiccao(
   const resumos = anteriores
     .filter((a) => a.resumo)
     .slice(-12)
-    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${a.resumo}`)
+    .map((a) => `- Cap. ${a.idx + 1} "${limparTituloCapitulo(a.title)}": ${resumoParaEditor(a.resumo)}`)
     .join("\n");
 
   const prompt = `Revise o CAPÍTULO ${idx + 1} de ${n} do livro "${outline.title}".
@@ -1968,8 +1969,8 @@ ${(outline.perguntasDoLeitor ?? []).length ? `Perguntas do leitor que o livro pr
 ${outline.verdadeCentral ? `Verdade da trama planejada: ${outline.verdadeCentral}` : ""}
 ${(outline.fios ?? []).length ? `Fios planejados: ${(outline.fios ?? []).map((f) => `${f.fio} (fecha no cap. ${f.fechaNoCapitulo})`).join("; ")}` : ""}
 
-CAPÍTULO A CAPÍTULO, o que de fato foi escrito:
-${capitulos.map((c) => `- Cap. ${c.idx + 1} "${limparTituloCapitulo(c.title)}": ${c.resumo || "(sem resumo)"}`).join("\n")}
+CAPÍTULO A CAPÍTULO, o que de fato foi escrito (resumos feitos pelo sistema; julgue o livro pelo que eles dizem que aconteceu, não pela redação dos resumos):
+${capitulos.map((c) => `- Cap. ${c.idx + 1} "${limparTituloCapitulo(c.title)}": ${resumoParaEditor(c.resumo) || "(sem resumo)"}`).join("\n")}
 
 AS ÚLTIMAS LINHAS DO LIVRO (trecho do fim do último capítulo; o que vem antes foi omitido de propósito, não é corte do texto):
 ${finalDoUltimo}
