@@ -1119,8 +1119,42 @@ Responda APENAS com JSON:
   return normalizarAvaliacaoSumario(JSON.parse(extractJson(raw)));
 }
 
-/** Quantos personagens nascidos na prosa acompanham o elenco do sumario. */
-const MAX_REGISTRADOS = 12;
+/**
+ * Acima de quantos registrados a descricao passa a ser encurtada.
+ *
+ * Era um TETO que cortava: `extras.slice(-12)` tirava do prompt o personagem
+ * mais antigo quando nascia o 13o -- o escritor deixava de saber que ele existe
+ * e ele sumia do livro. Medido no acervo (docs/MEDICAO-ACERVO.md): 33 dos 35
+ * casos de personagem que some sao gente nascida na prosa, e em "Cartas para a
+ * Rua de Baixo" cinco somem no MESMO capitulo, que e a assinatura do corte.
+ * Agora ninguem sai da lista; o que encolhe e a descricao dos mais antigos.
+ */
+const REGISTRADOS_COM_DESCRICAO = 12;
+
+/**
+ * O capitulo inteiro vai para o resumo -- ou, se for enorme, o comeco e o FIM.
+ *
+ * Era `conteudo.slice(0, 12000)` (~2.000 palavras). Capitulo do gpt-5.5 passa
+ * disso com folga (3.578 palavras no maior medido), e o que ficava de fora era
+ * justo o fim: a decisao tomada e o gancho. O resumo alimenta a memoria dos
+ * capitulos seguintes, entao perder o fim e perder exatamente o que continua.
+ */
+export function capituloParaResumir(conteudo: string, teto = 60000): string {
+  const texto = conteudo ?? "";
+  if (texto.length <= teto) return texto;
+  const cabeca = Math.floor(teto * 0.6);
+  const cauda = teto - cabeca;
+  return `${texto.slice(0, cabeca)}\n\n[...trecho do meio omitido...]\n\n${texto.slice(-cauda)}`;
+}
+
+/** Descricao curta para quem passou do limite: o nome continua, o detalhe cede. */
+function descricaoCurta(descricao: string): string {
+  const limpa = (descricao || "").trim();
+  if (limpa.length <= 60) return limpa;
+  const corte = limpa.slice(0, 60);
+  const espaco = corte.lastIndexOf(" ");
+  return `${(espaco > 30 ? corte.slice(0, espaco) : corte).replace(/[,;:.\s]+$/, "")}…`;
+}
 
 /**
  * Elenco do sumario mais quem nasceu na prosa e foi registrado.
@@ -1153,7 +1187,16 @@ export function elencoEfetivo(outline: Outline, registrados: Personagem[] = []):
     vistos.add(k);
     extras.push(p);
   }
-  return [...doSumario, ...extras.slice(-MAX_REGISTRADOS)];
+  // Ninguem e removido: os mais antigos entram com a descricao encurtada. Um
+  // livro de 92 capitulos com 15 registrados cabe folgado -- o que nao cabia era
+  // a descricao inteira de cada um, e e ela que cede.
+  const recentes = extras.slice(-REGISTRADOS_COM_DESCRICAO);
+  const antigos = extras.slice(0, Math.max(0, extras.length - REGISTRADOS_COM_DESCRICAO));
+  return [
+    ...doSumario,
+    ...antigos.map((p) => ({ ...p, descricao: descricaoCurta(p.descricao) })),
+    ...recentes,
+  ];
 }
 
 /**
@@ -1350,6 +1393,33 @@ export interface ContextoDeEscrita {
    * (editorial.ts, tiquesRepetidos) -- proibidos daqui em diante.
    */
   tiques?: Array<{ frase: string }>;
+  /**
+   * Gente com peso que parou de aparecer (continuidade.ts, personagensSumidos).
+   * Lembrete no prompt: trazer de volta ou mostrar por que saiu.
+   */
+  sumidos?: Array<{ nome: string; ultimo: number }>;
+}
+
+/**
+ * Lembrete de quem sumiu do livro, para o capitulo que esta sendo escrito.
+ *
+ * Nao e uma ordem de trazer todo mundo de volta: um personagem pode ter
+ * cumprido o papel dele. O que nao pode e desaparecer sem o leitor saber -- e
+ * esse e o defeito medido em 60% dos livros longos do acervo.
+ */
+export function sumidosBlock(sumidos: Array<{ nome: string; ultimo: number }> = []): string {
+  if (sumidos.length === 0) return "";
+  // Tres por vez: a lista inteira num livro longo viraria uma lista de tarefas
+  // maior que a cena, e o capitulo passaria a existir para fazer chamada.
+  const lista = sumidos
+    .slice(0, 3)
+    .map((s) => `- ${s.nome} (última aparição: capítulo ${s.ultimo + 1})`)
+    .join("\n");
+  return `
+SUMIRAM DO LIVRO — estas pessoas tinham presença e não aparecem há vários capítulos:
+${lista}
+
+Se alguma delas tem o que fazer nesta altura da história, traga-a de volta à cena aqui (nem que seja em uma passagem curta). Se a história já terminou com ela, mostre em cena o que aconteceu — mudou de cidade, rompeu, morreu, desistiu — em vez de deixá-la desaparecer sem explicação. Não force as três no mesmo capítulo.`;
 }
 
 export async function generateChapter(
@@ -1413,7 +1483,10 @@ export async function generateChapter(
     : teseBlock(outline, chapterIndex);
   // Prevencao de vicios de texto de IA e dos tiques que este livro ja repetiu
   // (editorial.ts). So na prosa narrativa, onde eles aparecem.
-  const estilo = modoDe(ctx.theme) === "narrativo" ? `${viciosBlock()}${tiquesBlock(extra.tiques ?? [])}` : "";
+  const estilo =
+    modoDe(ctx.theme) === "narrativo"
+      ? `${viciosBlock()}${tiquesBlock(extra.tiques ?? [])}${sumidosBlock(extra.sumidos ?? [])}`
+      : "";
 
   const ehClimaxOuDesfecho = chapter.funcao === "climax" || chapter.funcao === "desfecho" || isLastChapter;
   const instrucaoClimax = ehClimaxOuDesfecho
@@ -1680,7 +1753,7 @@ Responda APENAS com um JSON valido neste formato:
 }
 
 CAPITULO "${tituloCapitulo}":
-${conteudo.slice(0, 12000)}`;
+${capituloParaResumir(conteudo)}`;
 
   // minChars baixo: um resumo de 80 palavras tem ~450 caracteres, e o piso
   // padrao de 200 e pensado para capitulo, nao para resumo. O teto subiu junto
