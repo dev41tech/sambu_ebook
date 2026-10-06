@@ -44,6 +44,8 @@ import {
   nomesAutorizados,
   termosDeFatosFixos,
   normalizarTermo,
+  correcaoDaContinuidade,
+  personagensSumidos,
   type Achado,
 } from "./continuidade";
 import {
@@ -59,6 +61,7 @@ import {
   vereditoDaLeitora,
   viciosDeIA,
 } from "./editorial";
+import { inicioRetaFinal } from "./historia";
 import { caminhoEfetivo, ehFiccao } from "../../src/lib/categorias";
 import { modoDe } from "../../src/lib/modos";
 import { abstracoesDe, formatoDeDialogo, LIMITE_ABSTRACAO_POR_MIL } from "./metricas";
@@ -558,10 +561,35 @@ async function executarJob(ebookId: string) {
               elencoEfetivo(outline, registrados).map((p) => p.nome),
             )
           : [];
+      // Quem tinha peso e parou de aparecer entra como lembrete no prompt. E
+      // deterministico (conta nomes no texto ja escrito): nao custa chamada de
+      // IA e e a correcao direta do defeito medido em 60% dos livros longos.
+      // Na reta final a janela aperta: quem sumiu no capitulo 22 de 29 nunca
+      // seria avisado com janela de 8, e e justamente ali que o livro precisa
+      // fechar a participacao de todo mundo. Caso real: Chico, 48 mencoes em
+      // "A Divida do Farol", ultima aparicao no 22 de 29.
+      const naRetaFinal = chapter.idx >= inicioRetaFinal(chapters.length);
+      const sumidos = narrativo
+        ? personagensSumidos({
+            capitulos: chapters.map((c) => ({ idx: c.idx, content: c.content })),
+            elenco: elencoEfetivo(outline, registrados),
+            proximoIdx: chapter.idx,
+            janela: naRetaFinal ? 4 : 8,
+          })
+        : [];
+      if (sumidos.length > 0) {
+        console.warn(
+          `[elenco] ${ebookId} cap. ${chapter.idx + 1}: lembrando de ${sumidos
+            .slice(0, 3)
+            .map((s) => `${s.nome} (últ. cap. ${s.ultimo + 1})`)
+            .join(", ")}`,
+        );
+      }
       const draft = await generateChapter(ctx, outline, chapter.idx, anterioresAte(chapter.idx), registrados, {
         memoriaLonga,
         correcao,
         tiques,
+        sumidos,
       });
       const nomes = elencoEfetivo(outline, registrados).map((p) => p.nome);
       // Teto da humanizacao acompanha o rascunho: com 4.000 fixos, um capitulo
@@ -778,10 +806,18 @@ async function executarJob(ebookId: string) {
           elencoRegistrado: registrados,
         });
 
-        const alvos = new Set<number>();
+        // A correcao vai nomeada por capitulo. Antes, QUALQUER achado grave
+        // disparava o mesmo texto fixo de "capitulo orfao": um capitulo acusado
+        // de protagonista divergente era reescrito com a instrucao errada, o
+        // que gastava uma escrita inteira sem atacar o problema.
+        const alvos = new Map<string, Achado[]>();
         for (const a of achados) {
           if (a.gravidade !== "blocker" && a.gravidade !== "major") continue;
-          for (const idx of a.capitulosAfetados ?? []) alvos.add(idx);
+          for (const idx of a.capitulosAfetados ?? []) {
+            const atual = alvos.get(String(idx)) ?? [];
+            atual.push(a);
+            alvos.set(String(idx), atual);
+          }
         }
 
         // Reescrever um capitulo invalida o bloco de memoria longa que o cobria.
@@ -789,17 +825,14 @@ async function executarJob(ebookId: string) {
         // custem uma condensacao so.
         const blocosParaRefazer = new Map<number, number>();
 
-        for (const idx of [...alvos].sort((a, b) => a - b)) {
+        for (const idx of [...alvos.keys()].map(Number).sort((a, b) => a - b)) {
           if (reescritos.has(idx)) continue;
           const alvo = chapters.find((c) => c.idx === idx);
           if (!alvo) continue;
           reescritos.add(idx);
           await continuarOuParar(ebookId);
           await setStep(ebookId, "chapter");
-          const content = await escrever(
-            alvo,
-            "Ele não citava nenhuma das figuras centrais do livro — provavelmente inventou um elenco próprio em vez de usar o que já existe. Reescreva-o com os personagens do elenco acima em cena, mantendo o mesmo assunto, a mesma função na estrutura e o mesmo resultado ao final.",
-          );
+          const content = await escrever(alvo, correcaoDaContinuidade(alvos.get(String(idx)) ?? []));
           await run("UPDATE chapters SET content = $1 WHERE id = $2", [content, alvo.id]);
           alvo.content = content;
           await registrar(alvo, content);

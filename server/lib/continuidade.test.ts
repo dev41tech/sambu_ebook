@@ -7,6 +7,8 @@ import {
   termosDeFatosFixos,
   normalizarTermo,
   pareceLugar,
+  personagensSumidos,
+  correcaoDaContinuidade,
 } from "./continuidade";
 
 test("nome terminado em letra acentuada nao e truncado (bug real: 'Você' virava 'Voc')", () => {
@@ -297,4 +299,134 @@ test("pareceLugar nao julga nome citado poucas vezes", () => {
   // "na casa da Clarice" não pode ser reclassificado como endereço.
   const corpo = "Ela parou na Clarice. Depois seguiu para a Clarice de novo.";
   assert.equal(pareceLugar(corpo, "Clarice"), false);
+});
+
+// ---------------------------------------------------------------------------
+// personagensSumidos -- quem tinha peso e parou de aparecer, durante a geracao
+// ---------------------------------------------------------------------------
+
+function capitulosCom(presencas: string[][]): Array<{ idx: number; content: string }> {
+  // Cada item e a lista de nomes que aparecem naquele capitulo; cada nome e
+  // repetido para passar do piso de mencoes quando preciso.
+  // Os nomes precisam aparecer no MEIO da frase: extrairNomes so aceita como
+  // gente quem aparece ao menos uma vez fora do inicio de frase (senao verbo
+  // capitalizado por ponto final entraria como personagem).
+  return presencas.map((nomes, idx) => ({
+    idx,
+    content: nomes.length
+      ? nomes.map((n) => `A porta abriu e ${n} entrou na sala. Todos olharam para ${n} em silencio.`).join(" ")
+      : "A rua estava vazia e ninguem passou por ali naquela tarde de outubro.",
+  }));
+}
+
+test("acusa quem tinha peso e nao aparece ha mais capitulos que a janela", () => {
+  // "A Divida do Farol": Chico tem 48 mencoes e some no capitulo 22 de 29.
+  const capitulos = capitulosCom([
+    ["Chico"], ["Chico"], ["Chico"], ["Marina"], ["Marina"],
+    ["Marina"], ["Marina"], ["Marina"], ["Marina"], ["Marina"],
+  ]);
+  const sumidos = personagensSumidos({
+    capitulos,
+    elenco: [{ nome: "Chico" }, { nome: "Marina" }],
+    proximoIdx: 10,
+    janela: 5,
+  });
+  assert.deepEqual(sumidos.map((s) => s.nome), ["Chico"]);
+  assert.equal(sumidos[0].ultimo, 2);
+  assert.ok(sumidos[0].mencoes >= 5);
+});
+
+test("quem apareceu agora nao e acusado", () => {
+  const capitulos = capitulosCom([["Chico"], ["Chico"], ["Marina"], ["Marina"], ["Chico"], ["Marina"]]);
+  const sumidos = personagensSumidos({
+    capitulos,
+    elenco: [{ nome: "Chico" }, { nome: "Marina" }],
+    proximoIdx: 6,
+    janela: 3,
+  });
+  assert.deepEqual(sumidos, []);
+});
+
+test("figurante de uma cena so nao conta como sumico", () => {
+  // Abaixo do piso de 5 mencoes: o detector de nomes pega substantivo
+  // capitalizado por acaso, e "abandonar" um deles nao quer dizer nada.
+  const capitulos = capitulosCom([["Zenaide"], ["Marina"], ["Marina"], ["Marina"], ["Marina"], ["Marina"]]);
+  const sumidos = personagensSumidos({
+    capitulos: capitulos.map((c) => (c.idx === 0 ? { ...c, content: "Zenaide passou pela porta." } : c)),
+    elenco: [{ nome: "Zenaide" }, { nome: "Marina" }],
+    proximoIdx: 6,
+    janela: 3,
+  });
+  assert.deepEqual(sumidos, []);
+});
+
+test("livro curto nao acusa ninguem: todo mundo ainda pode voltar", () => {
+  const capitulos = capitulosCom([["Chico"], ["Marina"], ["Marina"]]);
+  const sumidos = personagensSumidos({
+    capitulos,
+    elenco: [{ nome: "Chico" }, { nome: "Marina" }],
+    proximoIdx: 3,
+    janela: 8,
+  });
+  assert.deepEqual(sumidos, []);
+});
+
+test("ordena por peso: o mais citado vem primeiro", () => {
+  const capitulos = capitulosCom([
+    ["Chico", "Chico", "Chico", "Neco"], ["Chico"], ["Neco", "Neco"],
+    ["Marina"], ["Marina"], ["Marina"], ["Marina"], ["Marina"],
+  ]);
+  const sumidos = personagensSumidos({
+    capitulos,
+    elenco: [{ nome: "Neco" }, { nome: "Chico" }, { nome: "Marina" }],
+    proximoIdx: 8,
+    janela: 4,
+  });
+  assert.deepEqual(sumidos.map((s) => s.nome), ["Chico", "Neco"]);
+});
+
+test("sobrenome diferente, mesma pessoa: conta pelo primeiro nome", () => {
+  const capitulos = capitulosCom([
+    ["Helena Ferraz"], ["Helena"], ["Helena"],
+    ["Marina"], ["Marina"], ["Marina"], ["Marina"], ["Marina"],
+  ]);
+  const sumidos = personagensSumidos({
+    capitulos,
+    elenco: [{ nome: "Helena Ferraz" }, { nome: "Marina" }],
+    proximoIdx: 8,
+    janela: 4,
+  });
+  assert.deepEqual(sumidos.map((s) => s.nome), ["Helena Ferraz"]);
+});
+
+test("correcao de continuidade nomeia o achado do capitulo, nao um texto fixo", () => {
+  const texto = correcaoDaContinuidade([
+    {
+      categoria: "protagonista-divergente",
+      gravidade: "major",
+      local: "capitulo 7",
+      evidencia: "Marina nao aparece; quem conduz e Teresa.",
+      sugestao: "Recolocar Marina no comando da cena.",
+      capitulosAfetados: [6],
+    },
+  ]);
+  assert.match(texto, /Recolocar Marina/);
+  assert.match(texto, /Teresa/);
+  assert.doesNotMatch(texto, /elenco proprio|elenco próprio/);
+});
+
+test("correcao junta todos os achados graves do mesmo capitulo e ignora avisos", () => {
+  const texto = correcaoDaContinuidade([
+    { categoria: "a", gravidade: "blocker", local: "x", evidencia: "e1", sugestao: "s1" },
+    { categoria: "b", gravidade: "major", local: "x", evidencia: "e2", sugestao: "s2" },
+    { categoria: "c", gravidade: "warning", local: "x", evidencia: "e3", sugestao: "s3" },
+  ]);
+  assert.match(texto, /s1/);
+  assert.match(texto, /s2/);
+  assert.doesNotMatch(texto, /s3/);
+});
+
+test("sem achado grave nao ha instrucao de reescrita", () => {
+  assert.equal(correcaoDaContinuidade([{ categoria: "a", gravidade: "info", local: "x", evidencia: "e", sugestao: "s" }]), "");
+  assert.equal(correcaoDaContinuidade([]), "");
 });

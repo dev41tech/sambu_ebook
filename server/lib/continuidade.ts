@@ -445,6 +445,89 @@ export function verificarContinuidade(e: EntradaContinuidade): Achado[] {
   return achados;
 }
 
+/**
+ * Instrucao de reescrita a partir dos achados do proprio capitulo.
+ *
+ * A checagem no meio da geracao mandava SEMPRE o mesmo texto -- "inventou um
+ * elenco proprio" --, qualquer que fosse o achado. Um capitulo reprovado por
+ * protagonista divergente era reescrito com a instrucao de outro defeito, e a
+ * escrita inteira (com custo) saia sem atacar o problema.
+ */
+export function correcaoDaContinuidade(achados: Achado[]): string {
+  const graves = achados.filter((a) => a.gravidade === "blocker" || a.gravidade === "major");
+  if (graves.length === 0) return "";
+  const linhas = graves.map((a) => `- ${a.sugestao || a.evidencia} (verificação: ${a.evidencia})`);
+  return `A verificação de continuidade reprovou este capítulo. Corrija TODOS os pontos abaixo, mantendo o mesmo assunto, a mesma função na estrutura e o mesmo resultado ao final:
+${linhas.join("\n")}`;
+}
+
+export interface Sumido {
+  nome: string;
+  /** Menções no livro inteiro até aqui. */
+  mencoes: number;
+  /** Índice (0 = primeiro) do último capítulo em que apareceu. */
+  ultimo: number;
+}
+
+/**
+ * Quem tinha peso na história e parou de aparecer -- durante a geração, não no
+ * fim.
+ *
+ * Medido no acervo em 06/10/2026 (docs/MEDICAO-ACERVO.md): 33 dos 35 casos de
+ * personagem que some são gente que NASCEU na prosa, sem destino no sumário.
+ * Helena Ferraz tem 40 menções em "Sob o Mesmo Teto" e desaparece no capítulo 18
+ * de 92; em "A Dívida do Farol", Chico some no 22 de 29 com 48 menções. O
+ * `personagem-abandonado` de verificarContinuidade só olha o primeiro terço e só
+ * roda no fim, quando corrigir custa o livro inteiro.
+ *
+ * Determinístico e barato: conta nomes no texto já escrito, sem chamada de IA.
+ * O resultado entra no prompt do próximo capítulo como lembrete -- trazer de
+ * volta ou mostrar em cena por que saiu.
+ */
+export function personagensSumidos(e: {
+  capitulos: Array<{ idx: number; content: string }>;
+  /** Elenco conhecido (sumário + registrados na prosa). */
+  elenco: Array<{ nome: string; papel?: string }>;
+  /** Índice do capítulo que está prestes a ser escrito. */
+  proximoIdx: number;
+  /** Mínimo de menções para a pessoa ter peso. Mesmo piso do resto do arquivo. */
+  minMencoes?: number;
+  /** Quantos capítulos sem aparecer já contam como sumiço. */
+  janela?: number;
+}): Sumido[] {
+  const minMencoes = e.minMencoes ?? 5;
+  const janela = e.janela ?? 8;
+  const escritos = e.capitulos.filter((c) => c.idx < e.proximoIdx && (c.content || "").trim().length > 0);
+  // Sem amostra não há sumiço: num livro curto todo mundo "ainda vai voltar".
+  if (escritos.length <= janela) return [];
+
+  const porNome = new Map<string, { mencoes: number; ultimo: number }>();
+  for (const c of escritos) {
+    for (const [nome, n] of extrairNomes(c.content || "")) {
+      const chave = normalizarTermo(primeiroNome(nome));
+      if (!chave) continue;
+      const atual = porNome.get(chave) ?? { mencoes: 0, ultimo: -1 };
+      atual.mencoes += n;
+      atual.ultimo = Math.max(atual.ultimo, c.idx);
+      porNome.set(chave, atual);
+    }
+  }
+
+  const sumidos: Sumido[] = [];
+  const vistos = new Set<string>();
+  for (const p of e.elenco) {
+    const chave = normalizarTermo(primeiroNome(p.nome ?? ""));
+    if (!chave || vistos.has(chave)) continue;
+    vistos.add(chave);
+    const dados = porNome.get(chave);
+    if (!dados || dados.mencoes < minMencoes) continue;
+    if (e.proximoIdx - dados.ultimo <= janela) continue;
+    sumidos.push({ nome: p.nome, mencoes: dados.mencoes, ultimo: dados.ultimo });
+  }
+  // Quem tem mais peso primeiro: se a lista for cortada, o que sobra é o que mais importa.
+  return sumidos.sort((a, b) => b.mencoes - a.mencoes);
+}
+
 export function contarPorGravidade(achados: Achado[]): Record<Gravidade, number> {
   const t: Record<Gravidade, number> = { info: 0, warning: 0, major: 0, blocker: 0 };
   for (const a of achados) t[a.gravidade] += 1;
